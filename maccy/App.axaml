@@ -1,0 +1,53 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="maccy.App"
+             xmlns:local="using:maccy"
+             RequestedThemeVariant="Default">
+             <!-- "Default" ThemeVariant follows system theme variant. "Dark" or "Light" are other available options. -->
+
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="AppBackground" Color="#FF1E1E1E"/>
+                    <SolidColorBrush x:Key="AppPanelBackground" Color="#FF171717"/>
+                    <SolidColorBrush x:Key="AppControlBackground" Color="#FF2A2A2A"/>
+                    <SolidColorBrush x:Key="AppControlHoverBackground" Color="#FF333333"/>
+                    <SolidColorBrush x:Key="AppControlPressedBackground" Color="#FF3A3A3A"/>
+                    <SolidColorBrush x:Key="AppBorder" Color="#FF3A3A3A"/>
+                    <SolidColorBrush x:Key="AppDivider" Color="#FF2A2A2A"/>
+                    <SolidColorBrush x:Key="AppForeground" Color="#FFEAEAEA"/>
+                    <SolidColorBrush x:Key="AppMutedForeground" Color="#FFCFCFCF"/>
+                    <SolidColorBrush x:Key="AppMuted2Foreground" Color="#FFA8A8A8"/>
+
+                    <SolidColorBrush x:Key="AppPreviewBackground" Color="#EE111111"/>
+                    <SolidColorBrush x:Key="AppPreviewButtonBackground" Color="#66000000"/>
+                </ResourceDictionary>
+
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="AppBackground" Color="#FFF6F6F6"/>
+                    <SolidColorBrush x:Key="AppPanelBackground" Color="#FFFFFFFF"/>
+                    <SolidColorBrush x:Key="AppControlBackground" Color="#FFFFFFFF"/>
+                    <SolidColorBrush x:Key="AppControlHoverBackground" Color="#FFF0F0F0"/>
+                    <SolidColorBrush x:Key="AppControlPressedBackground" Color="#FFE8E8E8"/>
+                    <SolidColorBrush x:Key="AppBorder" Color="#FFDDDDDD"/>
+                    <SolidColorBrush x:Key="AppDivider" Color="#FFE5E5E5"/>
+                    <SolidColorBrush x:Key="AppForeground" Color="#FF1A1A1A"/>
+                    <SolidColorBrush x:Key="AppMutedForeground" Color="#FF4A4A4A"/>
+                    <SolidColorBrush x:Key="AppMuted2Foreground" Color="#FF6A6A6A"/>
+
+                    <SolidColorBrush x:Key="AppPreviewBackground" Color="#EEFFFFFF"/>
+                    <SolidColorBrush x:Key="AppPreviewButtonBackground" Color="#66000000"/>
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+
+    <Application.DataTemplates>
+        <local:ViewLocator/>
+    </Application.DataTemplates>
+  
+    <Application.Styles>
+        <FluentTheme />
+    </Application.Styles>
+</Application>

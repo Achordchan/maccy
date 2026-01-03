@@ -1,0 +1,471 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Data.Core;
+using Avalonia.Data.Core.Plugins;
+using System;
+using System.ComponentModel;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Diagnostics;
+using Avalonia.Markup.Xaml;
+using Avalonia.Platform;
+using Avalonia.Threading;
+using Avalonia.Media.Imaging;
+using Avalonia.Styling;
+using maccy.ViewModels;
+using maccy.Views;
+using maccy.Services;
+using maccy.Models;
+
+namespace maccy;
+
+public partial class App : Application
+{
+    private WindowsClipboardWatcher? _clipboardWatcher;
+    private ClipboardCaptureService? _clipboardCapture;
+    private WindowsHotkeyService? _hotkey;
+    private ClipboardPersistenceService? _persistence;
+
+    private AppSettingsService? _settings;
+    private WindowsAutoStartService? _autoStart;
+    private PreferencesWindow? _prefsWindow;
+
+    private DispatcherTimer? _autoHideRetryTimer;
+
+    private IClassicDesktopStyleApplicationLifetime? _desktop;
+
+    private bool HasVisibleOwnedWindows(Window owner)
+    {
+        try
+        {
+            if (owner.OwnedWindows is not null && owner.OwnedWindows.Any(w => w.IsVisible))
+                return true;
+        }
+        catch
+        {
+        }
+
+        return false;
+    }
+
+    public override void Initialize()
+    {
+        AvaloniaXamlLoader.Load(this);
+    }
+
+    private void SetupTrayIcon(MainWindow window)
+    {
+        var icon = new WindowIcon(new Bitmap(AssetLoader.Open(new Uri("avares://maccy/Assets/avalonia-logo.ico"))));
+
+        var menu = new NativeMenu();
+
+        var open = new NativeMenuItem("打开");
+        open.Click += (_, _) => Dispatcher.UIThread.Post(() => ToggleWindowNearCursor(window));
+        menu.Items.Add(open);
+
+        var prefs = new NativeMenuItem("设置...");
+        prefs.Click += (_, _) => Dispatcher.UIThread.Post(() => ShowPreferences(window));
+        menu.Items.Add(prefs);
+
+        var update = new NativeMenuItem("检测更新...");
+        update.Click += (_, _) => Dispatcher.UIThread.Post(OpenUpdatesPage);
+        menu.Items.Add(update);
+
+        menu.Items.Add(new NativeMenuItemSeparator());
+
+        var quit = new NativeMenuItem("退出");
+        quit.Click += (_, _) => Dispatcher.UIThread.Post(() => _desktop?.Shutdown());
+        menu.Items.Add(quit);
+
+        var icons = new TrayIcons
+        {
+            new TrayIcon
+            {
+                Icon = icon,
+                ToolTipText = "剪贴板",
+                Menu = menu,
+            }
+        };
+
+        TrayIcon.SetIcons(this, icons);
+    }
+
+    private void ShowPreferences(Window owner)
+    {
+        if (_settings is null || _autoStart is null)
+            return;
+
+        if (_prefsWindow is not null)
+        {
+            _prefsWindow.Activate();
+            return;
+        }
+
+        var vm = new PreferencesWindowViewModel(_settings, _autoStart, OpenUpdatesPage);
+        var w = new PreferencesWindow
+        {
+            DataContext = vm,
+        };
+
+        w.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        _prefsWindow = w;
+
+        vm.RequestClose += () => w.Close();
+        w.Closed += (_, _) =>
+        {
+            _prefsWindow = null;
+        };
+
+        w.Show(owner);
+        w.Activate();
+    }
+
+    private void OpenUpdatesPage()
+    {
+        try
+        {
+            var url = "https://gitee.com/";
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch
+        {
+        }
+    }
+
+    private void ApplyTheme(AppSettings s)
+    {
+        var value = s.Theme?.Trim();
+        if (string.Equals(value, "Dark", StringComparison.OrdinalIgnoreCase))
+        {
+            RequestedThemeVariant = ThemeVariant.Dark;
+            return;
+        }
+
+        if (string.Equals(value, "Light", StringComparison.OrdinalIgnoreCase))
+        {
+            RequestedThemeVariant = ThemeVariant.Light;
+            return;
+        }
+
+        RequestedThemeVariant = ThemeVariant.Default;
+    }
+
+    private void ApplySettings(ClipboardHistoryService history, ClipboardCaptureService? capture)
+    {
+        if (_settings is null)
+            return;
+
+        var s = _settings.Current;
+        ApplyTheme(s);
+        history.MaxItems = s.MaxItems;
+        history.MaxBytes = (long)s.MaxMegabytes * 1024 * 1024;
+        history.MergeDuplicates = s.MergeDuplicates;
+        history.ExcludePinnedFromLimits = s.ExcludePinnedFromLimits;
+
+        if (capture is not null)
+        {
+            capture.CaptureText = s.CaptureText;
+            capture.CaptureImages = s.CaptureImages;
+            capture.CaptureFiles = s.CaptureFiles;
+        }
+    }
+
+    public override void OnFrameworkInitializationCompleted()
+    {
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            _desktop = desktop;
+            desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+            // Avoid duplicate validations from both Avalonia and the CommunityToolkit. 
+            // More info: https://docs.avaloniaui.net/docs/guides/development-guides/data-validation#manage-validationplugins
+            DisableAvaloniaDataAnnotationValidation();
+
+            var window = new MainWindow();
+            desktop.MainWindow = window;
+
+            window.Deactivated += (_, _) =>
+            {
+                if (_prefsWindow is not null)
+                    return;
+                if (!window.IsVisible)
+                    return;
+
+                if (HasVisibleOwnedWindows(window))
+                    return;
+
+                // Delay slightly to allow pointer/hover state to update when user interacts with the preview window.
+                Dispatcher.UIThread.Post(() =>
+                {
+                    DispatcherTimer.RunOnce(() =>
+                    {
+                        if (_prefsWindow is not null)
+                            return;
+                        if (!window.IsVisible)
+                            return;
+
+                        if (HasVisibleOwnedWindows(window))
+                            return;
+
+                        // If preview interaction is suppressing auto-hide, keep retrying.
+                        if (window.SuppressAutoHide)
+                        {
+                            EnsureAutoHideRetryTimer(window);
+                            return;
+                        }
+
+                        window.Hide();
+                    }, TimeSpan.FromMilliseconds(80));
+                });
+            };
+
+            window.Activated += (_, _) =>
+            {
+                _autoHideRetryTimer?.Stop();
+            };
+
+            SetupTrayIcon(window);
+
+            window.Closing += (_, e) =>
+            {
+                e.Cancel = true;
+                window.Hide();
+            };
+
+            var clipboard = window.Clipboard;
+            if (clipboard is null)
+                return;
+
+            _settings = new AppSettingsService();
+            _settings.Load();
+            _autoStart = new WindowsAutoStartService();
+
+            var history = new ClipboardHistoryService();
+            ApplySettings(history, null);
+            _persistence = new ClipboardPersistenceService(history);
+            _ = _persistence.LoadAsync();
+            _clipboardCapture = new ClipboardCaptureService(history, clipboard, TryGetForegroundApp);
+            ApplySettings(history, _clipboardCapture);
+            var apply = new ClipboardApplyService(clipboard, _clipboardCapture);
+
+            var vm = new MainWindowViewModel(history, apply);
+            vm.RequestHide += () => window.Hide();
+            vm.RequestFocusSearch += () => window.FocusSearch();
+            vm.RequestOpenPreferences += () => ShowPreferences(window);
+            vm.RequestCheckUpdates += () => OpenUpdatesPage();
+            vm.RequestEditNote += item => window.BeginEditNote(item);
+            window.DataContext = vm;
+
+            if (_settings is not null)
+            {
+                _settings.Changed += () =>
+                {
+                    ApplySettings(history, _clipboardCapture);
+                };
+            }
+
+            _hotkey = new WindowsHotkeyService(
+                WindowsHotkeyService.MOD_CONTROL | WindowsHotkeyService.MOD_ALT,
+                WindowsHotkeyService.VK_2);
+            _hotkey.HotkeyPressed += (_, _) =>
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    ToggleWindowNearCursor(window);
+                });
+            };
+            _hotkey.Start();
+
+            window.Hide();
+
+            _clipboardWatcher = new WindowsClipboardWatcher();
+            _clipboardWatcher.ClipboardChanged += (_, _) =>
+            {
+                Dispatcher.UIThread.Post(async () =>
+                {
+                    if (_clipboardCapture is not null)
+                        await _clipboardCapture.CaptureAsync();
+                });
+            };
+            _clipboardWatcher.Start();
+
+            desktop.Exit += (_, _) =>
+            {
+                _clipboardWatcher?.Dispose();
+                _clipboardWatcher = null;
+                _clipboardCapture = null;
+
+                _hotkey?.Dispose();
+                _hotkey = null;
+
+                _persistence?.Dispose();
+                _persistence = null;
+
+                TrayIcon.SetIcons(this, null);
+            };
+        }
+
+        base.OnFrameworkInitializationCompleted();
+    }
+
+    private void EnsureAutoHideRetryTimer(MainWindow window)
+    {
+        _autoHideRetryTimer?.Stop();
+
+        _autoHideRetryTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(120),
+        };
+
+        _autoHideRetryTimer.Tick += (_, _) =>
+        {
+            if (_prefsWindow is not null)
+            {
+                _autoHideRetryTimer?.Stop();
+                return;
+            }
+
+            if (!window.IsVisible)
+            {
+                _autoHideRetryTimer?.Stop();
+                return;
+            }
+
+            if (window.IsActive)
+            {
+                _autoHideRetryTimer?.Stop();
+                return;
+            }
+
+            if (window.SuppressAutoHide)
+                return;
+
+            window.Hide();
+            _autoHideRetryTimer?.Stop();
+        };
+
+        _autoHideRetryTimer.Start();
+    }
+
+    private void DisableAvaloniaDataAnnotationValidation()
+    {
+        // Get an array of plugins to remove
+        var dataValidationPluginsToRemove =
+            BindingPlugins.DataValidators.OfType<DataAnnotationsValidationPlugin>().ToArray();
+
+        // remove each entry found
+        foreach (var plugin in dataValidationPluginsToRemove)
+        {
+            BindingPlugins.DataValidators.Remove(plugin);
+        }
+    }
+
+    private static void ToggleWindowNearCursor(MainWindow window)
+    {
+        var (x, y) = WindowsHotkeyService.GetCursorPosition();
+        var desired = new PixelPoint(x + 12, y + 12);
+
+        var screen = window.Screens.ScreenFromPoint(desired) ?? window.Screens.Primary;
+        if (screen is null)
+        {
+            window.Position = desired;
+        }
+        else
+        {
+            var wa = screen.WorkingArea;
+
+            var w = (int)Math.Max(100, window.Width);
+            var h = (int)Math.Max(100, window.Height);
+
+            var clampedX = Math.Clamp(desired.X, wa.X, Math.Max(wa.X, wa.Right - w));
+            var clampedY = Math.Clamp(desired.Y, wa.Y, Math.Max(wa.Y, wa.Bottom - h));
+
+            window.Position = new PixelPoint(clampedX, clampedY);
+        }
+
+        window.WindowState = WindowState.Normal;
+        window.Show();
+        window.Activate();
+        ForceForeground(window);
+        window.PrepareForOpen();
+        window.FocusSearch();
+    }
+
+    private static void ForceForeground(Window window)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var handle = window.TryGetPlatformHandle();
+        if (handle is null || handle.Handle == IntPtr.Zero)
+            return;
+
+        var hwnd = handle.Handle;
+        NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWNORMAL);
+        NativeMethods.SetForegroundWindow(hwnd);
+        NativeMethods.BringWindowToTop(hwnd);
+        NativeMethods.SetFocus(hwnd);
+    }
+
+    private static class NativeMethods
+    {
+        public const int SW_SHOWNORMAL = 1;
+
+        [DllImport("user32.dll")]
+        public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool BringWindowToTop(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetFocus(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    }
+
+    private static AppIdentity? TryGetForegroundApp()
+    {
+        if (!OperatingSystem.IsWindows())
+            return null;
+
+        try
+        {
+            var hwnd = NativeMethods.GetForegroundWindow();
+            if (hwnd == IntPtr.Zero)
+                return null;
+
+            NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == 0)
+                return null;
+
+            using var proc = Process.GetProcessById((int)pid);
+            var path = string.Empty;
+            try
+            {
+                path = proc.MainModule?.FileName ?? string.Empty;
+            }
+            catch
+            {
+                // access denied for some system processes
+            }
+
+            var name = string.IsNullOrWhiteSpace(path)
+                ? proc.ProcessName
+                : System.IO.Path.GetFileNameWithoutExtension(path);
+
+            return new AppIdentity(name, path);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+}

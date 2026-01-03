@@ -1,0 +1,93 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="maccy.Views.AuthorInfoWindow"
+        Width="420"
+        Height="300"
+        CanResize="False"
+        Topmost="True"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        SystemDecorations="None"
+        Background="Transparent">
+
+  <Border Background="#F7F8FA"
+          BorderBrush="#E5E7EB"
+          BorderThickness="1"
+          CornerRadius="16"
+          Padding="18"
+          BoxShadow="0 12 28 0 #22000000">
+
+    <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="10">
+
+      <Grid Grid.Row="0" Height="86">
+        <Border Width="84"
+                Height="84"
+                CornerRadius="42"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Top"
+                ClipToBounds="True"
+                BorderBrush="#FFFFFF"
+                BorderThickness="3"
+                BoxShadow="0 8 18 0 #1A000000">
+          <Image Name="AvatarImage" Stretch="UniformToFill" />
+        </Border>
+      </Grid>
+
+      <StackPanel Grid.Row="1" Spacing="10" Margin="0,-4,0,0">
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="10">
+          <Border Width="22" Height="22" CornerRadius="11" Background="#D1FAE5">
+            <TextBlock Text="" FontFamily="Segoe MDL2 Assets" Foreground="#10B981" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+          <TextBlock Text="作者：" Foreground="#111827" FontSize="13" VerticalAlignment="Center" />
+          <TextBlock Text="Achord" Foreground="#111827" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="10">
+          <Border Width="22" Height="22" CornerRadius="11" Background="#D1FAE5">
+            <TextBlock Text="" FontFamily="Segoe MDL2 Assets" Foreground="#10B981" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+          <TextBlock Text="Tel: 13160235855" Foreground="#111827" FontSize="13" VerticalAlignment="Center" />
+        </StackPanel>
+
+        <Button Background="Transparent" BorderThickness="0" Click="OnEmailClick">
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="10">
+            <Border Width="22" Height="22" CornerRadius="11" Background="#D1FAE5">
+              <TextBlock Text="" FontFamily="Segoe MDL2 Assets" Foreground="#10B981" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <TextBlock Text="Email: achordchan@gmail.com" Foreground="#2563EB" FontSize="13" VerticalAlignment="Center" />
+          </StackPanel>
+        </Button>
+      </StackPanel>
+
+      <Border Grid.Row="3" Height="1" Background="#E5E7EB" Margin="0,6,0,0" />
+
+      <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="18" Margin="0,4,0,0">
+        <Button Background="Transparent" BorderThickness="0" Click="OnProjectClick">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="" FontFamily="Segoe MDL2 Assets" Foreground="#10B981" FontSize="12" VerticalAlignment="Center" />
+            <TextBlock Text="项目地址" Foreground="#2563EB" FontSize="12" VerticalAlignment="Center" />
+          </StackPanel>
+        </Button>
+        <Button Background="Transparent" BorderThickness="0" Click="OnPrivacyClick">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="" FontFamily="Segoe MDL2 Assets" Foreground="#10B981" FontSize="12" VerticalAlignment="Center" />
+            <TextBlock Text="隐私条款" Foreground="#2563EB" FontSize="12" VerticalAlignment="Center" />
+          </StackPanel>
+        </Button>
+        <Button Background="Transparent" BorderThickness="0" Click="OnLicenseClick">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="" FontFamily="Segoe MDL2 Assets" Foreground="#10B981" FontSize="12" VerticalAlignment="Center" />
+            <TextBlock Text="开源协议" Foreground="#2563EB" FontSize="12" VerticalAlignment="Center" />
+          </StackPanel>
+        </Button>
+        <Button Background="Transparent" BorderThickness="0" Click="OnSponsorClick">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="" FontFamily="Segoe MDL2 Assets" Foreground="#10B981" FontSize="12" VerticalAlignment="Center" />
+            <TextBlock Text="赞助我" Foreground="#2563EB" FontSize="12" VerticalAlignment="Center" />
+          </StackPanel>
+        </Button>
+      </StackPanel>
+
+    </Grid>
+  </Border>
+</Window>

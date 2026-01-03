@@ -1,0 +1,476 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:maccy.ViewModels"
+        xmlns:m="using:maccy.Models"
+        xmlns:conv="using:maccy.Converters"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
+        x:Class="maccy.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="剪贴板"
+        Width="360"
+        Height="520"
+        Topmost="True"
+        ShowInTaskbar="False"
+        CanResize="False"
+        SystemDecorations="None"
+        Background="Transparent">
+
+    <Window.Styles>
+        <Style Selector="Button">
+            <Setter Property="Background" Value="{DynamicResource AppControlBackground}" />
+            <Setter Property="Foreground" Value="{DynamicResource AppForeground}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource AppBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+        <Style Selector="Button:pointerover">
+            <Setter Property="Background" Value="{DynamicResource AppControlHoverBackground}" />
+        </Style>
+        <Style Selector="Button:pressed">
+            <Setter Property="Background" Value="{DynamicResource AppControlPressedBackground}" />
+        </Style>
+
+        <Style Selector="Border#CommonMenuEntry:pointerover">
+            <Setter Property="Background" Value="{DynamicResource AppControlHoverBackground}" />
+        </Style>
+        <Style Selector="Border#CommonMenuEntry:pressed">
+            <Setter Property="Background" Value="{DynamicResource AppControlPressedBackground}" />
+        </Style>
+
+        <Style Selector="Border#AuthorEntry:pointerover">
+            <Setter Property="Background" Value="{DynamicResource AppControlHoverBackground}" />
+        </Style>
+        <Style Selector="Border#AuthorEntry:pressed">
+            <Setter Property="Background" Value="{DynamicResource AppControlPressedBackground}" />
+        </Style>
+
+        <Style Selector="Border.draggableRow">
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5" />
+            <Setter Property="Transitions">
+                <Transitions>
+                    <DoubleTransition Property="Opacity" Duration="0:0:0.12" />
+                    <TransformOperationsTransition Property="RenderTransform" Duration="0:0:0.12" />
+                </Transitions>
+            </Setter>
+        </Style>
+        <Style Selector="Border.draggableRow.dragging">
+            <Setter Property="Opacity" Value="0.55" />
+            <Setter Property="RenderTransform" Value="scale(1.03)" />
+            <Setter Property="Cursor" Value="SizeAll" />
+        </Style>
+
+        <Style Selector="ListBoxItem.drag-over /template/ ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AppControlPressedBackground}" />
+        </Style>
+        <Style Selector="ListBoxItem.drop-flash /template/ ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AppControlHoverBackground}" />
+        </Style>
+    </Window.Styles>
+
+    <Window.KeyBindings>
+        <KeyBinding Gesture="Escape" Command="{Binding HideCommand}" />
+        <KeyBinding Gesture="Enter" Command="{Binding ApplySelectedCommand}" />
+        <KeyBinding Gesture="Delete" Command="{Binding DeleteSelectedCommand}" />
+        <KeyBinding Gesture="Ctrl+P" Command="{Binding TogglePinCommand}" />
+        <KeyBinding Gesture="Ctrl+F" Command="{Binding FocusSearchCommand}" />
+    </Window.KeyBindings>
+
+    <Design.DataContext>
+        <!-- This only sets the DataContext for the previewer in an IDE,
+             to set the actual DataContext for runtime, set the DataContext property in code (look at App.axaml.cs) -->
+        <vm:MainWindowViewModel/>
+    </Design.DataContext>
+
+    <Border Background="{DynamicResource AppBackground}"
+            BorderBrush="{DynamicResource AppDivider}"
+            BorderThickness="1"
+            CornerRadius="14"
+            ClipToBounds="True"
+            PointerPressed="OnWindowPointerPressed">
+        <Grid>
+            <DockPanel LastChildFill="True">
+            <Border DockPanel.Dock="Top"
+                    Padding="10,8"
+                    Background="{DynamicResource AppPanelBackground}"
+                    BorderBrush="{DynamicResource AppDivider}"
+                    BorderThickness="0,0,0,1">
+                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                    <Border Padding="10,4"
+                            Name="AuthorEntry"
+                            Background="{DynamicResource AppControlBackground}"
+                            BorderBrush="{DynamicResource AppBorder}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            VerticalAlignment="Center"
+                            Cursor="Hand"
+                            PointerPressed="OnAuthorPressed">
+                        <TextBlock Text="Achord"
+                                   Foreground="{DynamicResource AppMutedForeground}"
+                                   FontSize="12"
+                                   VerticalAlignment="Center" />
+                    </Border>
+
+                    <TextBox Grid.Column="1"
+                             Name="SearchBox"
+                             Text="{Binding SearchText}"
+                             Watermark="搜索"
+                             Height="30"
+                             Background="{DynamicResource AppControlBackground}"
+                             Foreground="{DynamicResource AppForeground}"
+                             BorderBrush="{DynamicResource AppBorder}" />
+                </Grid>
+            </Border>
+
+            <Border DockPanel.Dock="Bottom"
+                    Padding="10,8"
+                    Background="{DynamicResource AppPanelBackground}"
+                    BorderBrush="{DynamicResource AppDivider}"
+                    BorderThickness="0,1,0,0">
+                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                    <TextBlock Grid.Column="0"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource AppMuted2Foreground}"
+                               FontSize="11"
+                               Text="" />
+                    <Button Grid.Column="1" Content="设置" Command="{Binding OpenPreferencesCommand}" />
+                    <Button Grid.Column="2" Content="清除" Click="OnClearAllClick" />
+                </Grid>
+            </Border>
+
+            <Grid RowDefinitions="Auto,*">
+                <Border Grid.Row="0"
+                        Name="CommonMenuEntry"
+                        IsVisible="{Binding ShowCommonRoot}"
+                        Background="Transparent"
+                        PointerPressed="OnCommonMenuPressed">
+                    <Grid RowDefinitions="Auto,Auto">
+                        <Border Grid.Row="0" Padding="10,7" Background="Transparent">
+                            <TextBlock Text="常用剪贴" Foreground="{DynamicResource AppForeground}" FontSize="13" />
+                        </Border>
+                        <Border Grid.Row="1" Height="1" Background="{DynamicResource AppDivider}" HorizontalAlignment="Stretch" />
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Row="1" IsVisible="{Binding ShowFavoritesFolder}" RowDefinitions="Auto,*">
+                    <Border Grid.Row="0"
+                            Padding="10,6"
+                            Background="{DynamicResource AppPanelBackground}"
+                            BorderBrush="{DynamicResource AppDivider}"
+                            BorderThickness="0,0,0,1">
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                            <Button Grid.Column="0" Content="返回" Command="{Binding BackCommonSectionCommand}" />
+                            <TextBlock Grid.Column="1" Text="常用剪贴" Foreground="{DynamicResource AppForeground}" VerticalAlignment="Center" />
+                        </Grid>
+                    </Border>
+
+                    <ListBox Grid.Row="1"
+                             Name="PinnedList"
+                             ItemsSource="{Binding PinnedFilteredItems}"
+                             SelectedItem="{Binding SelectedItem, Mode=TwoWay}"
+                             PointerEntered="HistoryListOnPointerEntered"
+                             PointerExited="HistoryListOnPointerExited"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             ScrollViewer.VerticalScrollBarVisibility="Visible"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.Styles>
+                            <Style Selector="ListBoxItem">
+                                <Setter Property="Padding" Value="0" />
+                                <Setter Property="Background" Value="Transparent" />
+                                <Setter Property="ContextMenu">
+                                    <ContextMenu>
+                                        <MenuItem Header="加入收藏/取消收藏"
+                                                  Click="OnTogglePinMenuClick" />
+                                        <MenuItem Header="添加备注"
+                                                  Click="OnEditNoteMenuClick" />
+                                        <Separator />
+                                        <MenuItem Header="删除"
+                                                  Click="OnDeleteMenuClick" />
+                                    </ContextMenu>
+                                </Setter>
+                            </Style>
+                            <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter">
+                                <Setter Property="Background" Value="{DynamicResource AppControlHoverBackground}" />
+                            </Style>
+                            <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+                                <Setter Property="Background" Value="{DynamicResource AppControlPressedBackground}" />
+                            </Style>
+                            <Style Selector="ListBoxItem:nth-child(odd) TextBlock.rowtext">
+                                <Setter Property="Foreground" Value="{DynamicResource AppMutedForeground}" />
+                            </Style>
+                            <Style Selector="ListBoxItem:nth-child(even) TextBlock.rowtext">
+                                <Setter Property="Foreground" Value="{DynamicResource AppForeground}" />
+                            </Style>
+                        </ListBox.Styles>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate x:DataType="m:ClipboardItem">
+                                <Grid RowDefinitions="Auto,Auto">
+                                    <Border Grid.Row="0" Padding="10,7"
+                                            Background="Transparent"
+                                            Classes="draggableRow"
+                                            PointerPressed="OnRowPointerPressed"
+                                            PointerMoved="OnRowPointerMoved"
+                                            PointerReleased="OnRowPointerReleased"
+                                            PointerEntered="HistoryRowOnPointerEntered"
+                                            PointerExited="HistoryRowOnPointerExited">
+                                        <Grid ColumnDefinitions="Auto,Auto,*"
+                                              RowDefinitions="Auto"
+                                              ColumnSpacing="10">
+
+                                            <TextBlock Grid.Column="0"
+                                                       Width="16"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="#D8C05E"
+                                                       FontSize="12"
+                                                       Text="★"
+                                                       IsVisible="{Binding Pinned}" />
+
+                                            <Border Grid.Column="1"
+                                                    Width="18"
+                                                    Height="18"
+                                                    CornerRadius="4"
+                                                    Background="{DynamicResource AppControlBackground}"
+                                                    VerticalAlignment="Center"
+                                                    IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Text}">
+                                                <TextBlock Text="T" Foreground="{DynamicResource AppMutedForeground}" FontSize="10" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+
+                                            <Border Grid.Column="1"
+                                                    Width="18"
+                                                    Height="18"
+                                                    CornerRadius="4"
+                                                    Background="{DynamicResource AppControlBackground}"
+                                                    VerticalAlignment="Center"
+                                                    IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=FileList}">
+                                                <TextBlock Text="F" Foreground="{DynamicResource AppMutedForeground}" FontSize="10" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+
+                                            <Border Grid.Column="1"
+                                                    Width="36"
+                                                    Height="36"
+                                                    CornerRadius="6"
+                                                    Background="{DynamicResource AppControlBackground}"
+                                                    VerticalAlignment="Center"
+                                                    IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Image}">
+                                                <Image Width="36"
+                                                       Height="36"
+                                                       Stretch="UniformToFill"
+                                                       Source="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToBitmapConverter.Instance}}" />
+                                            </Border>
+
+                                            <TextBlock Grid.Column="2"
+                                                       Grid.Row="0"
+                                                       Text="{Binding Text, Converter={x:Static conv:TextToSingleLineConverter.Instance}}"
+                                                       Classes="rowtext"
+                                                       FontSize="13"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Text}">
+                                            </TextBlock>
+
+                                            <TextBlock Grid.Column="2"
+                                                       Grid.Row="0"
+                                                       Text="{Binding FilePaths, Converter={x:Static conv:FilePathsToSummaryStringConverter.Instance}}"
+                                                       Classes="rowtext"
+                                                       FontSize="13"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=FileList}">
+                                            </TextBlock>
+
+                                            <TextBlock Grid.Column="2"
+                                                       Grid.Row="0"
+                                                       Text="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToImageInfoConverter.Instance}}"
+                                                       Classes="rowtext"
+                                                       FontSize="13"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Image}">
+                                            </TextBlock>
+                                        </Grid>
+                                    </Border>
+
+                                    <Border Grid.Row="1"
+                                            Height="1"
+                                            Background="{DynamicResource AppDivider}"
+                                            HorizontalAlignment="Stretch" />
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+
+                <ListBox Grid.Row="1"
+                         Name="HistoryList"
+                         IsVisible="{Binding ShowCommonRoot}"
+                         ItemsSource="{Binding FilteredItems}"
+                         SelectedItem="{Binding SelectedItem, Mode=TwoWay}"
+                         PointerEntered="HistoryListOnPointerEntered"
+                         PointerExited="HistoryListOnPointerExited"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         ScrollViewer.VerticalScrollBarVisibility="Visible"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.Styles>
+                        <Style Selector="ListBoxItem">
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="Background" Value="Transparent" />
+                            <Setter Property="ContextMenu">
+                                <ContextMenu>
+                                    <MenuItem Header="加入收藏/取消收藏"
+                                              Click="OnTogglePinMenuClick" />
+                                    <MenuItem Header="添加备注"
+                                              Click="OnEditNoteMenuClick" />
+                                    <Separator />
+                                    <MenuItem Header="删除"
+                                              Click="OnDeleteMenuClick" />
+                                </ContextMenu>
+                            </Setter>
+                        </Style>
+                        <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter">
+                            <Setter Property="Background" Value="{DynamicResource AppControlHoverBackground}" />
+                        </Style>
+                        <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+                            <Setter Property="Background" Value="{DynamicResource AppControlPressedBackground}" />
+                        </Style>
+                        <Style Selector="ListBoxItem:nth-child(odd) TextBlock.rowtext">
+                            <Setter Property="Foreground" Value="{DynamicResource AppMutedForeground}" />
+                        </Style>
+                        <Style Selector="ListBoxItem:nth-child(even) TextBlock.rowtext">
+                            <Setter Property="Foreground" Value="{DynamicResource AppForeground}" />
+                        </Style>
+                    </ListBox.Styles>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate x:DataType="m:ClipboardItem">
+                            <Grid RowDefinitions="Auto,Auto">
+                                <Border Grid.Row="0" Padding="10,7"
+                                        Background="Transparent"
+                                        Classes="draggableRow"
+                                        PointerPressed="OnRowPointerPressed"
+                                        PointerMoved="OnRowPointerMoved"
+                                        PointerReleased="OnRowPointerReleased"
+                                        PointerEntered="HistoryRowOnPointerEntered"
+                                        PointerExited="HistoryRowOnPointerExited">
+                                    <Grid ColumnDefinitions="Auto,Auto,*"
+                                          RowDefinitions="Auto"
+                                          ColumnSpacing="10">
+
+                                        <TextBlock Grid.Column="0"
+                                                   Width="16"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="#D8C05E"
+                                                   FontSize="12"
+                                                   Text="★"
+                                                   IsVisible="{Binding Pinned}" />
+
+                                        <Border Grid.Column="1"
+                                                Width="18"
+                                                Height="18"
+                                                CornerRadius="4"
+                                                Background="{DynamicResource AppControlBackground}"
+                                                VerticalAlignment="Center"
+                                                IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Text}">
+                                            <TextBlock Text="T" Foreground="{DynamicResource AppMutedForeground}" FontSize="10" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+
+                                        <Border Grid.Column="1"
+                                                Width="18"
+                                                Height="18"
+                                                CornerRadius="4"
+                                                Background="{DynamicResource AppControlBackground}"
+                                                VerticalAlignment="Center"
+                                                IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=FileList}">
+                                            <TextBlock Text="F" Foreground="{DynamicResource AppMutedForeground}" FontSize="10" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+
+                                        <Border Grid.Column="1"
+                                                Width="36"
+                                                Height="36"
+                                                CornerRadius="6"
+                                                Background="{DynamicResource AppControlBackground}"
+                                                VerticalAlignment="Center"
+                                                IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Image}">
+                                            <Image Width="36"
+                                                   Height="36"
+                                                   Stretch="UniformToFill"
+                                                   Source="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToBitmapConverter.Instance}}" />
+                                        </Border>
+
+                                        <TextBlock Grid.Column="2"
+                                                   Grid.Row="0"
+                                                   Text="{Binding Text, Converter={x:Static conv:TextToSingleLineConverter.Instance}}"
+                                                   Classes="rowtext"
+                                                   FontSize="13"
+                                                   TextWrapping="NoWrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Text}">
+                                        </TextBlock>
+
+                                        <TextBlock Grid.Column="2"
+                                                   Grid.Row="0"
+                                                   Text="{Binding FilePaths, Converter={x:Static conv:FilePathsToSummaryStringConverter.Instance}}"
+                                                   Classes="rowtext"
+                                                   FontSize="13"
+                                                   TextWrapping="NoWrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=FileList}">
+                                        </TextBlock>
+
+                                        <TextBlock Grid.Column="2"
+                                                   Grid.Row="0"
+                                                   Text="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToImageInfoConverter.Instance}}"
+                                                   Classes="rowtext"
+                                                   FontSize="13"
+                                                   TextWrapping="NoWrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Image}">
+                                        </TextBlock>
+                                    </Grid>
+                                </Border>
+
+                                <Border Grid.Row="1"
+                                        Height="1"
+                                        Background="{DynamicResource AppDivider}"
+                                        HorizontalAlignment="Stretch" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Grid>
+            </DockPanel>
+
+            <Canvas IsHitTestVisible="False">
+                <Border Name="DragGhostRoot"
+                        IsVisible="False"
+                        Background="{DynamicResource AppPanelBackground}"
+                        BorderBrush="{DynamicResource AppBorder}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Padding="12,8"
+                        Opacity="0.95">
+                    <TextBlock Name="DragGhostText"
+                               Foreground="{DynamicResource AppForeground}"
+                               FontSize="12"
+                               TextWrapping="NoWrap"
+                               TextTrimming="CharacterEllipsis" />
+                </Border>
+            </Canvas>
+
+            <Border HorizontalAlignment="Center"
+                    VerticalAlignment="Bottom"
+                    Margin="12"
+                    Padding="12,8"
+                    Background="{DynamicResource AppPreviewBackground}"
+                    CornerRadius="8"
+                    IsVisible="{Binding ToastMessage, Converter={x:Static conv:NotNullOrEmptyToBoolConverter.Instance}}">
+                <TextBlock Text="{Binding ToastMessage}"
+                           Foreground="{DynamicResource AppForeground}" />
+            </Border>
+        </Grid>
+    </Border>
+
+</Window>
