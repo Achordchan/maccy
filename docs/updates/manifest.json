@@ -1,0 +1,14 @@
+{
+  "appId": "maccy",
+  "latest": {
+    "version": "0.0.0",
+    "mandatory": false,
+    "notes": "",
+    "publishedAt": "",
+    "installer": {
+      "url": "",
+      "sha256": "",
+      "size": 0
+    }
+  }
+}
