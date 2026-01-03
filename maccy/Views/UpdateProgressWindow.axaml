@@ -1,0 +1,17 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="maccy.Views.UpdateProgressWindow"
+        Width="520"
+        Height="170"
+        CanResize="False"
+        Title="正在下载更新"
+        Background="{DynamicResource AppBackground}">
+
+  <Border Padding="16" Background="{DynamicResource AppBackground}">
+    <StackPanel Spacing="10">
+      <TextBlock x:Name="StatusText" Text="正在下载..." FontSize="13" Foreground="{DynamicResource AppForeground}" />
+      <ProgressBar x:Name="Progress" Height="14" Minimum="0" Maximum="100" Value="0" />
+      <TextBlock x:Name="DetailText" Text="" FontSize="12" Foreground="{DynamicResource AppMutedForeground}" />
+    </StackPanel>
+  </Border>
+</Window>

@@ -31,9 +31,16 @@ public partial class App : Application
     private WindowsAutoStartService? _autoStart;
     private PreferencesWindow? _prefsWindow;
 
+    private UpdateCoordinator? _updateCoordinator;
+    private DispatcherTimer? _updateCheckTimer;
+
+    private bool _allowExit;
+
     private DispatcherTimer? _autoHideRetryTimer;
 
     private IClassicDesktopStyleApplicationLifetime? _desktop;
+
+    private const string UpdateManifestUrl = "https://gitee.com/Achordchan/maccy/raw/master/docs/updates/manifest.json";
 
     private bool HasVisibleOwnedWindows(Window owner)
     {
@@ -69,7 +76,7 @@ public partial class App : Application
         menu.Items.Add(prefs);
 
         var update = new NativeMenuItem("检测更新...");
-        update.Click += (_, _) => Dispatcher.UIThread.Post(OpenUpdatesPage);
+        update.Click += (_, _) => Dispatcher.UIThread.Post(() => TriggerManualUpdateCheck());
         menu.Items.Add(update);
 
         menu.Items.Add(new NativeMenuItemSeparator());
@@ -102,7 +109,7 @@ public partial class App : Application
             return;
         }
 
-        var vm = new PreferencesWindowViewModel(_settings, _autoStart, OpenUpdatesPage);
+        var vm = new PreferencesWindowViewModel(_settings, _autoStart, TriggerManualUpdateCheck);
         var w = new PreferencesWindow
         {
             DataContext = vm,
@@ -121,16 +128,76 @@ public partial class App : Application
         w.Activate();
     }
 
-    private void OpenUpdatesPage()
+    private void TriggerManualUpdateCheck()
     {
         try
         {
-            var url = "https://gitee.com/";
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            _ = _updateCoordinator?.CheckAndPromptAsync(manual: true);
         }
         catch
         {
         }
+    }
+
+    private void ShutdownForUpdate()
+    {
+        try
+        {
+            _allowExit = true;
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            _prefsWindow?.Close();
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            _desktop?.Shutdown();
+        }
+        catch
+        {
+        }
+    }
+
+    private void StartUpdateChecks(MainWindow window)
+    {
+        // Startup check (delayed slightly to avoid impacting startup experience)
+        DispatcherTimer.RunOnce(() =>
+        {
+            try
+            {
+                _ = _updateCoordinator?.CheckAndPromptAsync(manual: false);
+            }
+            catch
+            {
+            }
+        }, TimeSpan.FromSeconds(6));
+
+        _updateCheckTimer?.Stop();
+        _updateCheckTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromHours(12),
+        };
+
+        _updateCheckTimer.Tick += (_, _) =>
+        {
+            try
+            {
+                _ = _updateCoordinator?.CheckAndPromptAsync(manual: false);
+            }
+            catch
+            {
+            }
+        };
+
+        _updateCheckTimer.Start();
     }
 
     private void ApplyTheme(AppSettings s)
@@ -229,8 +296,13 @@ public partial class App : Application
 
             window.Closing += (_, e) =>
             {
-                e.Cancel = true;
-                window.Hide();
+                // For normal user closes, keep background behavior.
+                // For update installs we will set _allowExit to true.
+                if (!_allowExit)
+                {
+                    e.Cancel = true;
+                    window.Hide();
+                }
             };
 
             var clipboard = window.Clipboard;
@@ -253,9 +325,16 @@ public partial class App : Application
             vm.RequestHide += () => window.Hide();
             vm.RequestFocusSearch += () => window.FocusSearch();
             vm.RequestOpenPreferences += () => ShowPreferences(window);
-            vm.RequestCheckUpdates += () => OpenUpdatesPage();
+            vm.RequestCheckUpdates += () => TriggerManualUpdateCheck();
             vm.RequestEditNote += item => window.BeginEditNote(item);
             window.DataContext = vm;
+
+            var updateService = new UpdateService(UpdateManifestUrl);
+            _updateCoordinator = new UpdateCoordinator(
+                updateService,
+                () => (_prefsWindow is not null && _prefsWindow.IsVisible) ? _prefsWindow : window,
+                ShutdownForUpdate);
+            StartUpdateChecks(window);
 
             if (_settings is not null)
             {
