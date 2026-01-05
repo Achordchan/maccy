@@ -159,7 +159,7 @@ public sealed class UpdateCoordinator
 
         try
         {
-            Process.Start(new ProcessStartInfo(installerPath) { UseShellExecute = true });
+            StartInstallerAfterExit(installerPath);
         }
         catch (Exception ex)
         {
@@ -168,6 +168,25 @@ public sealed class UpdateCoordinator
         }
 
         ShutdownApp();
+    }
+
+    private static void StartInstallerAfterExit(string installerPath)
+    {
+        var p = installerPath ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(p))
+            throw new ArgumentException("installer path is empty", nameof(installerPath));
+
+        // Avoid running the installer while our process still holds file locks (maccy.exe).
+        // Spawn a detached shell that waits briefly, then starts the installer.
+        var quoted = p.Replace("\"", "\"\"");
+        var args = "/C ping 127.0.0.1 -n 3 >nul & start \"\" \"" + quoted + "\"";
+
+        Process.Start(new ProcessStartInfo("cmd.exe", args)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+        });
     }
 
     private async Task ShowMessageAsync(string title, string message)

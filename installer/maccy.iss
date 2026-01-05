@@ -20,6 +20,9 @@
 AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersionShort}
+AppMutex=maccy_mutex
+CloseApplications=yes
+RestartApplications=no
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}

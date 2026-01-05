@@ -8,6 +8,7 @@ using System.ComponentModel;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Diagnostics;
+using System.Threading;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
 using Avalonia.Threading;
@@ -39,6 +40,10 @@ public partial class App : Application
     private DispatcherTimer? _autoHideRetryTimer;
 
     private IClassicDesktopStyleApplicationLifetime? _desktop;
+
+    private Mutex? _appMutex;
+
+    private const string AppMutexName = "maccy_mutex";
 
     private const string UpdateManifestUrl = "https://gitee.com/Achordchan/maccy/raw/master/docs/updates/manifest.json";
 
@@ -314,6 +319,15 @@ public partial class App : Application
             _desktop = desktop;
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
+            try
+            {
+                _appMutex = new Mutex(false, AppMutexName);
+            }
+            catch
+            {
+                _appMutex = null;
+            }
+
             // Avoid duplicate validations from both Avalonia and the CommunityToolkit. 
             // More info: https://docs.avaloniaui.net/docs/guides/development-guides/data-validation#manage-validationplugins
             DisableAvaloniaDataAnnotationValidation();
@@ -449,6 +463,15 @@ public partial class App : Application
 
                 _persistence?.Dispose();
                 _persistence = null;
+
+                try
+                {
+                    _appMutex?.Dispose();
+                }
+                catch
+                {
+                }
+                _appMutex = null;
 
                 TrayIcon.SetIcons(this, null);
             };
