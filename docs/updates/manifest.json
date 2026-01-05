@@ -3,12 +3,12 @@
   "latest": {
     "version": "1.0.1",
     "mandatory": false,
-    "notes": "",
-    "publishedAt": "2026-01-05T15:33:00Z",
+    "notes": "捕获文件功能开放\n修复已知BUG",
+    "publishedAt": "2026-01-06T23:33:00Z",
     "installer": {
       "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.1/maccy-1.0.1-setup.exe",
-      "sha256": "",
-      "size": 0
+      "sha256": "816C5E43174E816EE74A1F0E29A9622D3B02EE2E3C2B1598BEED4382F7BF963F",
+      "size": 9765566
     }
   }
 }
