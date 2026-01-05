@@ -35,8 +35,38 @@ public sealed class ClipboardApplyService
                 if (paths is null || paths.Length == 0)
                     return;
 
+                var resolved = paths
+                    .Select((p, i) =>
+                    {
+                        try
+                        {
+                            var name = Path.GetFileName(p);
+                            if (string.IsNullOrWhiteSpace(name))
+                                return null;
+
+                            var cached = Path.Combine(AppPaths.FilesRoot, item.Id.ToString("N"), i.ToString("D4") + "_" + name);
+                            if (File.Exists(cached))
+                                return cached;
+
+                            if (!string.IsNullOrWhiteSpace(p) && File.Exists(p))
+                                return p;
+
+                            return null;
+                        }
+                        catch
+                        {
+                            return null;
+                        }
+                    })
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Cast<string>()
+                    .ToArray();
+
+                if (resolved.Length == 0)
+                    return;
+
                 var data = new DataObject();
-                data.Set("FileNames", paths);
+                data.Set("FileNames", resolved);
                 await _clipboard.SetDataObjectAsync(data);
                 return;
             }

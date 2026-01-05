@@ -20,11 +20,34 @@ public sealed class ClipboardCaptureService
     private readonly IClipboard _clipboard;
     private readonly Func<AppIdentity?>? _foregroundAppResolver;
 
+    private string _captureFileExtensions = string.Empty;
+    private HashSet<string>? _allowedFileExtensions;
+
+    private static readonly HashSet<string> DangerousFileExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".exe", ".msi", ".msp", ".msix", ".appx",
+        ".bat", ".cmd", ".com", ".scr", ".pif",
+        ".ps1", ".psm1", ".psd1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".hta",
+        ".jar", ".reg", ".lnk", ".url", ".cpl", ".dll",
+    };
+
+    public long CaptureFileMaxBytes { get; set; } = 20L * 1024 * 1024;
+
     public bool CaptureText { get; set; } = true;
 
     public bool CaptureImages { get; set; } = true;
 
     public bool CaptureFiles { get; set; } = true;
+
+    public string CaptureFileExtensions
+    {
+        get => _captureFileExtensions;
+        set
+        {
+            _captureFileExtensions = value ?? string.Empty;
+            _allowedFileExtensions = ParseExtensionList(_captureFileExtensions);
+        }
+    }
 
     public ClipboardHistoryService History { get; }
 
@@ -115,9 +138,33 @@ public sealed class ClipboardCaptureService
                         }
                     }
 
-                    var bytes = paths.Sum(p => (long)p.Length * 2);
+                    paths = FilterFilePaths(paths);
+                    if (paths.Count == 0)
+                        return;
+
+                    var id = Guid.NewGuid();
+                    CacheFileCopies(id, paths);
+
+                    long bytes;
+                    try
+                    {
+                        var dir = Path.Combine(AppPaths.FilesRoot, id.ToString("N"));
+                        bytes = Directory.Exists(dir)
+                            ? Directory.GetFiles(dir).Sum(p => File.Exists(p) ? new FileInfo(p).Length : 0)
+                            : 0;
+                    }
+                    catch
+                    {
+                        bytes = 0;
+                    }
+
+                    if (bytes <= 0)
+                        bytes = paths.Sum(TryGetFileSizeBytes);
+
+                    if (bytes <= 0)
+                        bytes = paths.Sum(p => (long)p.Length * 2);
                     History.Add(new ClipboardItem(
-                        Guid.NewGuid(),
+                        id,
                         ClipboardContentKind.FileList,
                         DateTimeOffset.Now,
                         bytes,
@@ -256,6 +303,38 @@ public sealed class ClipboardCaptureService
             DebugLogFormats(formats);
     }
 
+    private static void CacheFileCopies(Guid itemId, IReadOnlyList<string> paths)
+    {
+        try
+        {
+            var dir = Path.Combine(AppPaths.FilesRoot, itemId.ToString("N"));
+            Directory.CreateDirectory(dir);
+
+            for (var i = 0; i < paths.Count; i++)
+            {
+                var src = paths[i];
+                if (string.IsNullOrWhiteSpace(src) || !File.Exists(src))
+                    continue;
+
+                var name = Path.GetFileName(src);
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+
+                var dest = Path.Combine(dir, i.ToString("D4") + "_" + name);
+                try
+                {
+                    File.Copy(src, dest, overwrite: true);
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
     private static void DebugLogFormats(IReadOnlyList<string> formats)
     {
 #if DEBUG
@@ -293,6 +372,107 @@ public sealed class ClipboardCaptureService
         }
 
         return null;
+    }
+
+    private List<string> FilterFilePaths(List<string> paths)
+    {
+        var allowAll = _allowedFileExtensions is null || _allowedFileExtensions.Count == 0;
+        var result = new List<string>(paths.Count);
+
+        foreach (var p in paths)
+        {
+            if (string.IsNullOrWhiteSpace(p))
+                continue;
+
+            try
+            {
+                if (Directory.Exists(p))
+                    continue;
+            }
+            catch
+            {
+            }
+
+            var ext = string.Empty;
+            try
+            {
+                ext = Path.GetExtension(p) ?? string.Empty;
+            }
+            catch
+            {
+                ext = string.Empty;
+            }
+
+            if (!string.IsNullOrWhiteSpace(ext) && !ext.StartsWith('.'))
+                ext = "." + ext;
+
+            if (!string.IsNullOrWhiteSpace(ext) && DangerousFileExtensions.Contains(ext))
+                continue;
+
+            if (!allowAll)
+            {
+                if (string.IsNullOrWhiteSpace(ext))
+                    continue;
+                if (_allowedFileExtensions is not null && !_allowedFileExtensions.Contains(ext))
+                    continue;
+            }
+
+            if (CaptureFileMaxBytes > 0)
+            {
+                var size = TryGetFileSizeBytes(p);
+                if (size > 0 && size > CaptureFileMaxBytes)
+                    continue;
+            }
+
+            result.Add(p);
+        }
+
+        return result;
+    }
+
+    private static HashSet<string>? ParseExtensionList(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        var parts = text
+            .Split(new[] { ',', ';', ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(p => p.Trim())
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToList();
+
+        if (parts.Count == 0)
+            return null;
+
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in parts)
+        {
+            var ext = p;
+            if (!ext.StartsWith('.'))
+                ext = "." + ext;
+
+            if (DangerousFileExtensions.Contains(ext))
+                continue;
+
+            set.Add(ext);
+        }
+
+        return set.Count > 0 ? set : null;
+    }
+
+    private static long TryGetFileSizeBytes(string path)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                return 0;
+
+            return new FileInfo(path).Length;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     private static bool IsImagePath(string path)

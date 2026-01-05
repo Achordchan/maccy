@@ -217,7 +217,7 @@
                                             PointerReleased="OnRowPointerReleased"
                                             PointerEntered="HistoryRowOnPointerEntered"
                                             PointerExited="HistoryRowOnPointerExited">
-                                        <Grid ColumnDefinitions="Auto,Auto,*"
+                                        <Grid ColumnDefinitions="Auto,*,Auto"
                                               RowDefinitions="Auto"
                                               ColumnSpacing="10">
 
@@ -229,40 +229,37 @@
                                                        Text="★"
                                                        IsVisible="{Binding Pinned}" />
 
-                                            <Border Grid.Column="1"
-                                                    Width="18"
-                                                    Height="18"
-                                                    CornerRadius="4"
-                                                    Background="{DynamicResource AppControlBackground}"
-                                                    VerticalAlignment="Center"
-                                                    IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Text}">
-                                                <TextBlock Text="T" Foreground="{DynamicResource AppMutedForeground}" FontSize="10" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                            </Border>
-
-                                            <Border Grid.Column="1"
-                                                    Width="18"
+                                            <Border Grid.Column="2"
+                                                    Width="44"
                                                     Height="18"
                                                     CornerRadius="4"
                                                     Background="{DynamicResource AppControlBackground}"
                                                     VerticalAlignment="Center"
                                                     IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=FileList}">
-                                                <TextBlock Text="F" Foreground="{DynamicResource AppMutedForeground}" FontSize="10" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding FilePaths, Converter={x:Static conv:FilePathsToExtensionTagConverter.Instance}}"
+                                                           Foreground="{DynamicResource AppMutedForeground}"
+                                                           FontSize="9"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis" />
                                             </Border>
 
-                                            <Border Grid.Column="1"
-                                                    Width="36"
-                                                    Height="36"
-                                                    CornerRadius="6"
+                                            <Border Grid.Column="2"
+                                                    Width="44"
+                                                    Height="18"
+                                                    CornerRadius="4"
                                                     Background="{DynamicResource AppControlBackground}"
                                                     VerticalAlignment="Center"
                                                     IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Image}">
-                                                <Image Width="36"
-                                                       Height="36"
-                                                       Stretch="UniformToFill"
-                                                       Source="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToBitmapConverter.Instance}}" />
+                                                <TextBlock Text="IMG"
+                                                           Foreground="{DynamicResource AppMutedForeground}"
+                                                           FontSize="9"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis" />
                                             </Border>
 
-                                            <TextBlock Grid.Column="2"
+                                            <TextBlock Grid.Column="1"
                                                        Grid.Row="0"
                                                        Text="{Binding Text, Converter={x:Static conv:TextToSingleLineConverter.Instance}}"
                                                        Classes="rowtext"
@@ -272,7 +269,7 @@
                                                        IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Text}">
                                             </TextBlock>
 
-                                            <TextBlock Grid.Column="2"
+                                            <TextBlock Grid.Column="1"
                                                        Grid.Row="0"
                                                        Text="{Binding FilePaths, Converter={x:Static conv:FilePathsToSummaryStringConverter.Instance}}"
                                                        Classes="rowtext"
@@ -282,15 +279,31 @@
                                                        IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=FileList}">
                                             </TextBlock>
 
-                                            <TextBlock Grid.Column="2"
-                                                       Grid.Row="0"
-                                                       Text="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToImageInfoConverter.Instance}}"
-                                                       Classes="rowtext"
-                                                       FontSize="13"
-                                                       TextWrapping="NoWrap"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Image}">
-                                            </TextBlock>
+                                            <Grid Grid.Column="1"
+                                                  ColumnDefinitions="Auto,*"
+                                                  ColumnSpacing="10"
+                                                  VerticalAlignment="Center"
+                                                  IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Image}">
+                                                <Border Grid.Column="0"
+                                                        Width="36"
+                                                        Height="36"
+                                                        CornerRadius="6"
+                                                        Background="{DynamicResource AppControlBackground}"
+                                                        VerticalAlignment="Center">
+                                                    <Image Width="36"
+                                                           Height="36"
+                                                           Stretch="UniformToFill"
+                                                           Source="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToBitmapConverter.Instance}}" />
+                                                </Border>
+
+                                                <TextBlock Grid.Column="1"
+                                                           Grid.Row="0"
+                                                           Text="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToImageInfoConverter.Instance}}"
+                                                           Classes="rowtext"
+                                                           FontSize="13"
+                                                           TextWrapping="NoWrap"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </Grid>
                                         </Grid>
                                     </Border>
 
@@ -355,7 +368,7 @@
                                         PointerReleased="OnRowPointerReleased"
                                         PointerEntered="HistoryRowOnPointerEntered"
                                         PointerExited="HistoryRowOnPointerExited">
-                                    <Grid ColumnDefinitions="Auto,Auto,*"
+                                    <Grid ColumnDefinitions="Auto,*,Auto"
                                           RowDefinitions="Auto"
                                           ColumnSpacing="10">
 
@@ -367,40 +380,37 @@
                                                    Text="★"
                                                    IsVisible="{Binding Pinned}" />
 
-                                        <Border Grid.Column="1"
-                                                Width="18"
-                                                Height="18"
-                                                CornerRadius="4"
-                                                Background="{DynamicResource AppControlBackground}"
-                                                VerticalAlignment="Center"
-                                                IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Text}">
-                                            <TextBlock Text="T" Foreground="{DynamicResource AppMutedForeground}" FontSize="10" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                        </Border>
-
-                                        <Border Grid.Column="1"
-                                                Width="18"
+                                        <Border Grid.Column="2"
+                                                Width="44"
                                                 Height="18"
                                                 CornerRadius="4"
                                                 Background="{DynamicResource AppControlBackground}"
                                                 VerticalAlignment="Center"
                                                 IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=FileList}">
-                                            <TextBlock Text="F" Foreground="{DynamicResource AppMutedForeground}" FontSize="10" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding FilePaths, Converter={x:Static conv:FilePathsToExtensionTagConverter.Instance}}"
+                                                       Foreground="{DynamicResource AppMutedForeground}"
+                                                       FontSize="9"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis" />
                                         </Border>
 
-                                        <Border Grid.Column="1"
-                                                Width="36"
-                                                Height="36"
-                                                CornerRadius="6"
+                                        <Border Grid.Column="2"
+                                                Width="44"
+                                                Height="18"
+                                                CornerRadius="4"
                                                 Background="{DynamicResource AppControlBackground}"
                                                 VerticalAlignment="Center"
                                                 IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Image}">
-                                            <Image Width="36"
-                                                   Height="36"
-                                                   Stretch="UniformToFill"
-                                                   Source="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToBitmapConverter.Instance}}" />
+                                            <TextBlock Text="IMG"
+                                                       Foreground="{DynamicResource AppMutedForeground}"
+                                                       FontSize="9"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis" />
                                         </Border>
 
-                                        <TextBlock Grid.Column="2"
+                                        <TextBlock Grid.Column="1"
                                                    Grid.Row="0"
                                                    Text="{Binding Text, Converter={x:Static conv:TextToSingleLineConverter.Instance}}"
                                                    Classes="rowtext"
@@ -410,7 +420,7 @@
                                                    IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Text}">
                                         </TextBlock>
 
-                                        <TextBlock Grid.Column="2"
+                                        <TextBlock Grid.Column="1"
                                                    Grid.Row="0"
                                                    Text="{Binding FilePaths, Converter={x:Static conv:FilePathsToSummaryStringConverter.Instance}}"
                                                    Classes="rowtext"
@@ -420,15 +430,31 @@
                                                    IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=FileList}">
                                         </TextBlock>
 
-                                        <TextBlock Grid.Column="2"
-                                                   Grid.Row="0"
-                                                   Text="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToImageInfoConverter.Instance}}"
-                                                   Classes="rowtext"
-                                                   FontSize="13"
-                                                   TextWrapping="NoWrap"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Image}">
-                                        </TextBlock>
+                                        <Grid Grid.Column="1"
+                                              ColumnDefinitions="Auto,*"
+                                              ColumnSpacing="10"
+                                              VerticalAlignment="Center"
+                                              IsVisible="{Binding Kind, Converter={x:Static conv:KindEqualsConverter.Instance}, ConverterParameter=Image}">
+                                            <Border Grid.Column="0"
+                                                    Width="36"
+                                                    Height="36"
+                                                    CornerRadius="6"
+                                                    Background="{DynamicResource AppControlBackground}"
+                                                    VerticalAlignment="Center">
+                                                <Image Width="36"
+                                                       Height="36"
+                                                       Stretch="UniformToFill"
+                                                       Source="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToBitmapConverter.Instance}}" />
+                                            </Border>
+
+                                            <TextBlock Grid.Column="1"
+                                                       Grid.Row="0"
+                                                       Text="{Binding ImageFilePath, Converter={x:Static conv:ImagePathToImageInfoConverter.Instance}}"
+                                                       Classes="rowtext"
+                                                       FontSize="13"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </Grid>
                                     </Grid>
                                 </Border>
 
@@ -464,11 +490,11 @@
                     VerticalAlignment="Bottom"
                     Margin="12"
                     Padding="12,8"
-                    Background="{DynamicResource AppPreviewBackground}"
+                    Background="{DynamicResource AppToastBackground}"
                     CornerRadius="8"
                     IsVisible="{Binding ToastMessage, Converter={x:Static conv:NotNullOrEmptyToBoolConverter.Instance}}">
                 <TextBlock Text="{Binding ToastMessage}"
-                           Foreground="{DynamicResource AppForeground}" />
+                           Foreground="{DynamicResource AppToastForeground}" />
             </Border>
         </Grid>
     </Border>

@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -114,7 +115,7 @@ public sealed class UpdateService
         var current = NormalizeVersion(GetCurrentVersionString());
 
         if (!TryParseVersion(latestVersion, out var latestV) || !TryParseVersion(current, out var currentV))
-            return UpdateCheckResult.Error("version parse failed");
+            return UpdateCheckResult.Error("version parse failed (latest=" + latestVersion + ", current=" + current + ")");
 
         if (latestV <= currentV)
             return UpdateCheckResult.UpToDate();
@@ -229,7 +230,11 @@ public sealed class UpdateService
         if (v.StartsWith("v", StringComparison.OrdinalIgnoreCase))
             v = v.Substring(1);
 
-        return v.Trim();
+        v = v.Trim();
+
+        // Extract a numeric version token so ProductVersion like "1.0.0+abc" or "1.0.0.0 (dev)" won't break parsing.
+        var m = Regex.Match(v, @"\d+(?:\.\d+){0,3}");
+        return m.Success ? m.Value : string.Empty;
     }
 
     private static bool TryParseVersion(string v, out Version version)
@@ -241,14 +246,34 @@ public sealed class UpdateService
         }
 
         var parts = v.Split('.', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length >= 3)
+        if (parts.Length >= 1)
         {
-            if (int.TryParse(parts[0], out var major) && int.TryParse(parts[1], out var minor) && int.TryParse(parts[2], out var build))
+            if (!int.TryParse(parts[0], out var major))
+                goto Failed;
+
+            var minor = 0;
+            var build = 0;
+            var revision = 0;
+
+            if (parts.Length >= 2 && !int.TryParse(parts[1], out minor))
+                goto Failed;
+            if (parts.Length >= 3 && !int.TryParse(parts[2], out build))
+                goto Failed;
+            if (parts.Length >= 4 && !int.TryParse(parts[3], out revision))
+                goto Failed;
+
+            version = parts.Length switch
             {
-                version = new Version(major, minor, build);
-                return true;
-            }
+                1 => new Version(major, 0),
+                2 => new Version(major, minor),
+                3 => new Version(major, minor, build),
+                _ => new Version(major, minor, build, revision),
+            };
+
+            return true;
         }
+
+        Failed:
 
         version = new Version(0, 0, 0);
         return false;

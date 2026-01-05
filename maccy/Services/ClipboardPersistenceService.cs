@@ -142,7 +142,47 @@ public sealed class ClipboardPersistenceService : IDisposable
             if (paths is null || paths.Length == 0)
                 return null;
 
-            var bytes = paths.Sum(p => (long)p.Length * 2);
+            var hasAnySource = false;
+            try
+            {
+                hasAnySource = paths.Any(p => !string.IsNullOrWhiteSpace(p) && File.Exists(p));
+            }
+            catch
+            {
+                hasAnySource = false;
+            }
+
+            var cacheDir = Path.Combine(AppPaths.FilesRoot, item.Id.ToString("N"));
+            var hasCache = false;
+            try
+            {
+                hasCache = Directory.Exists(cacheDir) && Directory.GetFiles(cacheDir).Length > 0;
+            }
+            catch
+            {
+                hasCache = false;
+            }
+
+            if (!hasAnySource && !hasCache)
+                return null;
+
+            long bytes;
+            try
+            {
+                bytes = hasCache
+                    ? Directory.GetFiles(cacheDir).Sum(p => File.Exists(p) ? new FileInfo(p).Length : 0)
+                    : 0;
+
+                if (bytes <= 0)
+                    bytes = paths.Sum(p => File.Exists(p) ? new FileInfo(p).Length : 0);
+            }
+            catch
+            {
+                bytes = 0;
+            }
+
+            if (bytes <= 0)
+                return null;
             return item with { ApproxBytes = bytes, FilePaths = paths };
         }
 

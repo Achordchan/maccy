@@ -103,29 +103,96 @@ public partial class App : Application
         if (_settings is null || _autoStart is null)
             return;
 
-        if (_prefsWindow is not null)
+        try
         {
-            _prefsWindow.Activate();
-            return;
+            var ownerVisible = false;
+            try
+            {
+                ownerVisible = owner.IsVisible;
+            }
+            catch
+            {
+            }
+
+            if (_prefsWindow is not null)
+            {
+                try
+                {
+                    try
+                    {
+                        if (_prefsWindow.DataContext is PreferencesWindowViewModel prefsVm)
+                            prefsVm.ReloadFromSettings();
+                    }
+                    catch
+                    {
+                    }
+
+                    if (!_prefsWindow.IsVisible)
+                    {
+                        if (ownerVisible)
+                            _prefsWindow.Show(owner);
+                        else
+                            _prefsWindow.Show();
+                    }
+                }
+                catch
+                {
+                }
+
+                _prefsWindow.Activate();
+                return;
+            }
+
+            var vm = new PreferencesWindowViewModel(_settings, _autoStart, TriggerManualUpdateCheck, OpenStorageLocation);
+            var w = new PreferencesWindow
+            {
+                DataContext = vm,
+            };
+
+            w.WindowStartupLocation = ownerVisible ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen;
+            w.Topmost = !ownerVisible;
+            _prefsWindow = w;
+
+            vm.RequestClose += () => w.Close();
+            w.Closed += (_, _) =>
+            {
+                _prefsWindow = null;
+            };
+
+            if (ownerVisible)
+                w.Show(owner);
+            else
+                w.Show();
+
+            w.Activate();
         }
-
-        var vm = new PreferencesWindowViewModel(_settings, _autoStart, TriggerManualUpdateCheck);
-        var w = new PreferencesWindow
-        {
-            DataContext = vm,
-        };
-
-        w.WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        _prefsWindow = w;
-
-        vm.RequestClose += () => w.Close();
-        w.Closed += (_, _) =>
+        catch
         {
             _prefsWindow = null;
-        };
+        }
+    }
 
-        w.Show(owner);
-        w.Activate();
+    private void OpenStorageLocation()
+    {
+        try
+        {
+            var path = AppPaths.AppDataRoot;
+            try
+            {
+                System.IO.Directory.CreateDirectory(path);
+            }
+            catch
+            {
+            }
+
+            Process.Start(new ProcessStartInfo("explorer.exe", "\"" + path + "\"")
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch
+        {
+        }
     }
 
     private void TriggerManualUpdateCheck()
@@ -235,6 +302,8 @@ public partial class App : Application
             capture.CaptureText = s.CaptureText;
             capture.CaptureImages = s.CaptureImages;
             capture.CaptureFiles = s.CaptureFiles;
+            capture.CaptureFileExtensions = s.CaptureFileExtensions;
+            capture.CaptureFileMaxBytes = (long)Math.Min(s.CaptureFileMaxMegabytes, s.MaxMegabytes) * 1024 * 1024;
         }
     }
 

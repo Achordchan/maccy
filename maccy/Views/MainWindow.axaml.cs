@@ -613,9 +613,8 @@ public partial class MainWindow : Window
         string text;
         if (item.Kind == ClipboardContentKind.FileList)
         {
-            text = item.FilePaths is null
-                ? string.Empty
-                : string.Join(Environment.NewLine, item.FilePaths.Where(x => !string.IsNullOrWhiteSpace(x)));
+            // File preview is info-only: do not show the file path list in the popup.
+            text = string.Empty;
         }
         else
         {
@@ -642,13 +641,8 @@ public partial class MainWindow : Window
 
             _previewWindow.SetItem(item, null, text);
 
-            const int minWindow = 260;
-            const int maxWindow = 560;
-
-            var lines = (text ?? string.Empty).Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
-            var maxLineLen = lines.Any() ? lines.Max(l => l.Length) : 0;
-            var desiredW = Math.Clamp(80 + maxLineLen * 7, minWindow, maxWindow);
-            var desiredH = Math.Clamp(140 + lines.Length * 18, minWindow, maxWindow);
+            var desiredW = item.Kind == ClipboardContentKind.FileList ? 320 : 360;
+            var desiredH = item.Kind == ClipboardContentKind.FileList ? 170 : 320;
 
             PositionAndShowPreview(desiredW, desiredH, c);
         });

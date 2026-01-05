@@ -26,4 +26,14 @@ public static class AppPaths
             return root;
         }
     }
+
+    public static string FilesRoot
+    {
+        get
+        {
+            var root = Path.Combine(AppDataRoot, "files");
+            Directory.CreateDirectory(root);
+            return root;
+        }
+    }
 }

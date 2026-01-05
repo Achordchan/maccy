@@ -49,6 +49,19 @@ public sealed class ClipboardHistoryService
                     }
                 }
 
+                if (existing.Kind == ClipboardContentKind.FileList)
+                {
+                    try
+                    {
+                        var dir = Path.Combine(AppPaths.FilesRoot, item.Id.ToString("N"));
+                        if (Directory.Exists(dir))
+                            Directory.Delete(dir, recursive: true);
+                    }
+                    catch
+                    {
+                    }
+                }
+
                 var first = existing.FirstCapturedAt ?? existing.CapturedAt;
                 var nextCount = Math.Max(1, existing.CopyCount) + 1;
 
@@ -111,16 +124,80 @@ public sealed class ClipboardHistoryService
             }
         }
 
+        if (item.Kind == ClipboardContentKind.FileList)
+        {
+            try
+            {
+                var dir = Path.Combine(AppPaths.FilesRoot, item.Id.ToString("N"));
+                if (Directory.Exists(dir))
+                    Directory.Delete(dir, recursive: true);
+            }
+            catch
+            {
+            }
+        }
+
         Changed?.Invoke();
     }
 
     public void ReplaceAll(IReadOnlyList<ClipboardItem> items)
     {
+        var newImages = items
+            .Select(x => x.ImageFilePath)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var newFileDirs = items
+            .Where(x => x.Kind == ClipboardContentKind.FileList)
+            .Select(x => x.Id)
+            .Distinct()
+            .ToHashSet();
+
+        var toDeleteImages = Items
+            .Select(x => x.ImageFilePath)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(x => x is not null && !newImages.Contains(x))
+            .ToList();
+
+        var toDeleteFileDirs = Items
+            .Where(x => x.Kind == ClipboardContentKind.FileList)
+            .Select(x => x.Id)
+            .Distinct()
+            .Where(x => !newFileDirs.Contains(x))
+            .ToList();
+
         Items.Clear();
         foreach (var item in items)
             Items.Add(item);
         EnforceLimits();
         Changed?.Invoke();
+
+        foreach (var path in toDeleteImages)
+        {
+            try
+            {
+                if (path is not null && File.Exists(path))
+                    File.Delete(path);
+            }
+            catch
+            {
+            }
+        }
+
+        foreach (var id in toDeleteFileDirs)
+        {
+            try
+            {
+                var dir = Path.Combine(AppPaths.FilesRoot, id.ToString("N"));
+                if (Directory.Exists(dir))
+                    Directory.Delete(dir, recursive: true);
+            }
+            catch
+            {
+            }
+        }
     }
 
     public void ClearAll()
@@ -134,6 +211,12 @@ public sealed class ClipboardHistoryService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        var toDeleteFileDirs = Items
+            .Where(x => x.Kind == ClipboardContentKind.FileList)
+            .Select(x => x.Id)
+            .Distinct()
+            .ToList();
+
         Items.Clear();
 
         foreach (var path in toDelete)
@@ -142,6 +225,19 @@ public sealed class ClipboardHistoryService
             {
                 if (path is not null && File.Exists(path))
                     File.Delete(path);
+            }
+            catch
+            {
+            }
+        }
+
+        foreach (var id in toDeleteFileDirs)
+        {
+            try
+            {
+                var dir = Path.Combine(AppPaths.FilesRoot, id.ToString("N"));
+                if (Directory.Exists(dir))
+                    Directory.Delete(dir, recursive: true);
             }
             catch
             {

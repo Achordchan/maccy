@@ -46,6 +46,11 @@ public partial class MessageWindow : Window
         await _tcs.Task;
     }
 
+    public async Task WaitForCloseAsync()
+    {
+        await _tcs.Task;
+    }
+
     private void InitializeComponent()
     {
         AvaloniaXamlLoader.Load(this);

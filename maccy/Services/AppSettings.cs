@@ -16,6 +16,10 @@ public sealed class AppSettings
 
     public bool CaptureFiles { get; set; } = true;
 
+    public string CaptureFileExtensions { get; set; } = ".pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,.txt,.md,.csv,.zip,.rar,.7z,.png,.jpg,.jpeg,.gif,.bmp,.webp";
+
+    public int CaptureFileMaxMegabytes { get; set; } = 20;
+
     public bool MergeDuplicates { get; set; } = true;
 
     public bool ExcludePinnedFromLimits { get; set; } = true;

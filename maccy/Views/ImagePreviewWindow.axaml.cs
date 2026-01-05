@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using Avalonia.Controls;
 using Avalonia.Markup.Xaml;
 using Avalonia.Media;
@@ -28,6 +29,9 @@ public partial class ImagePreviewWindow : Window
     private TextBlock? _timeLine;
     private TextBlock? _noteLine;
 
+    private Grid? _rootGrid;
+    private Border? _previewDivider;
+
     private string? _currentImagePath;
 
     public event Action<bool>? HoverChanged;
@@ -35,6 +39,8 @@ public partial class ImagePreviewWindow : Window
     public ImagePreviewWindow()
     {
         InitializeComponent();
+        _rootGrid = this.FindControl<Grid>("RootGrid");
+        _previewDivider = this.FindControl<Border>("PreviewDivider");
         _image = this.FindControl<Image>("PreviewImage");
         _openOriginalButton = this.FindControl<Button>("OpenOriginalButton");
         _sourceIcon = this.FindControl<Image>("SourceIcon");
@@ -66,6 +72,8 @@ public partial class ImagePreviewWindow : Window
     public void SetItem(ClipboardItem item, IImage? source, string? text = null)
     {
         var isImage = item.Kind == ClipboardContentKind.Image;
+        var isText = item.Kind == ClipboardContentKind.Text;
+        var isFile = item.Kind == ClipboardContentKind.FileList;
 
         _currentImagePath = isImage ? item.ImageFilePath : null;
 
@@ -76,18 +84,40 @@ public partial class ImagePreviewWindow : Window
             _openOriginalButton.IsVisible = isImage && !string.IsNullOrWhiteSpace(_currentImagePath) && File.Exists(_currentImagePath);
 
         if (_textScroll is not null)
-            _textScroll.IsVisible = !isImage;
+            _textScroll.IsVisible = isText;
 
         if (_previewText is not null)
         {
-            _previewText.Text = text ?? string.Empty;
-            _previewText.IsVisible = !isImage;
+            _previewText.Text = isText ? (text ?? string.Empty) : string.Empty;
+            _previewText.IsVisible = isText;
         }
 
         if (isImage)
             SetSource(source);
         else
             SetSource(null);
+
+        try
+        {
+            if (_rootGrid is not null && _rootGrid.RowDefinitions.Count >= 3)
+            {
+                if (isFile)
+                {
+                    _rootGrid.RowDefinitions[0].Height = new Avalonia.Controls.GridLength(0);
+                    if (_previewDivider is not null)
+                        _previewDivider.IsVisible = false;
+                }
+                else
+                {
+                    _rootGrid.RowDefinitions[0].Height = new Avalonia.Controls.GridLength(1, Avalonia.Controls.GridUnitType.Star);
+                    if (_previewDivider is not null)
+                        _previewDivider.IsVisible = true;
+                }
+            }
+        }
+        catch
+        {
+        }
 
         var copyCount = Math.Max(1, item.CopyCount);
         var first = item.FirstCapturedAt ?? item.CapturedAt;
@@ -117,11 +147,54 @@ public partial class ImagePreviewWindow : Window
             }
         }
 
+        if (isFile)
+        {
+            try
+            {
+                var count = item.FilePaths?.Count(x => !string.IsNullOrWhiteSpace(x)) ?? 0;
+                var bytes = 0L;
+                if (item.FilePaths is not null)
+                {
+                    foreach (var p in item.FilePaths)
+                    {
+                        if (string.IsNullOrWhiteSpace(p) || !File.Exists(p))
+                            continue;
+                        bytes += new FileInfo(p).Length;
+                    }
+                }
+
+                if (bytes <= 0)
+                    bytes = Math.Max(0, item.ApproxBytes);
+
+                meta += $" · {Math.Max(1, count)} 个文件 · {FormatBytes(bytes)}";
+            }
+            catch
+            {
+            }
+        }
+
         _metaLine!.Text = meta;
         _timeLine!.Text = $"首次：{first:yyyy-MM-dd HH:mm:ss}  最后：{last:yyyy-MM-dd HH:mm:ss}";
         _noteLine!.Text = "备注：" + note;
 
         SetSourceInfo(item);
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes <= 0)
+            return "0 KB";
+
+        var kb = bytes / 1024.0;
+        if (kb < 1024)
+            return $"{Math.Max(1, (long)Math.Round(kb))} KB";
+
+        var mb = kb / 1024.0;
+        if (mb < 1024)
+            return $"{mb:0.#} MB";
+
+        var gb = mb / 1024.0;
+        return $"{gb:0.#} GB";
     }
 
     private void OnOpenOriginalClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)

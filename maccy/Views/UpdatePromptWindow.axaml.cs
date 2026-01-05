@@ -76,6 +76,11 @@ public partial class UpdatePromptWindow : Window
         return await _tcs.Task;
     }
 
+    public async Task<UpdatePromptResult> WaitForResultAsync()
+    {
+        return await _tcs.Task;
+    }
+
     private void InitializeComponent()
     {
         AvaloniaXamlLoader.Load(this);

@@ -22,6 +22,9 @@
 
                     <SolidColorBrush x:Key="AppPreviewBackground" Color="#EE111111"/>
                     <SolidColorBrush x:Key="AppPreviewButtonBackground" Color="#66000000"/>
+
+                    <SolidColorBrush x:Key="AppToastBackground" Color="#CC333333"/>
+                    <SolidColorBrush x:Key="AppToastForeground" Color="#FFF0F0F0"/>
                 </ResourceDictionary>
 
                 <ResourceDictionary x:Key="Light">
@@ -38,6 +41,9 @@
 
                     <SolidColorBrush x:Key="AppPreviewBackground" Color="#EEFFFFFF"/>
                     <SolidColorBrush x:Key="AppPreviewButtonBackground" Color="#66000000"/>
+
+                    <SolidColorBrush x:Key="AppToastBackground" Color="#CC111111"/>
+                    <SolidColorBrush x:Key="AppToastForeground" Color="#FFFFFFFF"/>
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
         </ResourceDictionary>

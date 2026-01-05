@@ -24,11 +24,11 @@ public sealed class ImagePathToImageInfoConverter : IValueConverter
             using var fs = File.OpenRead(path);
             using var bmp = new Bitmap(fs);
             var kb = Math.Max(1, bytes / 1024);
-            return $"Image · {bmp.PixelSize.Width}×{bmp.PixelSize.Height} · {kb} KB";
+            return $"IMG · {bmp.PixelSize.Width}×{bmp.PixelSize.Height} · {kb} KB";
         }
         catch
         {
-            return "Image";
+            return "IMG";
         }
     }
 

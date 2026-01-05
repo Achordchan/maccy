@@ -16,7 +16,7 @@
           BorderThickness="1"
           CornerRadius="12"
           ClipToBounds="True">
-    <Grid RowDefinitions="*,Auto,Auto">
+    <Grid Name="RootGrid" RowDefinitions="*,Auto,Auto">
       <Grid Grid.Row="0">
         <Image Name="PreviewImage"
                Stretch="Uniform" />
@@ -30,7 +30,7 @@
         </ScrollViewer>
       </Grid>
 
-      <Border Grid.Row="1"
+      <Border Name="PreviewDivider" Grid.Row="1"
               Height="1"
               Background="{DynamicResource AppDivider}"
               Margin="0,8,0,8" />

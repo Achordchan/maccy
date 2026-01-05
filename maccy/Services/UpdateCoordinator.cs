@@ -55,8 +55,31 @@ public sealed class UpdateCoordinator
             if (owner is null)
                 return;
 
-            var prompt = new UpdatePromptWindow(result.Update, result.Update.Mandatory);
-            var action = await prompt.ShowDialogAsync(owner);
+            var action = await Dispatcher.UIThread.InvokeAsync(async () =>
+            {
+                try
+                {
+                    if (owner.IsVisible)
+                        owner.Activate();
+                }
+                catch
+                {
+                }
+
+                var prompt = new UpdatePromptWindow(result.Update, result.Update.Mandatory);
+                if (owner.IsVisible)
+                {
+                    prompt.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+                    prompt.Topmost = manual || result.Update.Mandatory;
+                    return await prompt.ShowDialogAsync(owner);
+                }
+
+                prompt.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+                prompt.Topmost = true;
+                prompt.Show();
+                prompt.Activate();
+                return await prompt.WaitForResultAsync();
+            });
 
             if (action == UpdatePromptResult.UpdateNow)
             {
@@ -75,10 +98,33 @@ public sealed class UpdateCoordinator
 
     private async Task DownloadAndInstallAsync(UpdateInfo update, Window owner)
     {
-        var progressWindow = new UpdateProgressWindow();
-        progressWindow.WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        progressWindow.Show(owner);
-        progressWindow.Activate();
+        var progressWindow = await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            try
+            {
+                if (owner.IsVisible)
+                    owner.Activate();
+            }
+            catch
+            {
+            }
+
+            var w = new UpdateProgressWindow();
+            w.Topmost = true;
+            if (owner.IsVisible)
+            {
+                w.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+                w.Show(owner);
+            }
+            else
+            {
+                w.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+                w.Show();
+            }
+
+            w.Activate();
+            return w;
+        });
 
         string installerPath;
         try
@@ -93,7 +139,7 @@ public sealed class UpdateCoordinator
         {
             try
             {
-                progressWindow.Close();
+                await Dispatcher.UIThread.InvokeAsync(() => progressWindow.Close());
             }
             catch
             {
@@ -105,7 +151,7 @@ public sealed class UpdateCoordinator
 
         try
         {
-            progressWindow.Close();
+            await Dispatcher.UIThread.InvokeAsync(() => progressWindow.Close());
         }
         catch
         {
@@ -132,9 +178,29 @@ public sealed class UpdateCoordinator
 
         await Dispatcher.UIThread.InvokeAsync(async () =>
         {
+            try
+            {
+                if (owner.IsVisible)
+                    owner.Activate();
+            }
+            catch
+            {
+            }
+
             var w = new MessageWindow(title, message);
-            w.WindowStartupLocation = WindowStartupLocation.CenterOwner;
-            await w.ShowDialogAsync(owner);
+            if (owner.IsVisible)
+            {
+                w.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+                w.Topmost = true;
+                await w.ShowDialogAsync(owner);
+                return;
+            }
+
+            w.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            w.Topmost = true;
+            w.Show();
+            w.Activate();
+            await w.WaitForCloseAsync();
         });
     }
 

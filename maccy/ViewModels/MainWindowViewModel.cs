@@ -290,6 +290,23 @@ public partial class MainWindowViewModel : ViewModelBase
         RequestHide?.Invoke();
     }
 
+    private void ShowToast(string message)
+    {
+        ToastMessage = message;
+        var token = Interlocked.Increment(ref _toastToken);
+        _ = ClearToastLaterAsync(token);
+    }
+
+    private async Task ClearToastLaterAsync(int token)
+    {
+        await Task.Delay(900);
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (token == _toastToken)
+                ToastMessage = null;
+        });
+    }
+
     private void DeleteSelected()
     {
         if (_history is null)
@@ -386,22 +403,5 @@ public partial class MainWindowViewModel : ViewModelBase
             return true;
 
         return false;
-    }
-
-    private void ShowToast(string message)
-    {
-        ToastMessage = message;
-        var token = Interlocked.Increment(ref _toastToken);
-        _ = ClearToastLaterAsync(token);
-    }
-
-    private async Task ClearToastLaterAsync(int token)
-    {
-        await Task.Delay(900);
-        await Dispatcher.UIThread.InvokeAsync(() =>
-        {
-            if (token == _toastToken)
-                ToastMessage = null;
-        });
     }
 }

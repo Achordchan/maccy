@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:maccy.ViewModels"
+        xmlns:conv="using:maccy.Converters"
         x:Class="maccy.Views.PreferencesWindow"
         x:DataType="vm:PreferencesWindowViewModel"
         Width="420"
@@ -11,67 +12,136 @@
 
   <Border Padding="14"
           Background="{DynamicResource AppBackground}">
-    <DockPanel LastChildFill="True">
-      <StackPanel DockPanel.Dock="Bottom" Spacing="10">
-        <Border Height="1" Background="{DynamicResource AppDivider}" Margin="0,10,0,0" />
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
-          <Button Content="关闭" Command="{Binding CloseCommand}" Background="{DynamicResource AppControlBackground}" Foreground="{DynamicResource AppForeground}" BorderBrush="{DynamicResource AppBorder}" />
-        </StackPanel>
-      </StackPanel>
-
-      <ScrollViewer VerticalScrollBarVisibility="Auto"
-                    HorizontalScrollBarVisibility="Disabled">
-        <StackPanel Spacing="10">
-          <TextBlock Text="通用" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource AppForeground}" />
-
-          <CheckBox Content="开机启动" IsChecked="{Binding StartWithWindows}" Foreground="{DynamicResource AppForeground}" />
-
-          <StackPanel Orientation="Horizontal" Spacing="10">
-            <TextBlock Text="主题" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-            <ComboBox Width="160"
-                      ItemsSource="{Binding ThemeOptions}"
-                      SelectedItem="{Binding SelectedTheme}"
-                      Background="{DynamicResource AppControlBackground}"
-                      Foreground="{DynamicResource AppForeground}"
-                      BorderBrush="{DynamicResource AppBorder}">
-              <ComboBox.ItemTemplate>
-                <DataTemplate>
-                  <TextBlock Text="{Binding Display}" />
-                </DataTemplate>
-              </ComboBox.ItemTemplate>
-            </ComboBox>
-          </StackPanel>
-
-          <TextBlock Text="历史" FontSize="14" FontWeight="SemiBold" Margin="0,10,0,0" Foreground="{DynamicResource AppForeground}" />
-
-          <CheckBox Content="合并重复内容" IsChecked="{Binding MergeDuplicates}" Foreground="{DynamicResource AppForeground}" />
-
-          <CheckBox Content="收藏不计入上限" IsChecked="{Binding ExcludePinnedFromLimits}" Foreground="{DynamicResource AppForeground}" />
-
-          <StackPanel Orientation="Horizontal" Spacing="10">
-            <TextBlock Text="最多条目" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-            <TextBox Width="100" Text="{Binding MaxItemsText}" Background="{DynamicResource AppControlBackground}" Foreground="{DynamicResource AppForeground}" BorderBrush="{DynamicResource AppBorder}" />
-          </StackPanel>
-
-          <StackPanel Orientation="Horizontal" Spacing="10">
-            <TextBlock Text="最大容量（MB）" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-            <TextBox Width="100" Text="{Binding MaxMegabytesText}" Background="{DynamicResource AppControlBackground}" Foreground="{DynamicResource AppForeground}" BorderBrush="{DynamicResource AppBorder}" />
-          </StackPanel>
-
-          <TextBlock Text="捕获" FontSize="14" FontWeight="SemiBold" Margin="0,10,0,0" Foreground="{DynamicResource AppForeground}" />
-
-          <CheckBox Content="捕获文本" IsChecked="{Binding CaptureText}" Foreground="{DynamicResource AppForeground}" />
-          <CheckBox Content="捕获图片" IsChecked="{Binding CaptureImages}" Foreground="{DynamicResource AppForeground}" />
-          <CheckBox Content="捕获文件" IsChecked="{Binding CaptureFiles}" Foreground="{DynamicResource AppForeground}" />
-
-          <TextBlock Text="更新" FontSize="14" FontWeight="SemiBold" Margin="0,10,0,0" Foreground="{DynamicResource AppForeground}" />
-
-          <StackPanel Orientation="Horizontal" Spacing="10">
-            <TextBlock Text="检测更新" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-            <Button Content="检测" Command="{Binding CheckUpdatesCommand}" />
+    <Grid>
+      <DockPanel LastChildFill="True">
+        <StackPanel DockPanel.Dock="Bottom" Spacing="10">
+          <Border Height="1" Background="{DynamicResource AppDivider}" Margin="0,10,0,0" />
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+            <Button Content="关闭" Command="{Binding CloseCommand}" Background="{DynamicResource AppControlBackground}" Foreground="{DynamicResource AppForeground}" BorderBrush="{DynamicResource AppBorder}" />
           </StackPanel>
         </StackPanel>
-      </ScrollViewer>
-    </DockPanel>
+
+        <TabControl>
+          <TabItem Header="通用">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <StackPanel Spacing="10" Margin="0,10,0,0">
+                <CheckBox Content="开机启动" IsChecked="{Binding StartWithWindows}" Foreground="{DynamicResource AppForeground}" />
+
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                  <TextBlock Text="主题" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
+                  <ComboBox Width="160"
+                            ItemsSource="{Binding ThemeOptions}"
+                            SelectedItem="{Binding SelectedTheme}"
+                            Background="{DynamicResource AppControlBackground}"
+                            Foreground="{DynamicResource AppForeground}"
+                            BorderBrush="{DynamicResource AppBorder}">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding Display}" />
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                  <TextBlock Text="文件储存位置" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
+                  <Button Content="打开"
+                          Command="{Binding OpenStorageCommand}"
+                          Background="{DynamicResource AppControlBackground}"
+                          Foreground="{DynamicResource AppForeground}"
+                          BorderBrush="{DynamicResource AppBorder}" />
+                </StackPanel>
+              </StackPanel>
+            </ScrollViewer>
+          </TabItem>
+
+          <TabItem Header="历史">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <StackPanel Spacing="10" Margin="0,10,0,0">
+                <CheckBox Content="合并重复内容" IsChecked="{Binding MergeDuplicates}" Foreground="{DynamicResource AppForeground}" />
+
+                <CheckBox Content="收藏不计入上限" IsChecked="{Binding ExcludePinnedFromLimits}" Foreground="{DynamicResource AppForeground}" />
+
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                  <TextBlock Text="最多条目" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
+                  <TextBox Width="100" Text="{Binding MaxItemsText}" Background="{DynamicResource AppControlBackground}" Foreground="{DynamicResource AppForeground}" BorderBrush="{DynamicResource AppBorder}" />
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                  <TextBlock Text="最大容量（MB）" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
+                  <TextBox Width="100" Text="{Binding MaxMegabytesText}" Background="{DynamicResource AppControlBackground}" Foreground="{DynamicResource AppForeground}" BorderBrush="{DynamicResource AppBorder}" />
+                </StackPanel>
+              </StackPanel>
+            </ScrollViewer>
+          </TabItem>
+
+          <TabItem Header="捕获">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <StackPanel Spacing="10" Margin="0,10,0,0">
+                <CheckBox Content="捕获文本" IsChecked="{Binding CaptureText}" Foreground="{DynamicResource AppForeground}" />
+                <CheckBox Content="捕获图片" IsChecked="{Binding CaptureImages}" Foreground="{DynamicResource AppForeground}" />
+                <CheckBox Content="捕获文件" IsChecked="{Binding CaptureFiles}" Foreground="{DynamicResource AppForeground}" />
+
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                  <TextBlock Text="文件后缀" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
+                  <TextBox Width="220"
+                           Text="{Binding CaptureFileExtensionsText}"
+                           Watermark=".pdf,.docx,.txt（留空=全部）"
+                           Background="{DynamicResource AppControlBackground}"
+                           Foreground="{DynamicResource AppForeground}"
+                           BorderBrush="{DynamicResource AppBorder}" />
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                  <TextBlock Text="单文件上限（MB）" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
+                  <TextBox Width="100"
+                           Text="{Binding CaptureFileMaxMegabytesText}"
+                           Watermark="20"
+                           Background="{DynamicResource AppControlBackground}"
+                           Foreground="{DynamicResource AppForeground}"
+                           BorderBrush="{DynamicResource AppBorder}" />
+                </StackPanel>
+
+                <TextBlock Text="危险后缀（exe、bat、ps1 等）会被自动禁用"
+                           Foreground="{DynamicResource AppMutedForeground}"
+                           FontSize="12" />
+
+                <TextBlock Text="提示：该上限与“历史最大容量（MB）”共享预算，设置过大可能会减少可保存条目"
+                           Foreground="{DynamicResource AppMutedForeground}"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           MaxWidth="360" />
+              </StackPanel>
+            </ScrollViewer>
+          </TabItem>
+
+          <TabItem Header="更新">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <StackPanel Spacing="10" Margin="0,10,0,0">
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                  <TextBlock Text="检测更新" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
+                  <Button Content="检测"
+                          Command="{Binding CheckUpdatesCommand}"
+                          Background="{DynamicResource AppControlBackground}"
+                          Foreground="{DynamicResource AppForeground}"
+                          BorderBrush="{DynamicResource AppBorder}" />
+                </StackPanel>
+              </StackPanel>
+            </ScrollViewer>
+          </TabItem>
+        </TabControl>
+      </DockPanel>
+
+      <Border HorizontalAlignment="Center"
+              VerticalAlignment="Bottom"
+              Margin="12"
+              Padding="12,8"
+              Background="{DynamicResource AppToastBackground}"
+              CornerRadius="8"
+              IsVisible="{Binding ToastMessage, Converter={x:Static conv:NotNullOrEmptyToBoolConverter.Instance}}">
+        <TextBlock Text="{Binding ToastMessage}"
+                   Foreground="{DynamicResource AppToastForeground}" />
+      </Border>
+    </Grid>
   </Border>
 </Window>
