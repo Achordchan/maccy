@@ -1,7 +1,7 @@
 {
   "appId": "maccy",
   "latest": {
-    "version": "1.0.2",
+    "version": "1.0.1",
     "mandatory": false,
     "notes": "新增货架功能 默认快捷键Ctrl +摇晃鼠标\n优化一些错误信息\n解决了已知问题",
     "publishedAt": "2026-01-06T17:43:00Z",
