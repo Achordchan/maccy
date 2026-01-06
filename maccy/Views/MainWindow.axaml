@@ -9,9 +9,10 @@
         x:Class="maccy.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
         Icon="/Assets/avalonia-logo.ico"
-        Title="剪贴板"
+        Title="Maccy for Win"
         Width="360"
-        Height="520"
+        Height="620"
+        WindowStartupLocation="CenterScreen"
         Topmost="True"
         ShowInTaskbar="False"
         CanResize="False"
@@ -135,7 +136,7 @@
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource AppMuted2Foreground}"
                                FontSize="11"
-                               Text="" />
+                               Text="{Binding VersionText}" />
                     <Button Grid.Column="1" Content="设置" Command="{Binding OpenPreferencesCommand}" />
                     <Button Grid.Column="2" Content="清除" Click="OnClearAllClick" />
                 </Grid>
@@ -146,10 +147,23 @@
                         Name="CommonMenuEntry"
                         IsVisible="{Binding ShowCommonRoot}"
                         Background="Transparent"
+                        Cursor="Hand"
+                        ToolTip.Tip="打开常用剪贴"
                         PointerPressed="OnCommonMenuPressed">
                     <Grid RowDefinitions="Auto,Auto">
                         <Border Grid.Row="0" Padding="10,7" Background="Transparent">
-                            <TextBlock Text="常用剪贴" Foreground="{DynamicResource AppForeground}" FontSize="13" />
+                            <Grid ColumnDefinitions="*,Auto">
+                                <TextBlock Grid.Column="0"
+                                           Text="常用剪贴"
+                                           Foreground="{DynamicResource AppForeground}"
+                                           FontSize="13" />
+                                <TextBlock Grid.Column="1"
+                                           Text="›"
+                                           Margin="10,0,0,0"
+                                           Foreground="{DynamicResource AppMuted2Foreground}"
+                                           FontSize="16"
+                                           VerticalAlignment="Center" />
+                            </Grid>
                         </Border>
                         <Border Grid.Row="1" Height="1" Background="{DynamicResource AppDivider}" HorizontalAlignment="Stretch" />
                     </Grid>

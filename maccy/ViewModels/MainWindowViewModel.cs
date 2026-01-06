@@ -8,6 +8,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using maccy.Models;
 using maccy.Services;
 using System;
+using System.Reflection;
 
 namespace maccy.ViewModels;
 
@@ -47,6 +48,18 @@ public partial class MainWindowViewModel : ViewModelBase
     public int TotalCount => Items.Count;
 
     public int PinnedCount => Items.Count(x => x.Pinned);
+
+    public string VersionText
+    {
+        get
+        {
+            var v = Assembly.GetExecutingAssembly().GetName().Version;
+            if (v is null)
+                return "v0.0.0";
+
+            return $"v{v.Major}.{v.Minor}.{v.Build}";
+        }
+    }
 
     [ObservableProperty]
     private string? _searchText;
@@ -281,11 +294,15 @@ public partial class MainWindowViewModel : ViewModelBase
         if (_apply is null)
             return;
 
+        if (_history is null)
+            return;
+
         var item = SelectedItem;
         if (item is null)
             return;
 
         await _apply.ApplyAsync(item);
+        _history.Touch(item.Id);
         ShowToast("已写回剪贴板");
         RequestHide?.Invoke();
     }

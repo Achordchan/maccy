@@ -23,4 +23,8 @@ public sealed class AppSettings
     public bool MergeDuplicates { get; set; } = true;
 
     public bool ExcludePinnedFromLimits { get; set; } = true;
+
+    public bool ShelfEnabled { get; set; } = true;
+
+    public string ShelfTriggerModifier { get; set; } = "Ctrl";
 }

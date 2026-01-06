@@ -1,0 +1,198 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:maccy.ViewModels"
+        x:Class="maccy.Views.ShelfWindow"
+        x:DataType="vm:ShelfWindowViewModel"
+        Width="260"
+        Height="260"
+        Topmost="True"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        CanResize="False"
+        SystemDecorations="None"
+        TransparencyLevelHint="AcrylicBlur"
+        TransparencyBackgroundFallback="#CCF2F2F2"
+        Background="Transparent">
+
+  <Window.Transitions>
+    <Transitions>
+      <DoubleTransition Property="Width" Duration="0:0:0.16" />
+      <DoubleTransition Property="Height" Duration="0:0:0.16" />
+    </Transitions>
+  </Window.Transitions>
+
+  <Window.Styles>
+    <Style Selector="Button.shelf-pill">
+      <Setter Property="Background" Value="#33FFFFFF" />
+      <Setter Property="BorderBrush" Value="#2AFFFFFF" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="Padding" Value="0" />
+    </Style>
+    <Style Selector="Button.shelf-pill:pointerover">
+      <Setter Property="Background" Value="#4AFFFFFF" />
+    </Style>
+    <Style Selector="Button.shelf-pill:pressed">
+      <Setter Property="Background" Value="#22FFFFFF" />
+    </Style>
+  </Window.Styles>
+
+  <Border Padding="14"
+          CornerRadius="18"
+          ClipToBounds="True"
+          Background="#BFF2F2F2"
+          BorderBrush="#40FFFFFF"
+          BorderThickness="1"
+          BoxShadow="0 18 44 0 #1A000000">
+    <Grid>
+
+      <Border CornerRadius="18">
+        <Border.Background>
+          <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Offset="0" Color="#55FFFFFF" />
+            <GradientStop Offset="0.55" Color="#10FFFFFF" />
+            <GradientStop Offset="1" Color="#00FFFFFF" />
+          </LinearGradientBrush>
+        </Border.Background>
+      </Border>
+
+      <Border Width="28"
+              Height="28"
+              CornerRadius="14"
+              Background="#2EFFFFFF"
+              BorderBrush="#2AFFFFFF"
+              BorderThickness="1"
+              HorizontalAlignment="Right"
+              VerticalAlignment="Top">
+        <Button Padding="0"
+                Background="Transparent"
+                BorderThickness="0"
+                HorizontalContentAlignment="Center"
+                VerticalContentAlignment="Center"
+                FontSize="16"
+                Content="×"
+                Command="{Binding CloseCommand}" />
+      </Border>
+
+      <Grid IsVisible="{Binding ShowCompact}" RowDefinitions="Auto,*" RowSpacing="10">
+
+        <Border Name="StackHandle"
+                Grid.Row="1"
+                CornerRadius="18"
+                Background="#66FFFFFF"
+                BorderBrush="#26FFFFFF"
+                BorderThickness="1"
+                BoxShadow="0 10 22 0 #16000000"
+                Padding="12">
+          <Grid>
+
+            <StackPanel IsVisible="{Binding HasSingleItem}" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10">
+              <Grid Width="64" Height="64">
+                <Border CornerRadius="16" Background="#22FFFFFF" />
+                <Border CornerRadius="16" Background="{Binding PrimaryItem.TypeColor}" Opacity="0.16" />
+                <TextBlock FontFamily="Segoe MDL2 Assets"
+                           Text="{Binding PrimaryItem.TypeGlyph}"
+                           Foreground="#88000000"
+                           FontSize="34"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center" />
+                <Image Width="56" Height="56" Stretch="Uniform" Source="{Binding PrimaryItem.Icon}" />
+              </Grid>
+              <TextBlock Text="{Binding PrimaryItem.FileName}"
+                         Foreground="#AA000000"
+                         FontSize="12"
+                         MaxWidth="210"
+                         TextTrimming="CharacterEllipsis"
+                         HorizontalAlignment="Center" />
+            </StackPanel>
+          </Grid>
+        </Border>
+
+        <TextBlock Grid.Row="0"
+                   Text="{Binding TitleText}"
+                   Foreground="#66000000"
+                   FontSize="11"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Top"
+                   Margin="0,26,0,0" />
+      </Grid>
+
+      <Grid IsVisible="{Binding IsExpanded}" RowDefinitions="Auto,*" RowSpacing="12">
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" VerticalAlignment="Top">
+          <Button Classes="shelf-pill" Width="28" Height="28" Command="{Binding ToggleExpandedCommand}" IsVisible="{Binding ShowExpandedControls}">
+            <TextBlock FontFamily="Segoe MDL2 Assets" Text="" Foreground="#AA000000" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Button>
+
+          <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+            <TextBlock Text="{Binding TotalSizeText}" Foreground="#AA000000" FontSize="12" FontWeight="SemiBold" HorizontalAlignment="Center" />
+            <TextBlock Text="{Binding TitleText}" Foreground="#66000000" FontSize="11" HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="320" />
+          </StackPanel>
+
+          <Button Classes="shelf-pill" Grid.Column="2" Width="32" Height="28" Command="{Binding ToggleViewCommand}" IsVisible="{Binding ShowExpandedControls}">
+            <TextBlock FontFamily="Segoe MDL2 Assets" Text="" Foreground="#AA000000" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Button>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+          <Grid>
+            <ItemsControl Name="ExpandedGrid" IsVisible="{Binding ShowExpandedGrid}" ItemsSource="{Binding Items}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <WrapPanel Orientation="Horizontal" />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Width="210" Height="96" Margin="0,0,12,12" CornerRadius="16" Background="#66FFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1" BoxShadow="0 10 22 0 #14000000" Padding="12">
+                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                      <Grid Width="44" Height="44">
+                        <Border CornerRadius="12" Background="{Binding TypeColor}" Opacity="0.18" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets"
+                                   Text="{Binding TypeGlyph}"
+                                   Foreground="#88000000"
+                                   FontSize="18"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                        <Image Width="36" Height="36" Stretch="Uniform" Source="{Binding Icon}" />
+                      </Grid>
+                      <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding FileName}" Foreground="#AA000000" FontSize="12" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding MetaText}" Foreground="#66000000" FontSize="11" TextTrimming="CharacterEllipsis" />
+                      </StackPanel>
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <ItemsControl Name="ExpandedItems" IsVisible="{Binding ShowExpandedList}" ItemsSource="{Binding Items}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Margin="0,0,0,10" Padding="10" CornerRadius="14" Background="#66FFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1" BoxShadow="0 10 22 0 #14000000">
+                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                      <Grid Width="34" Height="34">
+                        <Border CornerRadius="10" Background="{Binding TypeColor}" Opacity="0.18" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets"
+                                   Text="{Binding TypeGlyph}"
+                                   Foreground="#88000000"
+                                   FontSize="14"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                        <Image Width="28" Height="28" Stretch="Uniform" Source="{Binding Icon}" />
+                      </Grid>
+                      <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding FileName}" Foreground="#AA000000" FontSize="12" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding MetaText}" Foreground="#66000000" FontSize="11" TextTrimming="CharacterEllipsis" />
+                      </StackPanel>
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </Grid>
+        </ScrollViewer>
+      </Grid>
+
+    </Grid>
+  </Border>
+</Window>

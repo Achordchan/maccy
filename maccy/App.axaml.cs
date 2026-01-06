@@ -28,6 +28,8 @@ public partial class App : Application
     private WindowsHotkeyService? _hotkey;
     private ClipboardPersistenceService? _persistence;
 
+    private ShelfService? _shelf;
+
     private AppSettingsService? _settings;
     private WindowsAutoStartService? _autoStart;
     private PreferencesWindow? _prefsWindow;
@@ -335,6 +337,17 @@ public partial class App : Application
             var window = new MainWindow();
             desktop.MainWindow = window;
 
+            var clipboard = window.Clipboard;
+            if (clipboard is null)
+                return;
+
+            _settings = new AppSettingsService();
+            _settings.Load();
+            _autoStart = new WindowsAutoStartService();
+
+            _shelf = new ShelfService(window, _settings);
+            window.SetShelfService(_shelf);
+
             window.Deactivated += (_, _) =>
             {
                 if (_prefsWindow is not null)
@@ -345,7 +358,6 @@ public partial class App : Application
                 if (HasVisibleOwnedWindows(window))
                     return;
 
-                // Delay slightly to allow pointer/hover state to update when user interacts with the preview window.
                 Dispatcher.UIThread.Post(() =>
                 {
                     DispatcherTimer.RunOnce(() =>
@@ -358,7 +370,6 @@ public partial class App : Application
                         if (HasVisibleOwnedWindows(window))
                             return;
 
-                        // If preview interaction is suppressing auto-hide, keep retrying.
                         if (window.SuppressAutoHide)
                         {
                             EnsureAutoHideRetryTimer(window);
@@ -375,31 +386,11 @@ public partial class App : Application
                 _autoHideRetryTimer?.Stop();
             };
 
-            SetupTrayIcon(window);
-
-            window.Closing += (_, e) =>
-            {
-                // For normal user closes, keep background behavior.
-                // For update installs we will set _allowExit to true.
-                if (!_allowExit)
-                {
-                    e.Cancel = true;
-                    window.Hide();
-                }
-            };
-
-            var clipboard = window.Clipboard;
-            if (clipboard is null)
-                return;
-
-            _settings = new AppSettingsService();
-            _settings.Load();
-            _autoStart = new WindowsAutoStartService();
-
             var history = new ClipboardHistoryService();
             ApplySettings(history, null);
             _persistence = new ClipboardPersistenceService(history);
             _ = _persistence.LoadAsync();
+
             _clipboardCapture = new ClipboardCaptureService(history, clipboard, TryGetForegroundApp);
             ApplySettings(history, _clipboardCapture);
             var apply = new ClipboardApplyService(clipboard, _clipboardCapture);
@@ -457,6 +448,9 @@ public partial class App : Application
                 _clipboardWatcher?.Dispose();
                 _clipboardWatcher = null;
                 _clipboardCapture = null;
+
+                _shelf?.Dispose();
+                _shelf = null;
 
                 _hotkey?.Dispose();
                 _hotkey = null;

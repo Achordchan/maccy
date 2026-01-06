@@ -71,6 +71,8 @@ public sealed class ClipboardCaptureService
         var formats = (await _clipboard.GetFormatsAsync()).ToList();
         var formatSet = new HashSet<string>(formats, StringComparer.OrdinalIgnoreCase);
 
+        var sourceApp = _foregroundAppResolver?.Invoke();
+
         var captured = false;
 
         if (CaptureText && (formatSet.Contains("Text") || formatSet.Contains("UnicodeText") || formatSet.Contains("text/plain")))
@@ -92,8 +94,8 @@ public sealed class ClipboardCaptureService
                     false,
                     FirstCapturedAt: DateTimeOffset.Now,
                     ContentHash: ComputeHash("text", text),
-                    SourceAppName: _foregroundAppResolver?.Invoke()?.Name,
-                    SourceAppPath: _foregroundAppResolver?.Invoke()?.Path));
+                    SourceAppName: sourceApp?.Name,
+                    SourceAppPath: sourceApp?.Path));
 
                 captured = true;
                 return;
@@ -128,8 +130,8 @@ public sealed class ClipboardCaptureService
                                 false,
                                 FirstCapturedAt: DateTimeOffset.Now,
                                 ContentHash: ComputeFileHash("img", path),
-                                SourceAppName: _foregroundAppResolver?.Invoke()?.Name,
-                                SourceAppPath: _foregroundAppResolver?.Invoke()?.Path));
+                                SourceAppName: sourceApp?.Name,
+                                SourceAppPath: sourceApp?.Path));
                             captured = true;
                             return;
                         }
@@ -174,8 +176,8 @@ public sealed class ClipboardCaptureService
                         false,
                         FirstCapturedAt: DateTimeOffset.Now,
                         ContentHash: ComputeHash("files", string.Join("\n", paths)),
-                        SourceAppName: _foregroundAppResolver?.Invoke()?.Name,
-                        SourceAppPath: _foregroundAppResolver?.Invoke()?.Path));
+                        SourceAppName: sourceApp?.Name,
+                        SourceAppPath: sourceApp?.Path));
 
                     captured = true;
                     return;
@@ -209,7 +211,9 @@ public sealed class ClipboardCaptureService
                         null,
                         false,
                         FirstCapturedAt: DateTimeOffset.Now,
-                        ContentHash: ComputeFileHash("img", path)));
+                        ContentHash: ComputeFileHash("img", path),
+                        SourceAppName: sourceApp?.Name,
+                        SourceAppPath: sourceApp?.Path));
 
                     captured = true;
                     return;
@@ -237,7 +241,9 @@ public sealed class ClipboardCaptureService
                     null,
                     false,
                     FirstCapturedAt: DateTimeOffset.Now,
-                    ContentHash: ComputeFileHash("img", path)));
+                    ContentHash: ComputeFileHash("img", path),
+                    SourceAppName: sourceApp?.Name,
+                    SourceAppPath: sourceApp?.Path));
 
                 captured = true;
                 return;
@@ -292,7 +298,9 @@ public sealed class ClipboardCaptureService
                     path,
                     null,
                     false,
-                    ContentHash: ComputeFileHash("img", path)));
+                    ContentHash: ComputeFileHash("img", path),
+                    SourceAppName: sourceApp?.Name,
+                    SourceAppPath: sourceApp?.Path));
 
                 captured = true;
                 return;

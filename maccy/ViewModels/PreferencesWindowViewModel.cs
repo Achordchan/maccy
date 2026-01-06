@@ -13,6 +13,8 @@ public partial class PreferencesWindowViewModel : ViewModelBase
 {
     public sealed record ThemeOption(string Value, string Display);
 
+    public sealed record ShelfTriggerModifierOption(string Value, string Display);
+
     private const string OldDefaultCaptureFileExtensions = ".pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,.txt";
     private const string DefaultCaptureFileExtensions = ".pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,.txt,.md,.csv,.zip,.rar,.7z,.png,.jpg,.jpeg,.gif,.bmp,.webp";
 
@@ -68,6 +70,34 @@ public partial class PreferencesWindowViewModel : ViewModelBase
     private string _maxMegabytesText = "300";
 
     [ObservableProperty]
+    private bool _shelfEnabled;
+
+    public ObservableCollection<ShelfTriggerModifierOption> ShelfTriggerModifierOptions { get; } =
+    [
+        new ShelfTriggerModifierOption("Ctrl", "Ctrl（推荐）"),
+        new ShelfTriggerModifierOption("Alt", "Alt"),
+        new ShelfTriggerModifierOption("Shift", "Shift"),
+    ];
+
+    private ShelfTriggerModifierOption? _selectedShelfTriggerModifier;
+
+    public ShelfTriggerModifierOption? SelectedShelfTriggerModifier
+    {
+        get => _selectedShelfTriggerModifier;
+        set
+        {
+            if (!SetProperty(ref _selectedShelfTriggerModifier, value))
+                return;
+
+            if (value is null)
+                return;
+
+            _settings.Update(s => s.ShelfTriggerModifier = value.Value);
+            ToastService.Instance.Show("设置已生效");
+        }
+    }
+
+    [ObservableProperty]
     private string? _toastMessage;
 
     public IRelayCommand CloseCommand { get; }
@@ -112,6 +142,12 @@ public partial class PreferencesWindowViewModel : ViewModelBase
     {
         var s = _settings.Current;
 
+        var rawShelfModifier = s.ShelfTriggerModifier ?? string.Empty;
+        var shelfEnabled = s.ShelfEnabled;
+        if (string.Equals(rawShelfModifier, "Disabled", StringComparison.OrdinalIgnoreCase))
+            shelfEnabled = false;
+        SetProperty(ref _shelfEnabled, shelfEnabled, nameof(ShelfEnabled));
+
         var captureExt = s.CaptureFileExtensions ?? string.Empty;
 
         var normalized = NormalizeExtensionList(captureExt);
@@ -151,6 +187,18 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         SetProperty(ref _excludePinnedFromLimits, s.ExcludePinnedFromLimits, nameof(ExcludePinnedFromLimits));
         SetProperty(ref _maxItemsText, s.MaxItems.ToString(), nameof(MaxItemsText));
         SetProperty(ref _maxMegabytesText, s.MaxMegabytes.ToString(), nameof(MaxMegabytesText));
+
+        SetProperty(
+            ref _selectedShelfTriggerModifier,
+            ShelfTriggerModifierOptions.FirstOrDefault(x => string.Equals(x.Value, rawShelfModifier, StringComparison.OrdinalIgnoreCase))
+            ?? ShelfTriggerModifierOptions[0],
+            nameof(SelectedShelfTriggerModifier));
+    }
+
+    partial void OnShelfEnabledChanged(bool value)
+    {
+        _settings.Update(s => s.ShelfEnabled = value);
+        ToastService.Instance.Show("设置已生效");
     }
 
     private static string NormalizeExtensionList(string value)

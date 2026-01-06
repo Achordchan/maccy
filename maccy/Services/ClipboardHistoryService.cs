@@ -104,6 +104,28 @@ public sealed class ClipboardHistoryService
         Changed?.Invoke();
     }
 
+    public void Touch(Guid id)
+    {
+        var idx = Items.ToList().FindIndex(x => x.Id == id);
+        if (idx < 0)
+            return;
+
+        var existing = Items[idx];
+        var first = existing.FirstCapturedAt ?? existing.CapturedAt;
+        var nextCount = Math.Max(1, existing.CopyCount) + 1;
+        var updated = existing with
+        {
+            CapturedAt = DateTimeOffset.Now,
+            CopyCount = nextCount,
+            FirstCapturedAt = first,
+        };
+
+        Items.RemoveAt(idx);
+        Items.Insert(0, updated);
+        EnforceLimits();
+        Changed?.Invoke();
+    }
+
     public void Remove(Guid id)
     {
         var idx = Items.ToList().FindIndex(x => x.Id == id);

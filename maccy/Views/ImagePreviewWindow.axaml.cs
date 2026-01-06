@@ -174,7 +174,7 @@ public partial class ImagePreviewWindow : Window
         }
 
         _metaLine!.Text = meta;
-        _timeLine!.Text = $"首次：{first:yyyy-MM-dd HH:mm:ss}  最后：{last:yyyy-MM-dd HH:mm:ss}";
+        _timeLine!.Text = $"首次：{first:yyyy-MM-dd HH:mm:ss}{Environment.NewLine}最后：{last:yyyy-MM-dd HH:mm:ss}";
         _noteLine!.Text = "备注：" + note;
 
         SetSourceInfo(item);

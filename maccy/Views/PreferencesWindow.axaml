@@ -115,6 +115,40 @@
             </ScrollViewer>
           </TabItem>
 
+          <TabItem Header="货架">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <StackPanel Spacing="10" Margin="0,10,0,0">
+                <CheckBox Content="启用货架" IsChecked="{Binding ShelfEnabled}" Foreground="{DynamicResource AppForeground}" />
+
+                <StackPanel IsVisible="{Binding ShelfEnabled}" Spacing="10">
+                  <StackPanel Orientation="Horizontal" Spacing="10">
+                    <TextBlock Text="触发键" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
+                    <ComboBox Width="220"
+                              ItemsSource="{Binding ShelfTriggerModifierOptions}"
+                              SelectedItem="{Binding SelectedShelfTriggerModifier}"
+                              Background="{DynamicResource AppControlBackground}"
+                              Foreground="{DynamicResource AppForeground}"
+                              BorderBrush="{DynamicResource AppBorder}">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                          <TextBlock Text="{Binding Display}" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                  </StackPanel>
+                </StackPanel>
+
+                <Border Background="{DynamicResource AppControlBackground}" BorderBrush="{DynamicResource AppBorder}" BorderThickness="1" CornerRadius="10" Padding="10">
+                  <TextBlock Text="使用方法：按住触发键（默认 Ctrl），在任意位置按住鼠标左键并快速左右摇晃，即可呼出货架窗口。货架出现后不会自动关闭，请手动点击右上角 × 关闭。"
+                             Foreground="{DynamicResource AppMutedForeground}"
+                             FontSize="12"
+                             TextWrapping="Wrap"
+                             MaxWidth="360" />
+                </Border>
+              </StackPanel>
+            </ScrollViewer>
+          </TabItem>
+
           <TabItem Header="更新">
             <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
               <StackPanel Spacing="10" Margin="0,10,0,0">

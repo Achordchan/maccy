@@ -12,6 +12,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Media;
 using maccy.ViewModels;
 using maccy.Models;
+using maccy.Services;
 
 namespace maccy.Views;
 
@@ -37,6 +38,10 @@ public partial class MainWindow : Window
 
     private ImagePreviewWindow? _previewWindow;
     private Bitmap? _previewBitmap;
+
+    private ShelfService? _shelf;
+    private readonly MouseShakeDetector _shelfShake = new();
+    private DateTimeOffset _nextShelfAllowedAt = DateTimeOffset.MinValue;
 
     private Guid? _previewItemId;
 
@@ -94,6 +99,11 @@ public partial class MainWindow : Window
             _pinnedList.AddHandler(DragDrop.DropEvent, OnListDrop);
         }
 
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DragEnterEvent, OnWindowFileDragEnter, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
+        AddHandler(DragDrop.DragOverEvent, OnWindowFileDragOver, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
+        AddHandler(DragDrop.DragLeaveEvent, OnWindowFileDragLeave, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
+
         AddHandler(PointerPressedEvent, OnAnyPointerPressed, RoutingStrategies.Tunnel);
 
         PointerEntered += (_, _) =>
@@ -134,6 +144,60 @@ public partial class MainWindow : Window
         }
 
         return null;
+    }
+
+    public void SetShelfService(ShelfService shelf)
+    {
+        _shelf = shelf;
+    }
+
+    private void OnWindowFileDragEnter(object? sender, DragEventArgs e)
+    {
+        if (_shelf is null)
+            return;
+
+        if (e.Data.Contains(DragItemIdFormat))
+            return;
+
+        if (!DragFileHelper.HasFileData(e.Data))
+            return;
+
+        _shelfShake.Reset();
+        _shelf.BeginFileDragSession();
+    }
+
+    private void OnWindowFileDragLeave(object? sender, DragEventArgs e)
+    {
+        _shelfShake.Reset();
+    }
+
+    private void OnWindowFileDragOver(object? sender, DragEventArgs e)
+    {
+        if (_shelf is null)
+            return;
+
+        if (e.Data.Contains(DragItemIdFormat))
+            return;
+
+        if (!DragFileHelper.HasFileData(e.Data))
+            return;
+
+        _shelf.BeginFileDragSession();
+
+        e.DragEffects = DragDropEffects.Copy;
+        e.Handled = true;
+
+        var now = DateTimeOffset.UtcNow;
+        if (now < _nextShelfAllowedAt)
+            return;
+
+        if (!_shelfShake.Update(e.GetPosition(this)))
+            return;
+
+        var screenPt = this.PointToScreen(e.GetPosition(this));
+        _shelf.SpawnPendingShelf(screenPt);
+        _nextShelfAllowedAt = now.AddMilliseconds(420);
+        _shelfShake.Reset();
     }
 
     private void OnAnyPointerPressed(object? sender, PointerPressedEventArgs e)
