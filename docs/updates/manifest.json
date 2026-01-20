@@ -1,14 +1,14 @@
 {
   "appId": "maccy",
   "latest": {
-    "version": "1.0.33",
+    "version": "1.0.3",
     "mandatory": false,
     "notes": "修复已知错误信息\n状态代码回调",
-    "publishedAt": "2026-01-20T09:25:41Z",
+    "publishedAt": "2026-01-20T10:47:15Z",
     "installer": {
-      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.33/maccy-1.0.33-setup.exe",
-      "sha256": "61EDFB502384213BCBD6FAEF1386E9A3E659B15A331C5CB187E99671E95D0571",
-      "size": 9786229
+      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.3/maccy-1.0.3-setup.exe",
+      "sha256": "1F0E0A0084BF04C0423F3E39EA288574B166E22D867586EE0EC4C9D041CDA9E1",
+      "size": 9786202
     }
   }
 }
