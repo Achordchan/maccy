@@ -12,7 +12,9 @@ import sys
 import threading
 import traceback
 import queue
+import time
 import urllib.parse
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -447,6 +449,20 @@ def _gitee_delete_release_by_tag(*, owner: str, repo_name: str, token: str, tag:
         return
 
 
+def _gitee_get_release_by_tag(*, owner: str, repo_name: str, token: str, tag: str) -> dict | None:
+    api = "https://gitee.com/api/v5"
+    url = f"{api}/repos/{owner}/{repo_name}/releases/tags/{urllib.parse.quote(tag)}?access_token={urllib.parse.quote(token)}"
+    try:
+        obj = _http_json("GET", url)
+    except Exception:
+        return None
+    if isinstance(obj, dict):
+        rid = str(obj.get("id") or "").strip()
+        if rid:
+            return obj
+    return None
+
+
 class _QueueWriter(io.TextIOBase):
     def __init__(self, q: "queue.Queue[str]"):
         super().__init__()
@@ -505,7 +521,12 @@ def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[in
     if publish_gitee:
         tag_exists = _remote_tag_exists(repo, tag)
         if tag_exists and (not force_republish):
-            raise RuntimeError(f"远端 tag 已存在：{tag}。说明这个版本号已发布过，请换一个新版本号。")
+            # If a previous run pushed the tag but failed before creating the Release, allow a safe resume.
+            # But if the Release already exists, we still block to prevent accidental re-release.
+            rel = _gitee_get_release_by_tag(owner=gitee_owner, repo_name=gitee_repo, token=gitee_token, tag=tag)
+            if rel is not None:
+                raise RuntimeError(f"远端 tag 已存在：{tag}。说明这个版本号已发布过，请换一个新版本号。")
+            print(f"[preflight] remote tag exists but no release found, will resume: {tag}")
         if tag_exists and force_republish:
             print(f"[preflight] remote tag exists, will force re-publish: {tag}")
 
@@ -826,20 +847,35 @@ def _infer_repo_from_git(repo_root: Path) -> tuple[str, str] | None:
     return m.group("owner"), m.group("repo")
 
 
-def _http_json(method: str, url: str, *, fields: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> dict:
+def _http_json(method: str, url: str, *, fields: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> object:
     data = None
     if fields is not None:
         data = urllib.parse.urlencode(fields).encode("utf-8")
 
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Accept", "application/json")
+    if data is not None:
+        req.add_header("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
     if headers:
         for k, v in headers.items():
             req.add_header(k, v)
 
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw)
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = (e.read() or b"").decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+
+        msg = f"HTTP {getattr(e, 'code', '?')} {getattr(e, 'reason', '')} for {method} {url}"
+        if body.strip():
+            msg += "\n" + body.strip()
+        sys.stderr.write(msg + "\n")
+        raise RuntimeError(msg)
 
 
 def _encode_multipart(fields: dict[str, str], file_field: str, file_path: Path) -> tuple[bytes, str]:
@@ -904,17 +940,33 @@ def _publish_to_gitee(repo_root: Path, *, owner: str, repo_name: str, token: str
 
     if release is None or not str(release.get("id") or ""):
         create_url = f"{api}/repos/{owner}/{repo_name}/releases"
-        release = _http_json(
-            "POST",
-            create_url,
-            fields={
-                "access_token": token,
-                "tag_name": tag,
-                "name": tag,
-                "body": notes,
-                "prerelease": "false",
-            },
-        )
+        last_err: Exception | None = None
+        for attempt in range(6):
+            try:
+                release = _http_json(
+                    "POST",
+                    create_url,
+                    fields={
+                        "access_token": token,
+                        "tag_name": tag,
+                        "name": tag,
+                        "body": notes,
+                        "prerelease": "false",
+                    },
+                )
+                break
+            except Exception as e:
+                last_err = e
+                # Gitee sometimes needs a moment after pushing tag before the API accepts it.
+                if attempt < 5:
+                    time.sleep(2)
+                    continue
+                raise
+
+        if isinstance(release, dict) is False:
+            if last_err is not None:
+                raise last_err
+            raise RuntimeError("create release failed")
 
     release_id = str(release.get("id") or "").strip()
     if not release_id:
