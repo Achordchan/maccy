@@ -177,11 +177,20 @@ public sealed class UpdateCoordinator
             throw new ArgumentException("installer path is empty", nameof(installerPath));
 
         // Avoid running the installer while our process still holds file locks (maccy.exe).
-        // Spawn a detached shell that waits briefly, then starts the installer.
-        var quoted = p.Replace("\"", "\"\"");
-        var args = "/C ping 127.0.0.1 -n 3 >nul & start \"\" \"" + quoted + "\"";
+        // Spawn a detached helper that waits for THIS process to exit, then starts the installer.
+        // (A fixed sleep is not reliable on slower machines.)
+        var pid = Environment.ProcessId;
+        var installer = p.Replace("'", "''");
 
-        Process.Start(new ProcessStartInfo("cmd.exe", args)
+        var script =
+            "Start-Sleep -Milliseconds 200; " +
+            "$p = Get-Process -Id " + pid + " -ErrorAction SilentlyContinue; " +
+            "if ($p) { try { $p.WaitForExit() } catch {} }; " +
+            "Start-Process -FilePath '" + installer + "'";
+
+        var args = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" + script + "\"";
+
+        Process.Start(new ProcessStartInfo("powershell.exe", args)
         {
             UseShellExecute = false,
             CreateNoWindow = true,

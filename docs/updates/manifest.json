@@ -1,14 +1,14 @@
 {
   "appId": "maccy",
   "latest": {
-    "version": "1.0.2",
+    "version": "1.0.33",
     "mandatory": false,
-    "notes": "新增货架功能 默认快捷键Ctrl +摇晃鼠标\n优化一些错误信息\n解决了已知问题",
-    "publishedAt": "2026-01-06T17:43:00Z",
+    "notes": "修复已知错误信息\n状态代码回调",
+    "publishedAt": "2026-01-20T09:25:41Z",
     "installer": {
-      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.2/maccy-1.0.2-setup.exe",
-      "sha256": "566C404168B07DCDA3A3BD967A0239052EE8306FE229AC20679FBB7CED47098C",
-      "size": 9786120
+      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.33/maccy-1.0.33-setup.exe",
+      "sha256": "61EDFB502384213BCBD6FAEF1386E9A3E659B15A331C5CB187E99671E95D0571",
+      "size": 9786229
     }
   }
 }

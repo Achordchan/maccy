@@ -337,6 +337,8 @@ public partial class App : Application
             var window = new MainWindow();
             desktop.MainWindow = window;
 
+            SetupTrayIcon(window);
+
             var clipboard = window.Clipboard;
             if (clipboard is null)
                 return;
