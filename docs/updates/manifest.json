@@ -1,14 +1,14 @@
 {
   "appId": "maccy",
   "latest": {
-    "version": "1.0.3",
-    "mandatory": false,
-    "notes": "修复已知错误信息\n状态代码回调",
-    "publishedAt": "2026-01-20T10:47:15Z",
+    "version": "1.0.4",
+    "mandatory": true,
+    "notes": "解决托盘图标消失的问题\n对货架功能进行优化",
+    "publishedAt": "2026-01-20T16:12:12Z",
     "installer": {
-      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.3/maccy-1.0.3-setup.exe",
-      "sha256": "1F0E0A0084BF04C0423F3E39EA288574B166E22D867586EE0EC4C9D041CDA9E1",
-      "size": 9786202
+      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.4/maccy-1.0.4-setup.exe",
+      "sha256": "B1EC78F837CDEDC95969F7D39066F34494627D78C6F829E741FBF812C4AF92B8",
+      "size": 9787720
     }
   }
 }
