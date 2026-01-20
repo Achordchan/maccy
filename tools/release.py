@@ -521,8 +521,6 @@ def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[in
     if publish_gitee:
         tag_exists = _remote_tag_exists(repo, tag)
         if tag_exists and (not force_republish):
-            # If a previous run pushed the tag but failed before creating the Release, allow a safe resume.
-            # But if the Release already exists, we still block to prevent accidental re-release.
             rel = _gitee_get_release_by_tag(owner=gitee_owner, repo_name=gitee_repo, token=gitee_token, tag=tag)
             if rel is not None:
                 raise RuntimeError(f"远端 tag 已存在：{tag}。说明这个版本号已发布过，请换一个新版本号。")
@@ -940,6 +938,14 @@ def _publish_to_gitee(repo_root: Path, *, owner: str, repo_name: str, token: str
 
     if release is None or not str(release.get("id") or ""):
         create_url = f"{api}/repos/{owner}/{repo_name}/releases"
+        target_commitish = "master"
+        try:
+            b = _run_text(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root).strip()
+            if b and b != "HEAD":
+                target_commitish = b
+        except Exception:
+            target_commitish = "master"
+
         last_err: Exception | None = None
         for attempt in range(6):
             try:
@@ -950,6 +956,7 @@ def _publish_to_gitee(repo_root: Path, *, owner: str, repo_name: str, token: str
                         "access_token": token,
                         "tag_name": tag,
                         "name": tag,
+                        "target_commitish": target_commitish,
                         "body": notes,
                         "prerelease": "false",
                     },
@@ -957,7 +964,6 @@ def _publish_to_gitee(repo_root: Path, *, owner: str, repo_name: str, token: str
                 break
             except Exception as e:
                 last_err = e
-                # Gitee sometimes needs a moment after pushing tag before the API accepts it.
                 if attempt < 5:
                     time.sleep(2)
                     continue
