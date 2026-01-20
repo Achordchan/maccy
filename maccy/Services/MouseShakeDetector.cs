@@ -12,11 +12,11 @@ public sealed class MouseShakeDetector
     private int _directionChanges;
     private int _lastDir;
 
-    public TimeSpan Window { get; set; } = TimeSpan.FromMilliseconds(650);
+    public TimeSpan Window { get; set; } = TimeSpan.FromMilliseconds(750);
 
-    public double MinDeltaX { get; set; } = 10;
+    public double MinDeltaX { get; set; } = 7;
 
-    public int RequiredDirectionChanges { get; set; } = 3;
+    public int RequiredDirectionChanges { get; set; } = 2;
 
     public void Reset()
     {

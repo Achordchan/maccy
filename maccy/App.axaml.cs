@@ -45,6 +45,9 @@ public partial class App : Application
 
     private Mutex? _appMutex;
 
+    private DateTimeOffset _lastTrayClickUtc = DateTimeOffset.MinValue;
+    private static readonly TimeSpan TrayDoubleClickThreshold = TimeSpan.FromMilliseconds(380);
+
     private const string AppMutexName = "maccy_mutex";
 
     private const string UpdateManifestUrl = "https://gitee.com/Achordchan/maccy/raw/master/docs/updates/manifest.json";
@@ -75,7 +78,7 @@ public partial class App : Application
         var menu = new NativeMenu();
 
         var open = new NativeMenuItem("打开");
-        open.Click += (_, _) => Dispatcher.UIThread.Post(() => ToggleWindowNearCursor(window));
+        open.Click += (_, _) => Dispatcher.UIThread.Post(() => ToggleWindowCentered(window));
         menu.Items.Add(open);
 
         var prefs = new NativeMenuItem("设置...");
@@ -92,15 +95,27 @@ public partial class App : Application
         quit.Click += (_, _) => Dispatcher.UIThread.Post(() => _desktop?.Shutdown());
         menu.Items.Add(quit);
 
-        var icons = new TrayIcons
+        var tray = new TrayIcon
         {
-            new TrayIcon
-            {
-                Icon = icon,
-                ToolTipText = "剪贴板",
-                Menu = menu,
-            }
+            Icon = icon,
+            ToolTipText = "Maccy剪贴板工具",
+            Menu = menu,
         };
+
+        tray.Clicked += (_, _) =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastTrayClickUtc <= TrayDoubleClickThreshold)
+            {
+                _lastTrayClickUtc = DateTimeOffset.MinValue;
+                Dispatcher.UIThread.Post(() => ToggleWindowCentered(window));
+                return;
+            }
+
+            _lastTrayClickUtc = now;
+        };
+
+        var icons = new TrayIcons { tray };
 
         TrayIcon.SetIcons(this, icons);
     }
@@ -551,6 +566,49 @@ public partial class App : Application
             window.Position = new PixelPoint(clampedX, clampedY);
         }
 
+        window.WindowState = WindowState.Normal;
+        window.Show();
+        window.Activate();
+        ForceForeground(window);
+        window.PrepareForOpen();
+        window.FocusSearch();
+    }
+
+    private static void ToggleWindowCentered(MainWindow window)
+    {
+        var (x, y) = WindowsHotkeyService.GetCursorPosition();
+        var cursor = new PixelPoint(x, y);
+
+        var screen = window.Screens.ScreenFromPoint(cursor) ?? window.Screens.Primary;
+        var wa = screen?.WorkingArea;
+
+        var w = (int)Math.Max(100, window.Width);
+        var h = (int)Math.Max(100, window.Height);
+        if (w <= 100 || h <= 100)
+        {
+            try
+            {
+                w = (int)Math.Max(100, window.Bounds.Width);
+                h = (int)Math.Max(100, window.Bounds.Height);
+            }
+            catch
+            {
+            }
+        }
+
+        PixelPoint pos;
+        if (wa is null)
+        {
+            pos = new PixelPoint(0, 0);
+        }
+        else
+        {
+            var cx = wa.Value.X + (wa.Value.Width - w) / 2;
+            var cy = wa.Value.Y + (wa.Value.Height - h) / 2;
+            pos = new PixelPoint(cx, cy);
+        }
+
+        window.Position = pos;
         window.WindowState = WindowState.Normal;
         window.Show();
         window.Activate();

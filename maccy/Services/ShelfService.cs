@@ -116,7 +116,7 @@ public sealed class ShelfService : IDisposable
         {
             var dx0 = p.X - _leftDownPoint.Value.X;
             var dy0 = p.Y - _leftDownPoint.Value.Y;
-            if ((dx0 * dx0 + dy0 * dy0) < (12 * 12))
+            if ((dx0 * dx0 + dy0 * dy0) < (8 * 8))
                 return;
 
             // Now we consider this a real drag gesture; start a fresh shake window.
@@ -125,7 +125,7 @@ public sealed class ShelfService : IDisposable
         }
 
         // Avoid "click-and-swipe" accidental shakes; require a short hold.
-        if ((DateTimeOffset.UtcNow - _leftDownAt) < TimeSpan.FromMilliseconds(160))
+        if ((DateTimeOffset.UtcNow - _leftDownAt) < TimeSpan.FromMilliseconds(110))
             return;
 
         // We only use X-axis direction changes; screen coordinates are fine.

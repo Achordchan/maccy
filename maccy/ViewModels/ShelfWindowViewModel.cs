@@ -257,16 +257,48 @@ public partial class ShelfWindowViewModel : ViewModelBase
     }
 }
 
-public sealed record ShelfFileItemViewModel(
-    Guid Id,
-    string FilePath,
-    string FileName,
-    Bitmap? Icon,
-    long SizeBytes,
-    int? ImageWidth,
-    int? ImageHeight
-)
+public sealed class ShelfFileItemViewModel : ViewModelBase
 {
+    private bool _isSelected;
+
+    public Guid Id { get; }
+
+    public string FilePath { get; }
+
+    public string FileName { get; }
+
+    public Bitmap? Icon { get; }
+
+    public long SizeBytes { get; }
+
+    public int? ImageWidth { get; }
+
+    public int? ImageHeight { get; }
+
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set => SetProperty(ref _isSelected, value);
+    }
+
+    public ShelfFileItemViewModel(
+        Guid id,
+        string filePath,
+        string fileName,
+        Bitmap? icon,
+        long sizeBytes,
+        int? imageWidth,
+        int? imageHeight)
+    {
+        Id = id;
+        FilePath = filePath;
+        FileName = fileName;
+        Icon = icon;
+        SizeBytes = sizeBytes;
+        ImageWidth = imageWidth;
+        ImageHeight = imageHeight;
+    }
+
     public string TypeColor
     {
         get

@@ -3,8 +3,8 @@
         xmlns:vm="using:maccy.ViewModels"
         x:Class="maccy.Views.ShelfWindow"
         x:DataType="vm:ShelfWindowViewModel"
-        Width="260"
-        Height="260"
+        Width="220"
+        Height="220"
         Topmost="True"
         ShowActivated="False"
         ShowInTaskbar="False"
@@ -37,14 +37,16 @@
     </Style>
   </Window.Styles>
 
-  <Border Padding="14"
-          CornerRadius="18"
-          ClipToBounds="True"
-          Background="#BFF2F2F2"
-          BorderBrush="#40FFFFFF"
-          BorderThickness="1"
+  <Border CornerRadius="18"
+          Background="Transparent"
           BoxShadow="0 18 44 0 #1A000000">
-    <Grid>
+    <Border Name="Chrome" Padding="14"
+            CornerRadius="18"
+            ClipToBounds="True"
+            Background="#BFF2F2F2"
+            BorderBrush="#40FFFFFF"
+            BorderThickness="1">
+      <Grid>
 
       <Border CornerRadius="18">
         <Border.Background>
@@ -56,28 +58,10 @@
         </Border.Background>
       </Border>
 
-      <Border Width="28"
-              Height="28"
-              CornerRadius="14"
-              Background="#2EFFFFFF"
-              BorderBrush="#2AFFFFFF"
-              BorderThickness="1"
-              HorizontalAlignment="Right"
-              VerticalAlignment="Top">
-        <Button Padding="0"
-                Background="Transparent"
-                BorderThickness="0"
-                HorizontalContentAlignment="Center"
-                VerticalContentAlignment="Center"
-                FontSize="16"
-                Content="×"
-                Command="{Binding CloseCommand}" />
-      </Border>
-
-      <Grid IsVisible="{Binding ShowCompact}" RowDefinitions="Auto,*" RowSpacing="10">
+      <Grid IsVisible="{Binding ShowCompact}" RowDefinitions="*">
 
         <Border Name="StackHandle"
-                Grid.Row="1"
+                Grid.Row="0"
                 CornerRadius="18"
                 Background="#66FFFFFF"
                 BorderBrush="#26FFFFFF"
@@ -87,9 +71,7 @@
           <Grid>
 
             <StackPanel IsVisible="{Binding HasSingleItem}" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10">
-              <Grid Width="64" Height="64">
-                <Border CornerRadius="16" Background="#22FFFFFF" />
-                <Border CornerRadius="16" Background="{Binding PrimaryItem.TypeColor}" Opacity="0.16" />
+              <Grid Name="CompactIcon" Width="64" Height="64" Cursor="Hand">
                 <TextBlock FontFamily="Segoe MDL2 Assets"
                            Text="{Binding PrimaryItem.TypeGlyph}"
                            Foreground="#88000000"
@@ -107,14 +89,6 @@
             </StackPanel>
           </Grid>
         </Border>
-
-        <TextBlock Grid.Row="0"
-                   Text="{Binding TitleText}"
-                   Foreground="#66000000"
-                   FontSize="11"
-                   HorizontalAlignment="Center"
-                   VerticalAlignment="Top"
-                   Margin="0,26,0,0" />
       </Grid>
 
       <Grid IsVisible="{Binding IsExpanded}" RowDefinitions="Auto,*" RowSpacing="12">
@@ -143,8 +117,14 @@
               </ItemsControl.ItemsPanel>
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                  <Border Width="210" Height="96" Margin="0,0,12,12" CornerRadius="16" Background="#66FFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1" BoxShadow="0 10 22 0 #14000000" Padding="12">
+                  <Border Width="210" Height="96" Margin="0,0,12,12" CornerRadius="16" Background="#66FFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1" BoxShadow="0 10 22 0 #14000000" Padding="12" Cursor="Hand">
                     <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                      <Border IsVisible="{Binding IsSelected}"
+                              CornerRadius="14"
+                              Background="#224DA3FF"
+                              BorderBrush="#664DA3FF"
+                              BorderThickness="1"
+                              Margin="-6" />
                       <Grid Width="44" Height="44">
                         <Border CornerRadius="12" Background="{Binding TypeColor}" Opacity="0.18" />
                         <TextBlock FontFamily="Segoe MDL2 Assets"
@@ -168,8 +148,14 @@
             <ItemsControl Name="ExpandedItems" IsVisible="{Binding ShowExpandedList}" ItemsSource="{Binding Items}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                  <Border Margin="0,0,0,10" Padding="10" CornerRadius="14" Background="#66FFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1" BoxShadow="0 10 22 0 #14000000">
+                  <Border Margin="0,0,0,10" Padding="10" CornerRadius="14" Background="#66FFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1" BoxShadow="0 10 22 0 #14000000" Cursor="Hand">
                     <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                      <Border IsVisible="{Binding IsSelected}"
+                              CornerRadius="12"
+                              Background="#224DA3FF"
+                              BorderBrush="#664DA3FF"
+                              BorderThickness="1"
+                              Margin="-6" />
                       <Grid Width="34" Height="34">
                         <Border CornerRadius="10" Background="{Binding TypeColor}" Opacity="0.18" />
                         <TextBlock FontFamily="Segoe MDL2 Assets"
@@ -193,6 +179,97 @@
         </ScrollViewer>
       </Grid>
 
-    </Grid>
+      <Border Name="DragOverlay"
+              CornerRadius="18"
+              BorderBrush="#884DA3FF"
+              BorderThickness="2"
+              Background="#224DA3FF"
+              Opacity="0"
+              IsHitTestVisible="False">
+        <Border.Transitions>
+          <Transitions>
+            <DoubleTransition Property="Opacity" Duration="0:0:0.10" />
+          </Transitions>
+        </Border.Transitions>
+        <TextBlock Text="松开以放入"
+                   Foreground="#CC000000"
+                   FontSize="12"
+                   FontWeight="SemiBold"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center" />
+      </Border>
+
+      <Border Name="DragOutOverlay"
+              CornerRadius="18"
+              BorderBrush="#66FFFFFF"
+              BorderThickness="1"
+              Background="#14000000"
+              Opacity="0"
+              IsHitTestVisible="False">
+        <Border.Transitions>
+          <Transitions>
+            <DoubleTransition Property="Opacity" Duration="0:0:0.10" />
+          </Transitions>
+        </Border.Transitions>
+        <Grid>
+          <Border Name="DragOutPill"
+                  x:DataType="vm:ShelfFileItemViewModel"
+                  Width="78"
+                  Height="78"
+                  CornerRadius="22"
+                  Background="#66FFFFFF"
+                  BorderBrush="#26FFFFFF"
+                  BorderThickness="1"
+                  BoxShadow="0 10 22 0 #16000000"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  Opacity="0"
+                  RenderTransformOrigin="0.5,0.5">
+            <Border.Transitions>
+              <Transitions>
+                <DoubleTransition Property="Opacity" Duration="0:0:0.10" />
+              </Transitions>
+            </Border.Transitions>
+            <Border.RenderTransform>
+              <ScaleTransform ScaleX="0.96" ScaleY="0.96" />
+            </Border.RenderTransform>
+            <Grid>
+              <TextBlock FontFamily="Segoe MDL2 Assets"
+                         Text="{Binding TypeGlyph}"
+                         Foreground="#88000000"
+                         FontSize="22"
+                         HorizontalAlignment="Center"
+                         VerticalAlignment="Center" />
+              <Image Width="44" Height="44" Stretch="Uniform" Source="{Binding Icon}" />
+            </Grid>
+          </Border>
+        </Grid>
+      </Border>
+
+      <Border Width="28"
+              Height="28"
+              CornerRadius="14"
+              Background="#2EFFFFFF"
+              BorderBrush="#2AFFFFFF"
+              BorderThickness="1"
+              HorizontalAlignment="Right"
+              VerticalAlignment="Top">
+        <Button Padding="0"
+                Background="Transparent"
+                BorderThickness="0"
+                HorizontalContentAlignment="Center"
+                VerticalContentAlignment="Center"
+                Command="{Binding CloseCommand}">
+          <TextBlock Text="×"
+                     FontSize="18"
+                     Margin="0,-1,0,0"
+                     Foreground="#AA000000"
+                     HorizontalAlignment="Center"
+                     VerticalAlignment="Center" />
+        </Button>
+      </Border>
+
+      </Grid>
+    </Border>
   </Border>
 </Window>

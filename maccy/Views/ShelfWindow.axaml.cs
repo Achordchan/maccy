@@ -5,6 +5,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Markup.Xaml;
 using maccy.Services;
 using maccy.ViewModels;
@@ -15,20 +16,29 @@ public partial class ShelfWindow : Window
 {
     private const string ShelfInternalDragFormat = "maccy/shelf-internal-drag";
 
-    private const double CompactSize = 260;
-    private const double ExpandedSize = 460;
+    private const double CompactSize = 220;
+    private const double ExpandedSize = 420;
 
     private readonly Action<ShelfWindow>? _onPinned;
 
     private Control? _stackHandle;
-    private Point _dragStart;
-    private bool _dragging;
+    private Control? _compactIcon;
+    private PointerPressedEventArgs? _stackMoveStartArgs;
+    private Point _stackDragStart;
+    private bool _stackMoving;
+
+    private Point _iconDragStart;
+    private bool _iconDragging;
 
     private ItemsControl? _expandedItems;
     private ItemsControl? _expandedGrid;
     private ShelfFileItemViewModel? _itemDrag;
     private Point _itemDragStart;
     private bool _itemDragging;
+
+    private Border? _dragOverlay;
+    private Border? _dragOutOverlay;
+    private Border? _dragOutPill;
 
     private ShelfWindowViewModel? _vm;
 
@@ -45,12 +55,24 @@ public partial class ShelfWindow : Window
         DataContextChanged += (_, _) => AttachViewModel();
         AttachViewModel();
 
+        _dragOverlay = this.FindControl<Border>("DragOverlay");
+        _dragOutOverlay = this.FindControl<Border>("DragOutOverlay");
+        _dragOutPill = this.FindControl<Border>("DragOutPill");
+
         _stackHandle = this.FindControl<Control>("StackHandle");
         if (_stackHandle is not null)
         {
             _stackHandle.PointerPressed += OnStackPointerPressed;
             _stackHandle.PointerMoved += OnStackPointerMoved;
             _stackHandle.PointerReleased += OnStackPointerReleased;
+        }
+
+        _compactIcon = this.FindControl<Control>("CompactIcon");
+        if (_compactIcon is not null)
+        {
+            _compactIcon.PointerPressed += OnCompactIconPointerPressed;
+            _compactIcon.PointerMoved += OnCompactIconPointerMoved;
+            _compactIcon.PointerReleased += OnCompactIconPointerReleased;
         }
 
         _expandedItems = this.FindControl<ItemsControl>("ExpandedItems");
@@ -83,7 +105,7 @@ public partial class ShelfWindow : Window
         if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
             return;
 
-        if (_dragging || _itemDragging)
+        if (_iconDragging || _itemDragging)
             return;
 
         if (e.Source is not Control control)
@@ -141,17 +163,55 @@ public partial class ShelfWindow : Window
         if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
             return;
 
-        if (DataContext is not ShelfWindowViewModel vm)
+        if (IsWithinCompactIcon(e.Source as Control))
             return;
 
-        if (!vm.Pinned || vm.Items.Count == 0)
-            return;
-
-        _dragStart = e.GetPosition(this);
-        _dragging = false;
+        _stackMoveStartArgs = e;
+        _stackDragStart = e.GetPosition(this);
+        _stackMoving = false;
     }
 
-    private async void OnStackPointerMoved(object? sender, PointerEventArgs e)
+    private void OnStackPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            return;
+
+        if (_stackMoving)
+            return;
+
+        if (IsWithinCompactIcon(e.Source as Control))
+            return;
+
+        var p = e.GetPosition(this);
+        var dx = p.X - _stackDragStart.X;
+        var dy = p.Y - _stackDragStart.Y;
+        if ((dx * dx + dy * dy) < (6 * 6))
+            return;
+
+        _stackMoving = true;
+        try
+        {
+            if (_stackMoveStartArgs is not null)
+                BeginMoveDrag(_stackMoveStartArgs);
+        }
+        catch
+        {
+        }
+    }
+
+    private void OnStackPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (DataContext is ShelfWindowViewModel vm && !_stackMoving && vm.HasMultipleItems)
+        {
+            vm.IsExpanded = !vm.IsExpanded;
+            UpdateSize(vm);
+        }
+
+        _stackMoving = false;
+        _stackMoveStartArgs = null;
+    }
+
+    private void OnCompactIconPointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
             return;
@@ -165,16 +225,34 @@ public partial class ShelfWindow : Window
         if (!vm.Pinned || vm.Items.Count == 0)
             return;
 
-        if (_dragging)
+        _iconDragStart = e.GetPosition(this);
+        _iconDragging = false;
+    }
+
+    private async void OnCompactIconPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            return;
+
+        if (DataContext is not ShelfWindowViewModel vm)
+            return;
+
+        if (vm.IsExpanded)
+            return;
+
+        if (!vm.Pinned || vm.Items.Count == 0)
+            return;
+
+        if (_iconDragging)
             return;
 
         var p = e.GetPosition(this);
-        var dx = p.X - _dragStart.X;
-        var dy = p.Y - _dragStart.Y;
+        var dx = p.X - _iconDragStart.X;
+        var dy = p.Y - _iconDragStart.Y;
         if ((dx * dx + dy * dy) < (6 * 6))
             return;
 
-        _dragging = true;
+        _iconDragging = true;
 
         try
         {
@@ -191,6 +269,18 @@ public partial class ShelfWindow : Window
             data.Set(ShelfInternalDragFormat, true);
             data.Set(DataFormats.FileNames, paths);
 
+            if (_dragOutOverlay is not null)
+            {
+                _dragOutOverlay.DataContext = vm.PrimaryItem;
+                _dragOutOverlay.Opacity = 1;
+            }
+            if (_dragOutPill?.RenderTransform is ScaleTransform pillScale)
+            {
+                pillScale.ScaleX = 1;
+                pillScale.ScaleY = 1;
+            }
+            if (_dragOutPill is not null)
+                _dragOutPill.Opacity = 1;
             await DragDrop.DoDragDrop(e, data, DragDropEffects.Copy);
         }
         catch
@@ -198,25 +288,41 @@ public partial class ShelfWindow : Window
         }
         finally
         {
-            _dragging = false;
+            if (_dragOutOverlay is not null)
+            {
+                _dragOutOverlay.Opacity = 0;
+                _dragOutOverlay.DataContext = null;
+            }
+            if (_dragOutPill?.RenderTransform is ScaleTransform pillScale)
+            {
+                pillScale.ScaleX = 0.96;
+                pillScale.ScaleY = 0.96;
+            }
+            if (_dragOutPill is not null)
+                _dragOutPill.Opacity = 0;
+            _iconDragging = false;
         }
     }
 
-    private void OnStackPointerReleased(object? sender, PointerReleasedEventArgs e)
+    private void OnCompactIconPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
-        if (DataContext is ShelfWindowViewModel vm && !_dragging && vm.HasMultipleItems)
+        _iconDragging = false;
+    }
+
+    private bool IsWithinCompactIcon(Control? control)
+    {
+        if (_compactIcon is null || control is null)
+            return false;
+
+        var current = control;
+        while (current is not null)
         {
-            var p = e.GetPosition(this);
-            var dx = p.X - _dragStart.X;
-            var dy = p.Y - _dragStart.Y;
-            if ((dx * dx + dy * dy) < (6 * 6))
-            {
-                vm.IsExpanded = !vm.IsExpanded;
-                UpdateSize(vm);
-            }
+            if (ReferenceEquals(current, _compactIcon))
+                return true;
+            current = current.Parent as Control;
         }
 
-        _dragging = false;
+        return false;
     }
 
     private void UpdateSize(ShelfWindowViewModel vm)
@@ -248,6 +354,20 @@ public partial class ShelfWindow : Window
         if (item is null)
             return;
 
+        if ((e.KeyModifiers & KeyModifiers.Control) != 0)
+        {
+            item.IsSelected = !item.IsSelected;
+        }
+        else
+        {
+            foreach (var it in vm.Items)
+            {
+                if (!ReferenceEquals(it, item) && it.IsSelected)
+                    it.IsSelected = false;
+            }
+            item.IsSelected = true;
+        }
+
         _itemDrag = item;
         _itemDragStart = e.GetPosition(this);
         _itemDragging = false;
@@ -276,12 +396,34 @@ public partial class ShelfWindow : Window
         _itemDragging = true;
         try
         {
-            if (string.IsNullOrWhiteSpace(_itemDrag.FilePath))
+            var selected = vm.Items.Where(x => x.IsSelected).ToList();
+            if (selected.Count == 0)
+                selected.Add(_itemDrag);
+
+            var paths = selected
+                .Select(x => x.FilePath)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (paths.Length == 0)
                 return;
 
             var data = new DataObject();
             data.Set(ShelfInternalDragFormat, true);
-            data.Set(DataFormats.FileNames, new[] { _itemDrag.FilePath });
+            data.Set(DataFormats.FileNames, paths);
+            if (_dragOutOverlay is not null)
+            {
+                _dragOutOverlay.DataContext = _itemDrag;
+                _dragOutOverlay.Opacity = 1;
+            }
+            if (_dragOutPill?.RenderTransform is ScaleTransform pillScale)
+            {
+                pillScale.ScaleX = 1;
+                pillScale.ScaleY = 1;
+            }
+            if (_dragOutPill is not null)
+                _dragOutPill.Opacity = 1;
             await DragDrop.DoDragDrop(e, data, DragDropEffects.Copy);
         }
         catch
@@ -289,6 +431,18 @@ public partial class ShelfWindow : Window
         }
         finally
         {
+            if (_dragOutOverlay is not null)
+            {
+                _dragOutOverlay.Opacity = 0;
+                _dragOutOverlay.DataContext = null;
+            }
+            if (_dragOutPill?.RenderTransform is ScaleTransform pillScale)
+            {
+                pillScale.ScaleX = 0.96;
+                pillScale.ScaleY = 0.96;
+            }
+            if (_dragOutPill is not null)
+                _dragOutPill.Opacity = 0;
             _itemDragging = false;
             _itemDrag = null;
         }
@@ -306,17 +460,23 @@ public partial class ShelfWindow : Window
         {
             e.DragEffects = DragDropEffects.None;
             e.Handled = true;
+            if (_dragOverlay is not null)
+                _dragOverlay.Opacity = 0;
             return;
         }
 
         if (!DragFileHelper.HasFileData(e.Data))
         {
             e.DragEffects = DragDropEffects.None;
+            if (_dragOverlay is not null)
+                _dragOverlay.Opacity = 0;
             return;
         }
 
         e.DragEffects = DragDropEffects.Copy;
         e.Handled = true;
+        if (_dragOverlay is not null)
+            _dragOverlay.Opacity = 1;
     }
 
     private void OnDragOver(object? sender, DragEventArgs e)
@@ -325,22 +485,29 @@ public partial class ShelfWindow : Window
         {
             e.DragEffects = DragDropEffects.None;
             e.Handled = true;
+            if (_dragOverlay is not null)
+                _dragOverlay.Opacity = 0;
             return;
         }
 
         if (!DragFileHelper.HasFileData(e.Data))
         {
             e.DragEffects = DragDropEffects.None;
+            if (_dragOverlay is not null)
+                _dragOverlay.Opacity = 0;
             return;
         }
 
         e.DragEffects = DragDropEffects.Copy;
         e.Handled = true;
+        if (_dragOverlay is not null)
+            _dragOverlay.Opacity = 1;
     }
 
     private void OnDragLeave(object? sender, DragEventArgs e)
     {
-        // no-op
+        if (_dragOverlay is not null)
+            _dragOverlay.Opacity = 0;
     }
 
     private void OnDrop(object? sender, DragEventArgs e)
@@ -348,6 +515,8 @@ public partial class ShelfWindow : Window
         if (e.Data.Contains(ShelfInternalDragFormat))
         {
             e.Handled = true;
+            if (_dragOverlay is not null)
+                _dragOverlay.Opacity = 0;
             return;
         }
 
@@ -361,5 +530,7 @@ public partial class ShelfWindow : Window
         vm.AddFiles(paths);
         _onPinned?.Invoke(this);
         e.Handled = true;
+        if (_dragOverlay is not null)
+            _dragOverlay.Opacity = 0;
     }
 }
