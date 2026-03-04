@@ -6,6 +6,16 @@ public sealed class AppSettings
 
     public bool StartWithWindows { get; set; }
 
+    public string? AuthAccessToken { get; set; }
+
+    public string? AuthRefreshToken { get; set; }
+
+    public string? AuthIdToken { get; set; }
+
+    public long AuthExpiresAtUnixMs { get; set; }
+
+    public string NasAgentBaseUrl { get; set; } = string.Empty;
+
     public int MaxItems { get; set; } = 200;
 
     public int MaxMegabytes { get; set; } = 300;

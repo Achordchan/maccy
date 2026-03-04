@@ -131,14 +131,48 @@
                     Background="{DynamicResource AppPanelBackground}"
                     BorderBrush="{DynamicResource AppDivider}"
                     BorderThickness="0,1,0,0">
-                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="8">
                     <TextBlock Grid.Column="0"
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource AppMuted2Foreground}"
                                FontSize="11"
                                Text="{Binding VersionText}" />
-                    <Button Grid.Column="1" Content="设置" Command="{Binding OpenPreferencesCommand}" />
-                    <Button Grid.Column="2" Content="清除" Click="OnClearAllClick" />
+
+                    <Border Grid.Column="1"
+                            VerticalAlignment="Center"
+                            Background="{DynamicResource AppControlBackground}"
+                            BorderBrush="{DynamicResource AppBorder}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="10,6"
+                            ClipToBounds="True"
+                            MinWidth="0"
+                            IsVisible="{Binding IsSyncProgressVisible}">
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10" MinWidth="0">
+                            <TextBlock Grid.Column="0"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource AppMutedForeground}"
+                                       FontSize="11"
+                                       TextTrimming="CharacterEllipsis"
+                                       TextWrapping="NoWrap"
+                                       MaxWidth="120"
+                                       Text="{Binding SyncProgressText}" />
+                            <ProgressBar Grid.Column="1"
+                                         Height="12"
+                                         Minimum="0"
+                                         Maximum="100"
+                                         MinWidth="0"
+                                         Value="{Binding SyncProgressPercent}" />
+                        </Grid>
+                    </Border>
+
+                    <Grid Grid.Column="2" VerticalAlignment="Center" Width="18" Height="18" ToolTip.Tip="{Binding SyncIconToolTip}">
+                        <Image Width="18" Height="18" Stretch="Uniform" IsVisible="{Binding ShowSyncSuccessIcon}" Source="avares://maccy/Assets/dui.png" />
+                        <Image Width="18" Height="18" Stretch="Uniform" IsVisible="{Binding ShowSyncErrorIcon}" Source="avares://maccy/Assets/cuo.png" />
+                    </Grid>
+
+                    <Button Grid.Column="3" Content="设置" Command="{Binding OpenPreferencesCommand}" />
+                    <Button Grid.Column="4" Content="清除" Click="OnClearAllClick" />
                 </Grid>
             </Border>
 

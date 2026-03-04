@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Avalonia.Threading;
 using maccy.Models;
 
 namespace maccy.Services;
@@ -44,7 +45,10 @@ public sealed class ClipboardPersistenceService : IDisposable
                 .Cast<ClipboardItem>()
                 .ToList();
 
-            _history.ReplaceAll(normalized);
+            await Dispatcher.UIThread.InvokeAsync(async () =>
+            {
+                await _history.ReplaceAllAsync(normalized, CancellationToken.None);
+            });
         }
         catch
         {
@@ -56,6 +60,17 @@ public sealed class ClipboardPersistenceService : IDisposable
         try
         {
             SaveNow();
+        }
+        catch
+        {
+        }
+    }
+
+    public async Task FlushAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            await Task.Run(() => SaveNow(), ct);
         }
         catch
         {

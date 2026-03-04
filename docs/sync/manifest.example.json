@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "issuer": "https://achord-maccy.authing.cn/oidc",
+  "subject": "authing-sub-user-id",
+  "latest": {
+    "version": "1700000000000",
+    "updatedAt": "2026-01-24T10:00:00Z",
+    "deviceId": "windows-DEVICEID",
+    "createdFromVersion": "1699999999000",
+    "snapshot": {
+      "type": "sqlite",
+      "fileName": "snapshot.sqlite",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size": 0
+    }
+  }
+}

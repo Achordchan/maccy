@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Avalonia.Threading;
 using maccy.Models;
 
 namespace maccy.Services;
@@ -196,30 +199,108 @@ public sealed class ClipboardHistoryService
         EnforceLimits();
         Changed?.Invoke();
 
-        foreach (var path in toDeleteImages)
+        _ = Task.Run(() =>
         {
-            try
+            foreach (var path in toDeleteImages)
             {
-                if (path is not null && File.Exists(path))
-                    File.Delete(path);
+                try
+                {
+                    if (path is not null && File.Exists(path))
+                        File.Delete(path);
+                }
+                catch
+                {
+                }
             }
-            catch
-            {
-            }
-        }
 
-        foreach (var id in toDeleteFileDirs)
+            foreach (var id in toDeleteFileDirs)
+            {
+                try
+                {
+                    var dir = Path.Combine(AppPaths.FilesRoot, id.ToString("N"));
+                    if (Directory.Exists(dir))
+                        Directory.Delete(dir, recursive: true);
+                }
+                catch
+                {
+                }
+            }
+        });
+    }
+
+    public async Task ReplaceAllAsync(IReadOnlyList<ClipboardItem> items, CancellationToken ct = default)
+    {
+        var newImages = items
+            .Select(x => x.ImageFilePath)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var newFileDirs = items
+            .Where(x => x.Kind == ClipboardContentKind.FileList)
+            .Select(x => x.Id)
+            .Distinct()
+            .ToHashSet();
+
+        var toDeleteImages = await Dispatcher.UIThread.InvokeAsync(() =>
         {
-            try
+            return Items
+                .Select(x => x.ImageFilePath)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(x => x is not null && !newImages.Contains(x))
+                .OfType<string>()
+                .ToList();
+        });
+
+        var toDeleteFileDirs = await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            return Items
+                .Where(x => x.Kind == ClipboardContentKind.FileList)
+                .Select(x => x.Id)
+                .Distinct()
+                .Where(x => !newFileDirs.Contains(x))
+                .ToList();
+        });
+
+        await Task.Run(() =>
+        {
+            foreach (var path in toDeleteImages)
             {
-                var dir = Path.Combine(AppPaths.FilesRoot, id.ToString("N"));
-                if (Directory.Exists(dir))
-                    Directory.Delete(dir, recursive: true);
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    if (File.Exists(path))
+                        File.Delete(path);
+                }
+                catch
+                {
+                }
             }
-            catch
+
+            foreach (var id in toDeleteFileDirs)
             {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var dir = Path.Combine(AppPaths.FilesRoot, id.ToString("N"));
+                    if (Directory.Exists(dir))
+                        Directory.Delete(dir, recursive: true);
+                }
+                catch
+                {
+                }
             }
-        }
+        }, ct);
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            Items.Clear();
+            foreach (var item in items)
+                Items.Add(item);
+            EnforceLimits();
+            Changed?.Invoke();
+        });
     }
 
     public void ClearAll()

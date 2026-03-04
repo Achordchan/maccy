@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Media.Imaging;
 using Avalonia.Input;
@@ -59,6 +60,111 @@ public partial class MainWindow : Window
     private static readonly TimeSpan PreviewSuppressGrace = TimeSpan.FromMilliseconds(450);
     private static readonly TimeSpan PreviewShowDelay = TimeSpan.FromMilliseconds(350);
     private static readonly TimeSpan PreviewAnchorGrace = TimeSpan.FromMilliseconds(220);
+
+    public async Task<bool> ShowConfirmAsync(string title, string message)
+    {
+        var appPanelBg = GetAppResource<IBrush>("AppPanelBackground") ?? Brushes.Transparent;
+        var appControlBg = GetAppResource<IBrush>("AppControlBackground") ?? Brushes.Transparent;
+        var appBorder = GetAppResource<IBrush>("AppBorder") ?? Brushes.Transparent;
+        var appFg = GetAppResource<IBrush>("AppForeground") ?? Brushes.Black;
+        var appMuted = GetAppResource<IBrush>("AppMutedForeground") ?? appFg;
+
+        var cancelBtn = new Button
+        {
+            Content = "取消",
+            MinWidth = 80,
+            Padding = new Thickness(14, 8),
+            CornerRadius = new CornerRadius(10),
+            Background = appControlBg,
+            Foreground = appFg,
+            BorderBrush = appBorder,
+            BorderThickness = new Thickness(1),
+        };
+
+        var okBtn = new Button
+        {
+            Content = "继续",
+            MinWidth = 80,
+            Padding = new Thickness(14, 8),
+            CornerRadius = new CornerRadius(10),
+            Background = new SolidColorBrush(Color.Parse("#EF4444")),
+            Foreground = Brushes.White,
+            BorderBrush = Brushes.Transparent,
+        };
+
+        var w = new Window
+        {
+            Title = title,
+            Width = 360,
+            Height = 190,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brushes.Transparent,
+            SystemDecorations = SystemDecorations.None,
+            ShowInTaskbar = false,
+        };
+
+        var chrome = new Border
+        {
+            Background = appPanelBg,
+            BorderBrush = appBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(16),
+        };
+
+        var root = new Grid
+        {
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto"),
+        };
+
+        root.Children.Add(new TextBlock
+        {
+            Text = title,
+            Foreground = appFg,
+            FontSize = 15,
+            FontWeight = FontWeight.SemiBold,
+        });
+
+        var msg = new Border
+        {
+            Background = appControlBg,
+            BorderBrush = appBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(12),
+            Margin = new Thickness(0, 10, 0, 0),
+            Child = new TextBlock
+            {
+                Text = message,
+                Foreground = appMuted,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+            },
+        };
+        Grid.SetRow(msg, 1);
+        root.Children.Add(msg);
+
+        var btnRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 10,
+            Margin = new Thickness(0, 12, 0, 0),
+        };
+        btnRow.Children.Add(cancelBtn);
+        btnRow.Children.Add(okBtn);
+        Grid.SetRow(btnRow, 2);
+        root.Children.Add(btnRow);
+
+        chrome.Child = root;
+        w.Content = chrome;
+
+        cancelBtn.Click += (_, _) => w.Close(false);
+        okBtn.Click += (_, _) => w.Close(true);
+
+        return await w.ShowDialog<bool>(this);
+    }
 
     public bool SuppressAutoHide =>
         _previewWindow is not null &&
@@ -1187,6 +1293,13 @@ public partial class MainWindow : Window
     {
         if (DataContext is not MainWindowViewModel vm)
             return;
+
+        if (vm.IsCloudSyncEnabled)
+        {
+            HidePreview();
+            await vm.ClearAllHistoryWithCloudConfirmAsync();
+            return;
+        }
 
         var appPanelBg = GetAppResource<IBrush>("AppPanelBackground") ?? Brushes.Transparent;
         var appControlBg = GetAppResource<IBrush>("AppControlBackground") ?? Brushes.Transparent;

@@ -28,6 +28,10 @@ public partial class App : Application
     private WindowsHotkeyService? _hotkey;
     private ClipboardPersistenceService? _persistence;
 
+    private ClipboardHistoryService? _history;
+
+    private SyncService? _sync;
+
     private ShelfService? _shelf;
 
     private AppSettingsService? _settings;
@@ -165,7 +169,7 @@ public partial class App : Application
                 return;
             }
 
-            var vm = new PreferencesWindowViewModel(_settings, _autoStart, TriggerManualUpdateCheck, OpenStorageLocation);
+            var vm = new PreferencesWindowViewModel(_settings, _autoStart, TriggerManualUpdateCheck, OpenStorageLocation, _sync);
             var w = new PreferencesWindow
             {
                 DataContext = vm,
@@ -404,21 +408,27 @@ public partial class App : Application
             };
 
             var history = new ClipboardHistoryService();
+            _history = history;
             ApplySettings(history, null);
             _persistence = new ClipboardPersistenceService(history);
-            _ = _persistence.LoadAsync();
+            var historyLoadTask = _persistence.LoadAsync();
+
+            if (_settings is not null && _persistence is not null)
+                _sync = new SyncService(history, _settings, _persistence);
 
             _clipboardCapture = new ClipboardCaptureService(history, clipboard, TryGetForegroundApp);
             ApplySettings(history, _clipboardCapture);
             var apply = new ClipboardApplyService(clipboard, _clipboardCapture);
 
-            var vm = new MainWindowViewModel(history, apply);
+            var vm = new MainWindowViewModel(history, apply, _sync, _settings, historyLoadTask);
             vm.RequestHide += () => window.Hide();
             vm.RequestFocusSearch += () => window.FocusSearch();
             vm.RequestOpenPreferences += () => ShowPreferences(window);
             vm.RequestCheckUpdates += () => TriggerManualUpdateCheck();
             vm.RequestEditNote += item => window.BeginEditNote(item);
+            vm.ConfirmAsync = (title, message) => window.ShowConfirmAsync(title, message);
             window.DataContext = vm;
+            Dispatcher.UIThread.Post(() => vm.StartAutoSync());
 
             var updateService = new UpdateService(UpdateManifestUrl);
             _updateCoordinator = new UpdateCoordinator(
