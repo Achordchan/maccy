@@ -1,14 +1,14 @@
 {
   "appId": "maccy",
   "latest": {
-    "version": "1.0.4",
-    "mandatory": true,
-    "notes": "解决托盘图标消失的问题\n对货架功能进行优化",
-    "publishedAt": "2026-01-20T16:12:12Z",
+    "version": "1.0.5",
+    "mandatory": false,
+    "notes": "移除 Authing，切换为自建邮箱密码认证与自托管同步后台；修复云同步设置页布局与中文界面；迁移旧同步数据到新账号体系。",
+    "publishedAt": "2026-03-08T15:43:18Z",
     "installer": {
-      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.4/maccy-1.0.4-setup.exe",
-      "sha256": "B1EC78F837CDEDC95969F7D39066F34494627D78C6F829E741FBF812C4AF92B8",
-      "size": 9787720
+      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.5/maccy-1.0.5-setup.exe",
+      "sha256": "80F7CA90D008CC8669D2BE65FC767CBD507C70BD434B5F3190D4515B42A244C1",
+      "size": 10581264
     }
   }
 }
