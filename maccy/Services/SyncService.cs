@@ -1,6 +1,8 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -8,14 +10,14 @@ namespace maccy.Services;
 
 public sealed class SyncService
 {
+    private const string SubscriptionExpiredError = "subscription expired";
     private static readonly SemaphoreSlim Gate = new(1, 1);
 
     private readonly ClipboardHistoryService _history;
     private readonly AppSettingsService _settings;
     private readonly ClipboardPersistenceService _persistence;
-
     private readonly SnapshotSqliteService _snapshot;
-    private readonly AuthingOidcService _authing;
+    private readonly AuthService _authing;
 
     public SyncService(ClipboardHistoryService history, AppSettingsService settings, ClipboardPersistenceService persistence)
     {
@@ -23,7 +25,7 @@ public sealed class SyncService
         _settings = settings;
         _persistence = persistence;
         _snapshot = new SnapshotSqliteService();
-        _authing = new AuthingOidcService();
+        _authing = new AuthService();
     }
 
     public async Task UploadAsync(CancellationToken ct)
@@ -49,6 +51,8 @@ public sealed class SyncService
                 }
                 catch (NasAgentApiException ex)
                 {
+                    if (IsSubscriptionExpired(ex))
+                        throw new InvalidOperationException(SubscriptionExpiredError);
                     if (!IsAuthError(ex))
                         throw;
                     if (!await TryRefreshAndPersistAsync(ct))
@@ -88,6 +92,8 @@ public sealed class SyncService
                 }
                 catch (NasAgentApiException ex)
                 {
+                    if (IsSubscriptionExpired(ex))
+                        throw new InvalidOperationException(SubscriptionExpiredError);
                     if (!IsAuthError(ex))
                         throw;
                     if (!await TryRefreshAndPersistAsync(ct))
@@ -95,6 +101,7 @@ public sealed class SyncService
                     var token2 = SelectBearerToken(_settings.Current);
                     await client.DownloadSnapshotAsync(token2, snapshotPath, ct);
                 }
+
                 await _snapshot.ImportAsync(snapshotPath, _history, _settings, ct);
                 await _persistence.FlushAsync(ct);
             }
@@ -122,6 +129,8 @@ public sealed class SyncService
             }
             catch (NasAgentApiException ex)
             {
+                if (IsSubscriptionExpired(ex))
+                    throw new InvalidOperationException(SubscriptionExpiredError);
                 if (!IsAuthError(ex))
                     throw;
                 if (!await TryRefreshAndPersistAsync(ct))
@@ -134,6 +143,14 @@ public sealed class SyncService
         {
             Gate.Release();
         }
+    }
+
+    public async Task<SyncDirection> DecideDirectionAsync(CancellationToken ct)
+    {
+        var manifestJson = await GetManifestJsonAsync(ct);
+        var localLatest = GetLocalLatestCapturedAt();
+        var remoteUpdatedAt = TryReadRemoteUpdatedAt(manifestJson);
+        return DecideDirection(localLatest, remoteUpdatedAt);
     }
 
     private async Task<(string BaseUrl, string Token)> GetConnectionAsync(CancellationToken ct)
@@ -158,7 +175,21 @@ public sealed class SyncService
 
     private static bool IsAuthError(NasAgentApiException ex)
     {
-        return ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden;
+        return ex.StatusCode == HttpStatusCode.Unauthorized;
+    }
+
+    private static bool IsSubscriptionExpired(NasAgentApiException ex)
+    {
+        if (ex.StatusCode != HttpStatusCode.Forbidden)
+            return false;
+
+        var body = ex.ResponseBody ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(body))
+            return false;
+
+        return body.Contains("\u8ba2\u9605\u5df2\u8fc7\u671f", StringComparison.OrdinalIgnoreCase)
+            || (body.Contains("subscription", StringComparison.OrdinalIgnoreCase)
+                && body.Contains("expired", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string SelectBearerToken(AppSettings s)
@@ -167,6 +198,58 @@ public sealed class SyncService
         if (!string.IsNullOrWhiteSpace(access))
             return access;
         return string.Empty;
+    }
+
+    private DateTimeOffset? GetLocalLatestCapturedAt()
+    {
+        try
+        {
+            if (_history.Items.Count == 0)
+                return null;
+            return _history.Items.Max(x => x.CapturedAt);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static DateTimeOffset? TryReadRemoteUpdatedAt(string? manifestJson)
+    {
+        if (string.IsNullOrWhiteSpace(manifestJson))
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(manifestJson);
+            if (!doc.RootElement.TryGetProperty("latest", out var latest))
+                return null;
+            if (!latest.TryGetProperty("updatedAt", out var updatedAt))
+                return null;
+            if (updatedAt.ValueKind != JsonValueKind.String)
+                return null;
+            if (DateTimeOffset.TryParse(updatedAt.GetString(), out var parsed))
+                return parsed;
+        }
+        catch
+        {
+        }
+
+        return null;
+    }
+
+    private static SyncDirection DecideDirection(DateTimeOffset? localLatest, DateTimeOffset? remoteUpdatedAt)
+    {
+        if (remoteUpdatedAt is null)
+            return localLatest is null ? SyncDirection.None : SyncDirection.Upload;
+        if (localLatest is null)
+            return SyncDirection.Download;
+
+        var localUtc = localLatest.Value.UtcDateTime;
+        var remoteUtc = remoteUpdatedAt.Value.UtcDateTime;
+        var diff = localUtc - remoteUtc;
+        if (Math.Abs(diff.TotalSeconds) <= 2)
+            return SyncDirection.None;
+        return diff.TotalSeconds > 0 ? SyncDirection.Upload : SyncDirection.Download;
     }
 
     private async Task<bool> TryRefreshAndPersistAsync(CancellationToken ct)
@@ -178,13 +261,14 @@ public sealed class SyncService
 
         try
         {
-            var token = await _authing.RefreshAsync(refresh, ct);
+            var token = await _authing.RefreshAsync(_settings.Current.NasAgentBaseUrl, refresh, ct);
             _settings.Update(s =>
             {
                 s.AuthAccessToken = token.AccessToken;
                 s.AuthRefreshToken = string.IsNullOrWhiteSpace(token.RefreshToken) ? current.AuthRefreshToken : token.RefreshToken;
                 s.AuthIdToken = string.IsNullOrWhiteSpace(token.IdToken) ? current.AuthIdToken : token.IdToken;
                 s.AuthExpiresAtUnixMs = token.ExpiresAtUtc.ToUnixTimeMilliseconds();
+                s.AuthUserEmail = string.IsNullOrWhiteSpace(token.Email) ? current.AuthUserEmail : token.Email;
             });
             return true;
         }
@@ -192,17 +276,6 @@ public sealed class SyncService
         {
             return false;
         }
-    }
-
-    private static bool IsJwtLike(string token)
-    {
-        if (string.IsNullOrWhiteSpace(token))
-            return false;
-        var first = token.IndexOf('.');
-        if (first <= 0)
-            return false;
-        var second = token.IndexOf('.', first + 1);
-        return second > first + 1;
     }
 
     private static void TryDeleteWithRetry(string path)
@@ -227,5 +300,12 @@ public sealed class SyncService
                 }
             }
         }
+    }
+
+    public enum SyncDirection
+    {
+        None,
+        Upload,
+        Download,
     }
 }

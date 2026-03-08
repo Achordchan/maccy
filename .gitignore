@@ -33,5 +33,7 @@ $RECYCLE.BIN/
 # Publish / artifacts
 **/publish/
 **/artifacts/
+**/out-test/
+tmp/
 
 update.md

@@ -12,7 +12,6 @@ namespace maccy.Services;
 public sealed class NasAgentApiException : Exception
 {
     public HttpStatusCode StatusCode { get; }
-
     public string? ResponseBody { get; }
 
     public NasAgentApiException(HttpStatusCode statusCode, string message, string? responseBody)
@@ -24,11 +23,15 @@ public sealed class NasAgentApiException : Exception
 }
 
 public sealed record SubscriptionStatus(bool Subscribed, string? ExpiresAt);
-
 public sealed record RedeemResult(bool Success, string? ExpiresAt, string? Error);
 
 public sealed class NasAgentClient
 {
+    private static readonly TimeSpan HealthTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan StatusTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan ManifestTimeout = TimeSpan.FromSeconds(30);
+    private const int GetRetryCount = 1;
+
     private readonly HttpClient _http;
     private readonly string _baseUrl;
 
@@ -43,20 +46,28 @@ public sealed class NasAgentClient
         if (string.IsNullOrWhiteSpace(_baseUrl))
             return false;
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(6));
-
-        using var req = new HttpRequestMessage(HttpMethod.Get, _baseUrl + "/health");
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-        if (!resp.IsSuccessStatusCode)
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await SendGetWithRetryAsync("/health", null, HealthTimeout, ct, 0);
+        }
+        catch
+        {
             return false;
+        }
 
-        await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token);
-        if (!doc.RootElement.TryGetProperty("ok", out var ok))
-            return false;
+        using (resp)
+        {
+            if (!resp.IsSuccessStatusCode)
+                return false;
 
-        return ok.ValueKind == JsonValueKind.True;
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+            if (!doc.RootElement.TryGetProperty("ok", out var ok))
+                return false;
+
+            return ok.ValueKind == JsonValueKind.True;
+        }
     }
 
     public async Task<SubscriptionStatus?> GetSubscriptionStatusAsync(string accessToken, CancellationToken ct)
@@ -66,22 +77,26 @@ public sealed class NasAgentClient
         if (string.IsNullOrWhiteSpace(accessToken))
             return null;
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(10));
-
-        using var req = new HttpRequestMessage(HttpMethod.Get, _baseUrl + "/subscription/status");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+        using var resp = await SendGetWithRetryAsync("/subscription/status", accessToken, StatusTimeout, ct, GetRetryCount);
         if (!resp.IsSuccessStatusCode)
-            return null;
+        {
+            var body = await SafeReadBodyAsync(resp, ct);
+            if (resp.StatusCode == HttpStatusCode.Unauthorized)
+                return new SubscriptionStatus(false, null);
+            if (resp.StatusCode == HttpStatusCode.Forbidden)
+                return new SubscriptionStatus(false, null);
 
-        await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token);
+            var www = TryGetHeader(resp, "WWW-Authenticate");
+            var failure = TryGetHeader(resp, "X-Auth-Failure");
+            var combined = CombineBody(CombineBody(www, failure), body);
+            throw new NasAgentApiException(resp.StatusCode, "get subscription status failed", combined);
+        }
+
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
 
         var subscribed = doc.RootElement.TryGetProperty("subscribed", out var subEl) && subEl.ValueKind == JsonValueKind.True;
         var expiresAt = doc.RootElement.TryGetProperty("expiresAt", out var expEl) ? expEl.GetString() : null;
-
         return new SubscriptionStatus(subscribed, expiresAt);
     }
 
@@ -119,7 +134,6 @@ public sealed class NasAgentClient
 
         var success = doc.RootElement.TryGetProperty("success", out var sucEl) && sucEl.ValueKind == JsonValueKind.True;
         var expiresAt = doc.RootElement.TryGetProperty("expiresAt", out var expEl) ? expEl.GetString() : null;
-
         return new RedeemResult(success, expiresAt, null);
     }
 
@@ -130,17 +144,17 @@ public sealed class NasAgentClient
         if (string.IsNullOrWhiteSpace(accessToken))
             return null;
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(10));
-
-        using var req = new HttpRequestMessage(HttpMethod.Get, _baseUrl + "/sync/manifest");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+        using var resp = await SendGetWithRetryAsync("/sync/manifest", accessToken, ManifestTimeout, ct, GetRetryCount);
         if (!resp.IsSuccessStatusCode)
-            return null;
+        {
+            var body = await SafeReadBodyAsync(resp, ct);
+            var www = TryGetHeader(resp, "WWW-Authenticate");
+            var failure = TryGetHeader(resp, "X-Auth-Failure");
+            var combined = CombineBody(CombineBody(www, failure), body);
+            throw new NasAgentApiException(resp.StatusCode, "get manifest failed", combined);
+        }
 
-        return await resp.Content.ReadAsStringAsync(cts.Token);
+        return await resp.Content.ReadAsStringAsync(ct);
     }
 
     public async Task UploadSnapshotAsync(string accessToken, string snapshotPath, CancellationToken ct)
@@ -181,14 +195,9 @@ public sealed class NasAgentClient
         for (var i = 0; i < 12; i++)
         {
             ct.ThrowIfCancellationRequested();
-
             try
             {
-                return new FileStream(
-                    path,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete);
+                return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             }
             catch (IOException) when (i < 11)
             {
@@ -200,11 +209,7 @@ public sealed class NasAgentClient
             }
         }
 
-        return new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete);
+        return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
     }
 
     public async Task DownloadSnapshotAsync(string accessToken, string targetPath, CancellationToken ct)
@@ -296,4 +301,40 @@ public sealed class NasAgentClient
             return a;
         return a + "\n" + b;
     }
+
+    private async Task<HttpResponseMessage> SendGetWithRetryAsync(
+        string path,
+        string? accessToken,
+        TimeSpan timeout,
+        CancellationToken ct,
+        int retryCount)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, _baseUrl + path);
+            if (!string.IsNullOrWhiteSpace(accessToken))
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(timeout);
+
+            try
+            {
+                return await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            }
+            catch (TaskCanceledException) when (!ct.IsCancellationRequested && attempt < retryCount)
+            {
+                await Task.Delay(350, ct);
+            }
+            catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+            {
+                throw new TimeoutException("request timeout: GET " + _baseUrl + path, ex);
+            }
+            catch (HttpRequestException) when (attempt < retryCount)
+            {
+                await Task.Delay(350, ct);
+            }
+        }
+    }
+
 }

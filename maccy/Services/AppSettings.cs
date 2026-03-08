@@ -14,6 +14,8 @@ public sealed class AppSettings
 
     public long AuthExpiresAtUnixMs { get; set; }
 
+    public string? AuthUserEmail { get; set; }
+
     public string NasAgentBaseUrl { get; set; } = string.Empty;
 
     public int MaxItems { get; set; } = 200;

@@ -4,6 +4,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Text.Json;
 using System.Globalization;
+using System.IO;
+using System.Net.Http;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -637,8 +639,9 @@ public partial class MainWindowViewModel : ViewModelBase
                     LastSyncStatus = "同步成功";
                 });
             }
-            catch
+            catch (Exception ex)
             {
+                WriteSyncErrorLog(ex);
                 await Dispatcher.UIThread.InvokeAsync(() =>
                 {
                     SyncResult = SyncResultKind.Error;
@@ -815,6 +818,7 @@ public partial class MainWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            WriteSyncErrorLog(ex);
             if (showProgress)
                 UpdateSyncStatus("同步失败", 100);
             await Dispatcher.UIThread.InvokeAsync(() =>
@@ -823,10 +827,11 @@ public partial class MainWindowViewModel : ViewModelBase
                 LastSyncAt = DateTimeOffset.Now;
                 LastSyncStatus = "同步失败";
             });
+            var reason = ExplainSyncError(ex);
             if (manual)
-                ShowToast(ex.Message);
+                ShowToast(reason);
             else if (!_initialSyncCompleted)
-                ShowToast("首次同步失败：" + (ex.Message ?? "未知错误"));
+                ShowToast("首次同步失败：" + reason);
             if (showProgress)
                 await Task.Delay(450);
         }
@@ -857,14 +862,14 @@ public partial class MainWindowViewModel : ViewModelBase
         var s = _settings.Current;
         if (string.IsNullOrWhiteSpace(s.NasAgentBaseUrl))
             return false;
-        if (string.IsNullOrWhiteSpace(s.AuthAccessToken))
-            return false;
 
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        if (s.AuthExpiresAtUnixMs <= nowMs + 60_000)
-            return false;
+        var hasValidAccess = !string.IsNullOrWhiteSpace(s.AuthAccessToken)
+            && s.AuthExpiresAtUnixMs > nowMs + 60_000;
+        if (hasValidAccess)
+            return true;
 
-        return true;
+        return !string.IsNullOrWhiteSpace(s.AuthRefreshToken);
     }
 
     private async Task WaitHistoryLoadedAsync()
@@ -932,6 +937,80 @@ public partial class MainWindowViewModel : ViewModelBase
         if (Math.Abs(diff.TotalSeconds) <= 2)
             return SyncDirection.None;
         return diff.TotalSeconds > 0 ? SyncDirection.Upload : SyncDirection.Download;
+    }
+
+    private static string ExplainSyncError(Exception ex)
+    {
+        if (ex is InvalidOperationException ioe)
+        {
+            var msg = (ioe.Message ?? string.Empty).Trim();
+            if (string.Equals(msg, "订阅已过期", StringComparison.Ordinal))
+                return "订阅已过期，请续费后重试";
+            if (string.Equals(msg, "subscription expired", StringComparison.OrdinalIgnoreCase))
+                return "订阅已过期，请续费后重试";
+            if (string.Equals(msg, "not logged in", StringComparison.Ordinal))
+                return "登录已失效，请重新登录";
+            if (string.Equals(msg, "missing NAS base url", StringComparison.Ordinal))
+                return "请先填写 NAS 地址";
+            if (!string.IsNullOrWhiteSpace(msg))
+                return msg;
+        }
+
+        if (ex is NasAgentApiException api)
+        {
+            if (api.StatusCode == System.Net.HttpStatusCode.Forbidden && IsExpiredText(api.ResponseBody))
+                return "订阅已过期，请续费后重试";
+            if (api.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                return "登录已失效，请重新登录";
+            if (api.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return "云端还没有快照";
+            return $"同步失败({(int)api.StatusCode})";
+        }
+
+        if (ex is TimeoutException)
+            return "网络请求超时，请检查域名解析、HTTPS 和反向代理";
+
+        if (ex is HttpRequestException hre)
+        {
+            var msg = (hre.Message ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(msg))
+                return "同步服务不可达：" + msg;
+            return "同步服务不可达，请检查 NAS 地址和反向代理";
+        }
+
+        if (ex is OperationCanceledException)
+            return "请求超时或已取消，请稍后重试";
+
+        var fallback = (ex.Message ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(fallback) ? "未知错误" : fallback;
+    }
+
+    private static bool IsExpiredText(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return false;
+
+        return body.Contains("订阅已过期", StringComparison.OrdinalIgnoreCase)
+            || (body.Contains("subscription", StringComparison.OrdinalIgnoreCase)
+                && body.Contains("expired", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void WriteSyncErrorLog(Exception ex)
+    {
+        try
+        {
+            var root = AppPaths.AppDataRoot;
+            Directory.CreateDirectory(root);
+            var path = Path.Combine(root, "sync_last_error.txt");
+            var content =
+                "time=" + DateTimeOffset.Now.ToString("O") + Environment.NewLine +
+                "appDataRoot=" + root + Environment.NewLine +
+                ex.ToString();
+            File.WriteAllText(path, content);
+        }
+        catch
+        {
+        }
     }
 
     private void UpdateSyncStatus(string status, int percent)
