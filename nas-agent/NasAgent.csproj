@@ -6,6 +6,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Content Include="AdminPage.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.6" />
     <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="7.6.0" />
     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="7.6.0" />

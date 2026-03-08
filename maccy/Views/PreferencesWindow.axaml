@@ -4,34 +4,176 @@
         xmlns:conv="using:maccy.Converters"
         x:Class="maccy.Views.PreferencesWindow"
         x:DataType="vm:PreferencesWindowViewModel"
-        Width="420"
-        Height="440"
+        Width="460"
+        Height="560"
+        MinWidth="460"
+        MinHeight="560"
         CanResize="False"
         Title="设置"
         Background="{DynamicResource AppBackground}">
 
   <Border Padding="14"
           Background="{DynamicResource AppBackground}">
-    <Grid>
-      <DockPanel LastChildFill="True">
-        <StackPanel DockPanel.Dock="Bottom" Spacing="10">
-          <Border Height="1" Background="{DynamicResource AppDivider}" Margin="0,10,0,0" />
-          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
-            <Button Content="关闭" Command="{Binding CloseCommand}" Background="{DynamicResource AppControlBackground}" Foreground="{DynamicResource AppForeground}" BorderBrush="{DynamicResource AppBorder}" />
-          </StackPanel>
-        </StackPanel>
+    <Grid RowDefinitions="*,Auto">
+      <TabControl Grid.Row="0">
+        <TabItem Header="通用">
+          <ScrollViewer VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="12" Margin="0,10,0,0">
+              <CheckBox Content="开机启动"
+                        IsChecked="{Binding StartWithWindows}"
+                        Foreground="{DynamicResource AppForeground}" />
 
-        <TabControl>
-          <TabItem Header="通用">
-            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-              <StackPanel Spacing="10" Margin="0,10,0,0">
-                <CheckBox Content="开机启动" IsChecked="{Binding StartWithWindows}" Foreground="{DynamicResource AppForeground}" />
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock Width="120"
+                           Text="主题"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource AppForeground}" />
+                <ComboBox Width="180"
+                          ItemsSource="{Binding ThemeOptions}"
+                          SelectedItem="{Binding SelectedTheme}"
+                          Background="{DynamicResource AppControlBackground}"
+                          Foreground="{DynamicResource AppForeground}"
+                          BorderBrush="{DynamicResource AppBorder}">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Text="{Binding Display}" />
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
 
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock Width="120"
+                           Text="检查更新"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource AppForeground}" />
+                <Button Content="检测"
+                        Command="{Binding CheckUpdatesCommand}"
+                        Background="{DynamicResource AppControlBackground}"
+                        Foreground="{DynamicResource AppForeground}"
+                        BorderBrush="{DynamicResource AppBorder}" />
+              </StackPanel>
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+
+        <TabItem Header="内容">
+          <ScrollViewer VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="12" Margin="0,10,0,0">
+              <TextBlock Text="历史"
+                         FontWeight="Bold"
+                         Foreground="{DynamicResource AppForeground}" />
+
+              <CheckBox Content="合并重复内容"
+                        IsChecked="{Binding MergeDuplicates}"
+                        Foreground="{DynamicResource AppForeground}" />
+              <CheckBox Content="收藏项不计入上限"
+                        IsChecked="{Binding ExcludePinnedFromLimits}"
+                        Foreground="{DynamicResource AppForeground}" />
+
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock Width="120"
+                           Text="最大条目"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource AppForeground}" />
+                <TextBox Width="100"
+                         Text="{Binding MaxItemsText}"
+                         Background="{DynamicResource AppControlBackground}"
+                         Foreground="{DynamicResource AppForeground}"
+                         BorderBrush="{DynamicResource AppBorder}" />
+              </StackPanel>
+
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock Width="120"
+                           Text="最大容量（MB）"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource AppForeground}" />
+                <TextBox Width="100"
+                         Text="{Binding MaxMegabytesText}"
+                         Background="{DynamicResource AppControlBackground}"
+                         Foreground="{DynamicResource AppForeground}"
+                         BorderBrush="{DynamicResource AppBorder}" />
+              </StackPanel>
+
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock Width="120"
+                           Text="存储位置"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource AppForeground}" />
+                <Button Content="打开"
+                        Command="{Binding OpenStorageCommand}"
+                        Background="{DynamicResource AppControlBackground}"
+                        Foreground="{DynamicResource AppForeground}"
+                        BorderBrush="{DynamicResource AppBorder}" />
+              </StackPanel>
+
+              <Border Height="1"
+                      Background="{DynamicResource AppDivider}"
+                      Margin="0,4,0,4" />
+
+              <TextBlock Text="捕获"
+                         FontWeight="Bold"
+                         Foreground="{DynamicResource AppForeground}" />
+
+              <CheckBox Content="捕获文本"
+                        IsChecked="{Binding CaptureText}"
+                        Foreground="{DynamicResource AppForeground}" />
+              <CheckBox Content="捕获图片"
+                        IsChecked="{Binding CaptureImages}"
+                        Foreground="{DynamicResource AppForeground}" />
+              <CheckBox Content="捕获文件"
+                        IsChecked="{Binding CaptureFiles}"
+                        Foreground="{DynamicResource AppForeground}" />
+
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock Width="120"
+                           Text="文件后缀"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource AppForeground}" />
+                <TextBox Width="240"
+                         Text="{Binding CaptureFileExtensionsText}"
+                         Watermark=".pdf,.docx,.txt（留空=全部）"
+                         Background="{DynamicResource AppControlBackground}"
+                         Foreground="{DynamicResource AppForeground}"
+                         BorderBrush="{DynamicResource AppBorder}" />
+              </StackPanel>
+
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock Width="120"
+                           Text="单文件上限（MB）"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource AppForeground}" />
+                <TextBox Width="100"
+                         Text="{Binding CaptureFileMaxMegabytesText}"
+                         Watermark="20"
+                         Background="{DynamicResource AppControlBackground}"
+                         Foreground="{DynamicResource AppForeground}"
+                         BorderBrush="{DynamicResource AppBorder}" />
+              </StackPanel>
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+
+        <TabItem Header="货架">
+          <ScrollViewer VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="12" Margin="0,10,0,0">
+              <CheckBox Content="启用货架"
+                        IsChecked="{Binding ShelfEnabled}"
+                        Foreground="{DynamicResource AppForeground}" />
+
+              <StackPanel IsVisible="{Binding ShelfEnabled}"
+                          Spacing="12">
                 <StackPanel Orientation="Horizontal" Spacing="10">
-                  <TextBlock Text="主题" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-                  <ComboBox Width="160"
-                            ItemsSource="{Binding ThemeOptions}"
-                            SelectedItem="{Binding SelectedTheme}"
+                  <TextBlock Width="120"
+                             Text="触发键"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppForeground}" />
+                  <ComboBox Width="220"
+                            ItemsSource="{Binding ShelfTriggerModifierOptions}"
+                            SelectedItem="{Binding SelectedShelfTriggerModifier}"
                             Background="{DynamicResource AppControlBackground}"
                             Foreground="{DynamicResource AppForeground}"
                             BorderBrush="{DynamicResource AppBorder}">
@@ -43,136 +185,66 @@
                   </ComboBox>
                 </StackPanel>
 
-                <Border Height="1" Background="{DynamicResource AppDivider}" Margin="0,10,0,0" />
-
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                  <TextBlock Text="检测更新" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-                  <Button Content="检测"
-                          Command="{Binding CheckUpdatesCommand}"
-                          Background="{DynamicResource AppControlBackground}"
-                          Foreground="{DynamicResource AppForeground}"
-                          BorderBrush="{DynamicResource AppBorder}" />
-                </StackPanel>
-              </StackPanel>
-            </ScrollViewer>
-          </TabItem>
-
-          <TabItem Header="内容">
-            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-              <StackPanel Spacing="10" Margin="0,10,0,0">
-                <TextBlock Text="历史" Foreground="{DynamicResource AppForeground}" FontWeight="Bold" />
-
-                <CheckBox Content="合并重复内容" IsChecked="{Binding MergeDuplicates}" Foreground="{DynamicResource AppForeground}" />
-
-                <CheckBox Content="收藏不计入上限" IsChecked="{Binding ExcludePinnedFromLimits}" Foreground="{DynamicResource AppForeground}" />
-
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                  <TextBlock Text="最多条目" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-                  <TextBox Width="100" Text="{Binding MaxItemsText}" Background="{DynamicResource AppControlBackground}" Foreground="{DynamicResource AppForeground}" BorderBrush="{DynamicResource AppBorder}" />
-                </StackPanel>
-
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                  <TextBlock Text="最大容量（MB）" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-                  <TextBox Width="100" Text="{Binding MaxMegabytesText}" Background="{DynamicResource AppControlBackground}" Foreground="{DynamicResource AppForeground}" BorderBrush="{DynamicResource AppBorder}" />
-                </StackPanel>
-
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                  <TextBlock Text="文件储存位置" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-                  <Button Content="打开"
-                          Command="{Binding OpenStorageCommand}"
-                          Background="{DynamicResource AppControlBackground}"
-                          Foreground="{DynamicResource AppForeground}"
-                          BorderBrush="{DynamicResource AppBorder}" />
-                </StackPanel>
-
-                <Border Height="1" Background="{DynamicResource AppDivider}" Margin="0,10,0,0" />
-
-                <TextBlock Text="捕获" Foreground="{DynamicResource AppForeground}" FontWeight="Bold" />
-
-                <CheckBox Content="捕获文本" IsChecked="{Binding CaptureText}" Foreground="{DynamicResource AppForeground}" />
-                <CheckBox Content="捕获图片" IsChecked="{Binding CaptureImages}" Foreground="{DynamicResource AppForeground}" />
-                <CheckBox Content="捕获文件" IsChecked="{Binding CaptureFiles}" Foreground="{DynamicResource AppForeground}" />
-
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                  <TextBlock Text="文件后缀" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-                  <TextBox Width="220"
-                           Text="{Binding CaptureFileExtensionsText}"
-                           Watermark=".pdf,.docx,.txt（留空=全部）"
-                           Background="{DynamicResource AppControlBackground}"
-                           Foreground="{DynamicResource AppForeground}"
-                           BorderBrush="{DynamicResource AppBorder}" />
-                </StackPanel>
-
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                  <TextBlock Text="单文件上限（MB）" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-                  <TextBox Width="100"
-                           Text="{Binding CaptureFileMaxMegabytesText}"
-                           Watermark="20"
-                           Background="{DynamicResource AppControlBackground}"
-                           Foreground="{DynamicResource AppForeground}"
-                           BorderBrush="{DynamicResource AppBorder}" />
-                </StackPanel>
-
-                <TextBlock Text="危险后缀（exe、bat、ps1 等）会被自动禁用"
-                           Foreground="{DynamicResource AppMutedForeground}"
-                           FontSize="12" />
-
-                <TextBlock Text="提示：该上限与“历史最大容量（MB）”共享预算，设置过大可能会减少可保存条目"
-                           Foreground="{DynamicResource AppMutedForeground}"
-                           FontSize="12"
-                           TextWrapping="Wrap"
-                           MaxWidth="360" />
-              </StackPanel>
-            </ScrollViewer>
-          </TabItem>
-
-          <TabItem Header="货架">
-            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-              <StackPanel Spacing="10" Margin="0,10,0,0">
-                <CheckBox Content="启用货架" IsChecked="{Binding ShelfEnabled}" Foreground="{DynamicResource AppForeground}" />
-
-                <StackPanel IsVisible="{Binding ShelfEnabled}" Spacing="10">
-                  <StackPanel Orientation="Horizontal" Spacing="10">
-                    <TextBlock Text="触发键" Width="120" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-                    <ComboBox Width="220"
-                              ItemsSource="{Binding ShelfTriggerModifierOptions}"
-                              SelectedItem="{Binding SelectedShelfTriggerModifier}"
-                              Background="{DynamicResource AppControlBackground}"
-                              Foreground="{DynamicResource AppForeground}"
-                              BorderBrush="{DynamicResource AppBorder}">
-                      <ComboBox.ItemTemplate>
-                        <DataTemplate>
-                          <TextBlock Text="{Binding Display}" />
-                        </DataTemplate>
-                      </ComboBox.ItemTemplate>
-                    </ComboBox>
-                  </StackPanel>
-                </StackPanel>
-
-                <Border Background="{DynamicResource AppControlBackground}" BorderBrush="{DynamicResource AppBorder}" BorderThickness="1" CornerRadius="10" Padding="10">
-                  <TextBlock Text="使用方法：按住触发键（默认 Ctrl），在任意位置按住鼠标左键并快速左右摇晃，即可呼出货架窗口。货架出现后不会自动关闭，请手动点击右上角 × 关闭。"
+                <Border Background="{DynamicResource AppControlBackground}"
+                        BorderBrush="{DynamicResource AppBorder}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Padding="10">
+                  <TextBlock Text="按住触发键，在任意位置按住鼠标左键并快速左右摇晃，即可唤出货架窗口。"
                              Foreground="{DynamicResource AppMutedForeground}"
                              FontSize="12"
-                             TextWrapping="Wrap"
-                             MaxWidth="360" />
+                             TextWrapping="Wrap" />
                 </Border>
               </StackPanel>
-            </ScrollViewer>
-          </TabItem>
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
 
-          <TabItem Header="云同步">
-            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-              <StackPanel Spacing="16" Margin="0,10,0,0">
+        <TabItem Header="云同步">
+          <ScrollViewer VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="16" Margin="0,10,0,0">
+              <StackPanel Spacing="8">
+                <TextBlock Text="账户"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource AppForeground}" />
+                <Grid ColumnDefinitions="120,*">
+                  <TextBlock Grid.Column="0"
+                             Text="登录状态"
+                             VerticalAlignment="Top"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <StackPanel Grid.Column="1" Spacing="8">
+                    <TextBlock Text="{Binding AuthStatusText}"
+                               Foreground="{DynamicResource AppForeground}" />
 
-                <!-- 登录区域 -->
-                <StackPanel Spacing="8">
-                  <TextBlock Text="账户" FontWeight="SemiBold" Foreground="{DynamicResource AppForeground}" />
-                  <Grid ColumnDefinitions="120,*">
-                    <TextBlock Grid.Column="0" Text="登录状态" VerticalAlignment="Center" Foreground="{DynamicResource AppMutedForeground}" />
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                      <TextBlock Text="{Binding AuthStatusText}" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
+                    <StackPanel Spacing="8"
+                                IsVisible="{Binding IsLoggedIn, Converter={x:Static conv:InverseBoolConverter.Instance}}">
+                      <TextBox Width="300"
+                               Text="{Binding AuthEmailText}"
+                               Watermark="请输入邮箱"
+                               Background="{DynamicResource AppControlBackground}"
+                               Foreground="{DynamicResource AppForeground}"
+                               BorderBrush="{DynamicResource AppBorder}" />
+                      <TextBox Width="300"
+                               Text="{Binding AuthPasswordText}"
+                               PasswordChar="*"
+                               Watermark="请输入密码"
+                               Background="{DynamicResource AppControlBackground}"
+                               Foreground="{DynamicResource AppForeground}"
+                               BorderBrush="{DynamicResource AppBorder}" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
                       <Button Content="登录"
                               Command="{Binding LoginCommand}"
+                              IsEnabled="{Binding AuthBusy, Converter={x:Static conv:InverseBoolConverter.Instance}}"
+                              IsVisible="{Binding IsLoggedIn, Converter={x:Static conv:InverseBoolConverter.Instance}}"
+                              Background="{DynamicResource AppControlBackground}"
+                              Foreground="{DynamicResource AppForeground}"
+                              BorderBrush="{DynamicResource AppBorder}"
+                              Padding="12,6" />
+                      <Button Content="注册"
+                              Command="{Binding RegisterCommand}"
                               IsEnabled="{Binding AuthBusy, Converter={x:Static conv:InverseBoolConverter.Instance}}"
                               IsVisible="{Binding IsLoggedIn, Converter={x:Static conv:InverseBoolConverter.Instance}}"
                               Background="{DynamicResource AppControlBackground}"
@@ -187,80 +259,107 @@
                               BorderBrush="{DynamicResource AppBorder}"
                               Padding="12,6" />
                     </StackPanel>
-                  </Grid>
-                </StackPanel>
-
-                <!-- 同步操作区域 -->
-                <StackPanel Spacing="8">
-                  <TextBlock Text="同步" FontWeight="SemiBold" Foreground="{DynamicResource AppForeground}" />
-                  <Grid ColumnDefinitions="120,*">
-                    <TextBlock Grid.Column="0" Text="手动操作" VerticalAlignment="Center" Foreground="{DynamicResource AppMutedForeground}" />
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                      <Button Content="上传到云端"
-                              Command="{Binding UploadSnapshotCommand}"
-                              IsEnabled="{Binding NasBusy, Converter={x:Static conv:InverseBoolConverter.Instance}}"
-                              Background="{DynamicResource AppControlBackground}"
-                              Foreground="{DynamicResource AppForeground}"
-                              BorderBrush="{DynamicResource AppBorder}"
-                              Padding="12,6" />
-                      <Button Content="从云端恢复"
-                              Command="{Binding DownloadAndApplySnapshotCommand}"
-                              IsEnabled="{Binding NasBusy, Converter={x:Static conv:InverseBoolConverter.Instance}}"
-                              Background="{DynamicResource AppControlBackground}"
-                              Foreground="{DynamicResource AppForeground}"
-                              BorderBrush="{DynamicResource AppBorder}"
-                              Padding="12,6" />
-                    </StackPanel>
-                  </Grid>
-                </StackPanel>
-
-                <!-- 订阅管理区域（登录后显示） -->
-                <StackPanel Spacing="8" IsVisible="{Binding IsLoggedIn}">
-                  <TextBlock Text="订阅" FontWeight="SemiBold" Foreground="{DynamicResource AppForeground}" />
-
-                  <Grid ColumnDefinitions="120,*">
-                    <TextBlock Grid.Column="0" Text="订阅状态" VerticalAlignment="Center" Foreground="{DynamicResource AppMutedForeground}" />
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                      <TextBlock Text="{Binding SubscriptionStatusText}" VerticalAlignment="Center" Foreground="{DynamicResource AppForeground}" />
-                      <Button Content="刷新"
-                              Command="{Binding RefreshSubscriptionCommand}"
-                              Background="{DynamicResource AppControlBackground}"
-                              Foreground="{DynamicResource AppForeground}"
-                              BorderBrush="{DynamicResource AppBorder}"
-                              Padding="8,4" />
-                    </StackPanel>
-                  </Grid>
-
-                  <Grid ColumnDefinitions="120,*">
-                    <TextBlock Grid.Column="0" Text="兑换卡密" VerticalAlignment="Center" Foreground="{DynamicResource AppMutedForeground}" />
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                      <TextBox Text="{Binding RedeemCodeText}"
-                               Width="160"
-                               Watermark="输入卡密"
-                               Background="{DynamicResource AppControlBackground}"
-                               Foreground="{DynamicResource AppForeground}"
-                               BorderBrush="{DynamicResource AppBorder}" />
-                      <Button Content="兑换"
-                              Command="{Binding RedeemCardCommand}"
-                              Background="{DynamicResource AppControlBackground}"
-                              Foreground="{DynamicResource AppForeground}"
-                              BorderBrush="{DynamicResource AppBorder}"
-                              Padding="12,6" />
-                    </StackPanel>
-                  </Grid>
-                </StackPanel>
-
-                <!-- 说明文字 -->
-                <TextBlock Text="登录后即可启用云同步，剪贴板历史将自动同步到云端。"
-                           Foreground="{DynamicResource AppMutedForeground}"
-                           FontSize="12"
-                           TextWrapping="Wrap"
-                           MaxWidth="360" />
+                  </StackPanel>
+                </Grid>
               </StackPanel>
-            </ScrollViewer>
-          </TabItem>
-        </TabControl>
-      </DockPanel>
+
+              <StackPanel Spacing="8">
+                <TextBlock Text="同步"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource AppForeground}" />
+                <Grid ColumnDefinitions="120,*">
+                  <TextBlock Grid.Column="0"
+                             Text="手动操作"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <StackPanel Grid.Column="1"
+                              Orientation="Horizontal"
+                              Spacing="8">
+                    <Button Content="立即同步"
+                            Command="{Binding SyncNowCommand}"
+                            IsEnabled="{Binding NasBusy, Converter={x:Static conv:InverseBoolConverter.Instance}}"
+                            Background="{DynamicResource AppControlBackground}"
+                            Foreground="{DynamicResource AppForeground}"
+                            BorderBrush="{DynamicResource AppBorder}"
+                            Padding="12,6" />
+                  </StackPanel>
+                </Grid>
+              </StackPanel>
+
+              <StackPanel Spacing="8"
+                          IsVisible="{Binding IsLoggedIn}">
+                <TextBlock Text="订阅"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource AppForeground}" />
+
+                <Grid ColumnDefinitions="120,*">
+                  <TextBlock Grid.Column="0"
+                             Text="订阅状态"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <StackPanel Grid.Column="1"
+                              Orientation="Horizontal"
+                              Spacing="8">
+                    <TextBlock Text="{Binding SubscriptionStatusText}"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource AppForeground}" />
+                    <Button Content="刷新"
+                            Command="{Binding RefreshSubscriptionCommand}"
+                            Background="{DynamicResource AppControlBackground}"
+                            Foreground="{DynamicResource AppForeground}"
+                            BorderBrush="{DynamicResource AppBorder}"
+                            Padding="8,4" />
+                  </StackPanel>
+                </Grid>
+
+                <Grid ColumnDefinitions="120,*">
+                  <TextBlock Grid.Column="0"
+                             Text="兑换卡密"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <StackPanel Grid.Column="1"
+                              Orientation="Horizontal"
+                              Spacing="8">
+                    <TextBox Width="160"
+                             Text="{Binding RedeemCodeText}"
+                             Watermark="输入卡密"
+                             Background="{DynamicResource AppControlBackground}"
+                             Foreground="{DynamicResource AppForeground}"
+                             BorderBrush="{DynamicResource AppBorder}" />
+                    <Button Content="兑换"
+                            Command="{Binding RedeemCardCommand}"
+                            Background="{DynamicResource AppControlBackground}"
+                            Foreground="{DynamicResource AppForeground}"
+                            BorderBrush="{DynamicResource AppBorder}"
+                            Padding="12,6" />
+                  </StackPanel>
+                </Grid>
+              </StackPanel>
+
+              <TextBlock Text="登录后即可启用云同步，剪贴板历史将自动同步到云端。"
+                         Foreground="{DynamicResource AppMutedForeground}"
+                         FontSize="12"
+                         TextWrapping="Wrap"
+                         MaxWidth="380" />
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+      </TabControl>
+
+      <StackPanel Grid.Row="1" Spacing="10">
+        <Border Height="1"
+                Background="{DynamicResource AppDivider}"
+                Margin="0,10,0,0" />
+        <StackPanel Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Spacing="10">
+          <Button Content="关闭"
+                  Command="{Binding CloseCommand}"
+                  Background="{DynamicResource AppControlBackground}"
+                  Foreground="{DynamicResource AppForeground}"
+                  BorderBrush="{DynamicResource AppBorder}" />
+        </StackPanel>
+      </StackPanel>
 
       <Border HorizontalAlignment="Center"
               VerticalAlignment="Bottom"

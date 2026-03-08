@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using maccy.Services;
@@ -25,7 +24,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase
     private readonly Action? _checkUpdates;
     private readonly Action? _openStorage;
 
-    private readonly AuthingOidcService _authing;
+    private readonly AuthService _authing;
 
     private readonly SyncService? _sync;
 
@@ -50,6 +49,12 @@ public partial class PreferencesWindowViewModel : ViewModelBase
 
     [ObservableProperty]
     private bool _authBusy;
+
+    [ObservableProperty]
+    private string _authEmailText = string.Empty;
+
+    [ObservableProperty]
+    private string _authPasswordText = string.Empty;
 
     [ObservableProperty]
     private bool _nasBusy;
@@ -162,9 +167,13 @@ public partial class PreferencesWindowViewModel : ViewModelBase
 
     public IAsyncRelayCommand LoginCommand { get; }
 
+    public IAsyncRelayCommand RegisterCommand { get; }
+
     public IRelayCommand LogoutCommand { get; }
 
     public IAsyncRelayCommand TestNasConnectionCommand { get; }
+
+    public IAsyncRelayCommand SyncNowCommand { get; }
 
     public IAsyncRelayCommand UploadSnapshotCommand { get; }
 
@@ -200,7 +209,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase
 
         _sync = sync;
 
-        _authing = new AuthingOidcService();
+        _authing = new AuthService();
 
         try
         {
@@ -217,8 +226,10 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         OpenStorageCommand = new RelayCommand(() => _openStorage?.Invoke());
 
         LoginCommand = new AsyncRelayCommand(LoginAsync, () => !AuthBusy);
+        RegisterCommand = new AsyncRelayCommand(RegisterAsync, () => !AuthBusy);
         LogoutCommand = new RelayCommand(Logout);
         TestNasConnectionCommand = new AsyncRelayCommand(TestNasConnectionAsync, () => !NasBusy);
+        SyncNowCommand = new AsyncRelayCommand(SyncNowAsync, () => !NasBusy);
 
         UploadSnapshotCommand = new AsyncRelayCommand(UploadSnapshotAsync, () => !NasBusy);
         DownloadAndApplySnapshotCommand = new AsyncRelayCommand(DownloadAndApplySnapshotAsync, () => !NasBusy);
@@ -239,10 +250,10 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         {
             var s = _settings.Current;
 
-            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var hasToken = !string.IsNullOrWhiteSpace(s.AuthAccessToken);
-            var valid = hasToken && s.AuthExpiresAtUnixMs > nowMs + 30_000;
+            var valid = HasSignedInSession(s);
             IsLoggedIn = valid;
+            AuthEmailText = valid && !string.IsNullOrWhiteSpace(s.AuthUserEmail) ? s.AuthUserEmail! : AuthEmailText;
+            AuthPasswordText = string.Empty;
             AuthStatusText = valid ? "已登录" : "未登录";
 
             NasAgentBaseUrlText = s.NasAgentBaseUrl ?? string.Empty;
@@ -533,15 +544,30 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         if (AuthBusy)
             return;
 
+        var baseUrl = (_settings.Current.NasAgentBaseUrl ?? string.Empty).Trim();
+        var email = (AuthEmailText ?? string.Empty).Trim();
+        var password = AuthPasswordText ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            ToastService.Instance.Show("请先填写 NAS 地址");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
+        {
+            ToastService.Instance.Show("请输入邮箱和密码");
+            return;
+        }
+
         try
         {
             AuthBusy = true;
             LoginCommand.NotifyCanExecuteChanged();
+            RegisterCommand.NotifyCanExecuteChanged();
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromMinutes(3));
 
-            var token = await _authing.LoginAsync(cts.Token);
+            var token = await _authing.LoginAsync(baseUrl, email, password, cts.Token);
 
             _settings.Update(s =>
             {
@@ -549,9 +575,10 @@ public partial class PreferencesWindowViewModel : ViewModelBase
                 s.AuthRefreshToken = token.RefreshToken;
                 s.AuthIdToken = token.IdToken;
                 s.AuthExpiresAtUnixMs = token.ExpiresAtUtc.ToUnixTimeMilliseconds();
+                s.AuthUserEmail = token.Email ?? email;
                 // 自动填充官方服务器地址
                 if (string.IsNullOrWhiteSpace(s.NasAgentBaseUrl))
-                    s.NasAgentBaseUrl = AuthingOidcService.OfficialSyncBaseUrl;
+                    s.NasAgentBaseUrl = ServerDefaults.OfficialSyncBaseUrl;
             });
 
             ReloadFromSettings();
@@ -572,6 +599,67 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         {
             AuthBusy = false;
             LoginCommand.NotifyCanExecuteChanged();
+            RegisterCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private async Task RegisterAsync(CancellationToken ct)
+    {
+        if (AuthBusy)
+            return;
+
+        var baseUrl = (_settings.Current.NasAgentBaseUrl ?? string.Empty).Trim();
+        var email = (AuthEmailText ?? string.Empty).Trim();
+        var password = AuthPasswordText ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            ToastService.Instance.Show("请先填写 NAS 地址");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
+        {
+            ToastService.Instance.Show("请输入邮箱和密码");
+            return;
+        }
+
+        try
+        {
+            AuthBusy = true;
+            LoginCommand.NotifyCanExecuteChanged();
+            RegisterCommand.NotifyCanExecuteChanged();
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromMinutes(3));
+
+            var token = await _authing.RegisterAsync(baseUrl, email, password, cts.Token);
+            _settings.Update(s =>
+            {
+                s.AuthAccessToken = token.AccessToken;
+                s.AuthRefreshToken = token.RefreshToken;
+                s.AuthIdToken = token.IdToken;
+                s.AuthExpiresAtUnixMs = token.ExpiresAtUtc.ToUnixTimeMilliseconds();
+                s.AuthUserEmail = token.Email ?? email;
+                if (string.IsNullOrWhiteSpace(s.NasAgentBaseUrl))
+                    s.NasAgentBaseUrl = ServerDefaults.OfficialSyncBaseUrl;
+            });
+
+            ReloadFromSettings();
+            ToastService.Instance.Show("注册成功");
+            _ = RefreshSubscriptionAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            ToastService.Instance.Show("已取消");
+        }
+        catch
+        {
+            ToastService.Instance.Show("注册失败");
+        }
+        finally
+        {
+            AuthBusy = false;
+            LoginCommand.NotifyCanExecuteChanged();
+            RegisterCommand.NotifyCanExecuteChanged();
         }
     }
 
@@ -585,6 +673,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase
                 s.AuthRefreshToken = null;
                 s.AuthIdToken = null;
                 s.AuthExpiresAtUnixMs = 0;
+                s.AuthUserEmail = null;
             });
         }
         catch
@@ -592,15 +681,6 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         }
 
         ReloadFromSettings();
-
-        try
-        {
-            var url = _authing.BuildLogoutUrl();
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-        }
-        catch
-        {
-        }
 
         ToastService.Instance.Show("已退出登录");
     }
@@ -755,6 +835,104 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         }
     }
 
+    private async Task SyncNowAsync(CancellationToken ct)
+    {
+        if (NasBusy)
+            return;
+        if (_sync is null)
+        {
+            ToastService.Instance.Show("同步服务未就绪");
+            return;
+        }
+
+        try
+        {
+            NasBusy = true;
+            SyncNowCommand.NotifyCanExecuteChanged();
+
+            var direction = await _sync.DecideDirectionAsync(ct);
+            if (direction == SyncService.SyncDirection.None)
+            {
+                ToastService.Instance.Show("已是最新");
+                return;
+            }
+
+            if (direction == SyncService.SyncDirection.Download)
+            {
+                await _sync.DownloadAndApplyAsync(ct);
+                ReloadFromSettings();
+                ToastService.Instance.Show("同步完成（已下载）");
+                return;
+            }
+
+            await _sync.UploadAsync(ct);
+            ToastService.Instance.Show("同步完成（已上传）");
+        }
+        catch (OperationCanceledException)
+        {
+            ToastService.Instance.Show("已取消");
+        }
+        catch (InvalidOperationException ex)
+        {
+            try
+            {
+                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
+                File.WriteAllText(path, ex.ToString());
+            }
+            catch
+            {
+            }
+
+            if (ex.Message == "not logged in")
+                ToastService.Instance.Show("请先登录");
+            else if (ex.Message == "missing NAS base url")
+                ToastService.Instance.Show("请先填写 NAS 地址");
+            else if (string.Equals(ex.Message, "subscription expired", StringComparison.OrdinalIgnoreCase)
+                || ex.Message == "订阅已过期")
+                ToastService.Instance.Show("订阅已过期，请续费后重试");
+            else
+                ToastService.Instance.Show("同步失败：" + (ex.Message ?? ex.GetType().Name));
+        }
+        catch (NasAgentApiException ex)
+        {
+            try
+            {
+                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
+                File.WriteAllText(path, "NAS API error\nstatus=" + (int)ex.StatusCode + "\n" + (ex.ResponseBody ?? string.Empty));
+            }
+            catch
+            {
+            }
+
+            if (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                ToastService.Instance.Show("登录已失效，请重新登录");
+            else if (ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                ToastService.Instance.Show("订阅无效或已过期");
+            else if (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                ToastService.Instance.Show("云端还没有快照");
+            else
+                ToastService.Instance.Show("同步失败：" + (int)ex.StatusCode);
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
+                File.WriteAllText(path, ex.ToString());
+            }
+            catch
+            {
+            }
+
+            ToastService.Instance.Show("同步失败：" + (ex.Message ?? ex.GetType().Name));
+        }
+        finally
+        {
+            NasBusy = false;
+            SyncNowCommand.NotifyCanExecuteChanged();
+        }
+    }
+
     private async Task DownloadAndApplySnapshotAsync(CancellationToken ct)
     {
         if (NasBusy)
@@ -862,7 +1040,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase
     private async Task RefreshSubscriptionAsync(CancellationToken ct)
     {
         var baseUrl = _settings.Current.NasAgentBaseUrl;
-        var token = _settings.Current.AuthAccessToken;
+        var token = await EnsureAccessTokenAsync(ct);
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(token))
         {
             SubscriptionStatusText = "未登录";
@@ -909,7 +1087,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         }
 
         var baseUrl = _settings.Current.NasAgentBaseUrl;
-        var token = _settings.Current.AuthAccessToken;
+        var token = await EnsureAccessTokenAsync(ct);
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(token))
         {
             ToastService.Instance.Show("请先登录");
@@ -951,6 +1129,50 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         {
             RedeemBusy = false;
             RedeemCardCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private static bool HasSignedInSession(AppSettings s)
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var hasValidAccess = !string.IsNullOrWhiteSpace(s.AuthAccessToken)
+            && s.AuthExpiresAtUnixMs > nowMs + 30_000;
+        if (hasValidAccess)
+            return true;
+
+        return !string.IsNullOrWhiteSpace(s.AuthRefreshToken);
+    }
+
+    private async Task<string?> EnsureAccessTokenAsync(CancellationToken ct)
+    {
+        var current = _settings.Current;
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var access = (current.AuthAccessToken ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(access) && current.AuthExpiresAtUnixMs > nowMs + 30_000)
+            return access;
+
+        var refresh = (current.AuthRefreshToken ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(refresh))
+            return null;
+
+        try
+        {
+            var token = await _authing.RefreshAsync(_settings.Current.NasAgentBaseUrl, refresh, ct);
+            _settings.Update(s =>
+            {
+                s.AuthAccessToken = token.AccessToken;
+                s.AuthRefreshToken = string.IsNullOrWhiteSpace(token.RefreshToken) ? current.AuthRefreshToken : token.RefreshToken;
+                s.AuthIdToken = string.IsNullOrWhiteSpace(token.IdToken) ? current.AuthIdToken : token.IdToken;
+                s.AuthExpiresAtUnixMs = token.ExpiresAtUtc.ToUnixTimeMilliseconds();
+                s.AuthUserEmail = string.IsNullOrWhiteSpace(token.Email) ? current.AuthUserEmail : token.Email;
+            });
+
+            ReloadFromSettings();
+            return _settings.Current.AuthAccessToken;
+        }
+        catch
+        {
+            return null;
         }
     }
 }
