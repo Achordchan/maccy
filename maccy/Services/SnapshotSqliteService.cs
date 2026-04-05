@@ -13,14 +13,26 @@ namespace maccy.Services;
 
 public sealed class SnapshotSqliteService
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
 
-    public async Task ExportAsync(string snapshotPath, CancellationToken ct = default)
+    public sealed record SnapshotBlob(string Sha256, string SourcePath, long SizeBytes);
+
+    public sealed record SnapshotExportResult(long SnapshotSize, string SnapshotSha256, IReadOnlyList<SnapshotBlob> Blobs);
+
+    public async Task<SnapshotExportResult> ExportAsync(
+        string snapshotPath,
+        IReadOnlyList<ClipboardItem> items,
+        AppSettings settings,
+        CancellationToken ct = default)
     {
-        await Task.Run(async () =>
+        return await Task.Run(async () =>
         {
             if (string.IsNullOrWhiteSpace(snapshotPath))
                 throw new ArgumentException("snapshotPath is empty", nameof(snapshotPath));
+            if (items is null)
+                throw new ArgumentNullException(nameof(items));
+            if (settings is null)
+                throw new ArgumentNullException(nameof(settings));
 
             Directory.CreateDirectory(Path.GetDirectoryName(snapshotPath)!);
 
@@ -35,8 +47,10 @@ public sealed class SnapshotSqliteService
             await using (var cmd = conn.CreateCommand())
             {
                 cmd.CommandText = @"
-PRAGMA journal_mode=DELETE;
-PRAGMA synchronous=FULL;
+PRAGMA journal_mode=MEMORY;
+PRAGMA synchronous=OFF;
+PRAGMA temp_store=MEMORY;
+PRAGMA locking_mode=EXCLUSIVE;
 
 CREATE TABLE meta (
   key TEXT PRIMARY KEY,
@@ -67,34 +81,48 @@ CREATE TABLE items (
 CREATE TABLE item_images (
   itemId TEXT PRIMARY KEY,
   fileName TEXT NOT NULL,
-  bytes BLOB NOT NULL
+  blobSha256 TEXT,
+  sizeBytes INTEGER,
+  bytes BLOB
 );
 
 CREATE TABLE item_files (
   itemId TEXT NOT NULL,
   idx INTEGER NOT NULL,
   fileName TEXT NOT NULL,
-  bytes BLOB NOT NULL,
+  blobSha256 TEXT,
+  sizeBytes INTEGER,
+  bytes BLOB,
   PRIMARY KEY(itemId, idx)
 );
 ";
                 await cmd.ExecuteNonQueryAsync(ct);
             }
 
+            var blobs = new Dictionary<string, SnapshotBlob>(StringComparer.OrdinalIgnoreCase);
+
             using (var tx = conn.BeginTransaction())
             {
                 await InsertMetaAsync(conn, tx, ct);
-                await InsertSettingsAsync(conn, tx, ct);
-                await InsertHistoryAsync(conn, tx, ct);
+                await InsertSettingsAsync(conn, tx, settings, ct);
+                await InsertHistoryAsync(conn, tx, items, blobs, ct);
 
                 tx.Commit();
             }
 
             await conn.CloseAsync();
+            var snapshotSize = new FileInfo(snapshotPath).Length;
+            var snapshotSha256 = ComputeFileSha256(snapshotPath);
+            return new SnapshotExportResult(snapshotSize, snapshotSha256, blobs.Values.ToList());
         }, ct);
     }
 
-    public async Task<SnapshotImportResult> ImportAsync(string snapshotPath, ClipboardHistoryService history, AppSettingsService settings, CancellationToken ct = default)
+    public async Task<SnapshotImportResult> ImportAsync(
+        string snapshotPath,
+        ClipboardHistoryService history,
+        AppSettingsService settings,
+        Func<string, CancellationToken, Task<string?>>? ensureBlobPathAsync = null,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(snapshotPath))
             throw new ArgumentException("snapshotPath is empty", nameof(snapshotPath));
@@ -107,7 +135,7 @@ CREATE TABLE item_files (
             await conn.OpenAsync(ct);
 
             var schema = await ReadMetaAsync(conn, "schema", ct);
-            if (!int.TryParse(schema, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) || parsed != SchemaVersion)
+            if (!int.TryParse(schema, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) || (parsed != 1 && parsed != SchemaVersion))
                 throw new InvalidOperationException("unsupported snapshot schema");
 
             var importedSettings = await ReadSettingsJsonAsync(conn, ct);
@@ -121,36 +149,41 @@ CREATE TABLE item_files (
                 var item = items[i];
                 if (item.Kind == ClipboardContentKind.Image)
                 {
-                    var img = await ReadImageAsync(conn, item.Id, ct);
+                    var img = await ReadImageAsync(conn, item.Id, parsed, ct);
                     if (img is not null)
                     {
-                        var path = WriteImageFile(img.Value.FileName, img.Value.Bytes);
-                        writtenImageCount++;
-                        items[i] = item with { ImageFilePath = path };
+                        var path = await WriteImportedImageAsync(img, ensureBlobPathAsync, ct);
+                        if (!string.IsNullOrWhiteSpace(path))
+                        {
+                            writtenImageCount++;
+                            items[i] = item with { ImageFilePath = path };
+                        }
                     }
                 }
 
                 if (item.Kind == ClipboardContentKind.FileList)
                 {
-                    var fileEntries = await ReadFilesAsync(conn, item.Id, ct);
+                    var fileEntries = await ReadFilesAsync(conn, item.Id, parsed, ct);
                     if (fileEntries.Count > 0)
                     {
                         var dir = Path.Combine(AppPaths.FilesRoot, item.Id.ToString("N"));
                         Directory.CreateDirectory(dir);
+                        var localPaths = new List<string>();
 
                         foreach (var f in fileEntries)
                         {
                             var safeName = SanitizeFileName(f.FileName);
                             var dest = Path.Combine(dir, f.Idx.ToString("D4") + "_" + safeName);
-                            try
+                            var wrote = await WriteImportedFileAsync(dest, f, ensureBlobPathAsync, ct);
+                            if (wrote)
                             {
-                                File.WriteAllBytes(dest, f.Bytes);
                                 writtenFileCount++;
-                            }
-                            catch
-                            {
+                                localPaths.Add(dest);
                             }
                         }
+
+                        if (localPaths.Count > 0)
+                            items[i] = item with { FilePaths = localPaths };
                     }
                 }
             }
@@ -184,23 +217,14 @@ CREATE TABLE item_files (
         cmd.Parameters.AddWithValue("$k", "schema");
         cmd.Parameters.AddWithValue("$v", SchemaVersion.ToString(CultureInfo.InvariantCulture));
         await cmd.ExecuteNonQueryAsync(ct);
-
-        cmd.Parameters.Clear();
-        cmd.Parameters.AddWithValue("$k", "createdAt");
-        cmd.Parameters.AddWithValue("$v", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
-        await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task InsertSettingsAsync(SqliteConnection conn, SqliteTransaction tx, CancellationToken ct)
+    private static async Task InsertSettingsAsync(SqliteConnection conn, SqliteTransaction tx, AppSettings settings, CancellationToken ct)
     {
-        var settingsPath = Path.Combine(AppPaths.AppDataRoot, "settings.json");
-        if (!File.Exists(settingsPath))
-            return;
-
         string json;
         try
         {
-            json = await File.ReadAllTextAsync(settingsPath, ct);
+            json = JsonSerializer.Serialize(CloneSettings(settings));
         }
         catch
         {
@@ -217,24 +241,14 @@ CREATE TABLE item_files (
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task InsertHistoryAsync(SqliteConnection conn, SqliteTransaction tx, CancellationToken ct)
+    private static async Task InsertHistoryAsync(
+        SqliteConnection conn,
+        SqliteTransaction tx,
+        IReadOnlyList<ClipboardItem> items,
+        Dictionary<string, SnapshotBlob> blobs,
+        CancellationToken ct)
     {
-        var historyPath = Path.Combine(AppPaths.AppDataRoot, "history.json");
-        if (!File.Exists(historyPath))
-            return;
-
-        List<ClipboardItem>? items;
-        try
-        {
-            await using var fs = File.OpenRead(historyPath);
-            items = await JsonSerializer.DeserializeAsync<List<ClipboardItem>>(fs, cancellationToken: ct);
-        }
-        catch
-        {
-            items = null;
-        }
-
-        if (items is null || items.Count == 0)
+        if (items.Count == 0)
             return;
 
         var seenIds = new HashSet<Guid>();
@@ -286,34 +300,44 @@ INSERT OR REPLACE INTO items(
 
             if (item.Kind == ClipboardContentKind.Image)
             {
-                TryInsertImage(conn, tx, item, ct);
+                TryInsertImage(conn, tx, item, blobs, ct);
             }
 
             if (item.Kind == ClipboardContentKind.FileList)
             {
-                TryInsertFiles(conn, tx, item, ct);
+                TryInsertFiles(conn, tx, item, blobs, ct);
             }
 
             position++;
         }
     }
 
-    private static void TryInsertImage(SqliteConnection conn, SqliteTransaction tx, ClipboardItem item, CancellationToken ct)
+    private static void TryInsertImage(
+        SqliteConnection conn,
+        SqliteTransaction tx,
+        ClipboardItem item,
+        Dictionary<string, SnapshotBlob> blobs,
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(item.ImageFilePath) || !File.Exists(item.ImageFilePath))
             return;
 
-        byte[] bytes;
+        string sha256;
+        long sizeBytes;
         try
         {
-            bytes = File.ReadAllBytes(item.ImageFilePath);
+            var imageInfo = new FileInfo(item.ImageFilePath);
+            sizeBytes = imageInfo.Length;
+            if (sizeBytes <= 0)
+                return;
+            sha256 = ComputeFileSha256(item.ImageFilePath);
         }
         catch
         {
             return;
         }
 
-        if (bytes.Length == 0)
+        if (string.IsNullOrWhiteSpace(sha256))
             return;
 
         var fileName = Path.GetFileName(item.ImageFilePath);
@@ -322,20 +346,27 @@ INSERT OR REPLACE INTO items(
 
         using var cmd = conn.CreateCommand();
         cmd.Transaction = tx;
-        cmd.CommandText = "INSERT OR REPLACE INTO item_images(itemId, fileName, bytes) VALUES ($id, $name, $bytes);";
+        cmd.CommandText = "INSERT OR REPLACE INTO item_images(itemId, fileName, blobSha256, sizeBytes, bytes) VALUES ($id, $name, $sha256, $sizeBytes, NULL);";
         cmd.Parameters.AddWithValue("$id", item.Id.ToString("D"));
         cmd.Parameters.AddWithValue("$name", fileName);
-        cmd.Parameters.Add("$bytes", SqliteType.Blob).Value = bytes;
+        cmd.Parameters.AddWithValue("$sha256", sha256);
+        cmd.Parameters.AddWithValue("$sizeBytes", sizeBytes);
         try
         {
             cmd.ExecuteNonQuery();
+            blobs[sha256] = new SnapshotBlob(sha256, item.ImageFilePath!, sizeBytes);
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
         }
     }
 
-    private static void TryInsertFiles(SqliteConnection conn, SqliteTransaction tx, ClipboardItem item, CancellationToken ct)
+    private static void TryInsertFiles(
+        SqliteConnection conn,
+        SqliteTransaction tx,
+        ClipboardItem item,
+        Dictionary<string, SnapshotBlob> blobs,
+        CancellationToken ct)
     {
         var cachedDir = Path.Combine(AppPaths.FilesRoot, item.Id.ToString("N"));
         var cachedFiles = new List<(int idx, string name, string path)>();
@@ -390,29 +421,36 @@ INSERT OR REPLACE INTO items(
         {
             ct.ThrowIfCancellationRequested();
 
-            byte[] bytes;
+            string sha256;
+            long sizeBytes;
             try
             {
-                bytes = File.ReadAllBytes(f.path);
+                var fileInfo = new FileInfo(f.path);
+                sizeBytes = fileInfo.Length;
+                if (sizeBytes <= 0)
+                    continue;
+                sha256 = ComputeFileSha256(f.path);
             }
             catch
             {
                 continue;
             }
 
-            if (bytes.Length == 0)
+            if (string.IsNullOrWhiteSpace(sha256))
                 continue;
 
             using var cmd = conn.CreateCommand();
             cmd.Transaction = tx;
-            cmd.CommandText = "INSERT OR REPLACE INTO item_files(itemId, idx, fileName, bytes) VALUES ($id, $idx, $name, $bytes);";
+            cmd.CommandText = "INSERT OR REPLACE INTO item_files(itemId, idx, fileName, blobSha256, sizeBytes, bytes) VALUES ($id, $idx, $name, $sha256, $sizeBytes, NULL);";
             cmd.Parameters.AddWithValue("$id", item.Id.ToString("D"));
             cmd.Parameters.AddWithValue("$idx", f.idx);
             cmd.Parameters.AddWithValue("$name", f.name);
-            cmd.Parameters.Add("$bytes", SqliteType.Blob).Value = bytes;
+            cmd.Parameters.AddWithValue("$sha256", sha256);
+            cmd.Parameters.AddWithValue("$sizeBytes", sizeBytes);
             try
             {
                 cmd.ExecuteNonQuery();
+                blobs[sha256] = new SnapshotBlob(sha256, f.path, sizeBytes);
             }
             catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
             {
@@ -502,36 +540,60 @@ ORDER BY position ASC;
         return items;
     }
 
-    private static async Task<(string FileName, byte[] Bytes)?> ReadImageAsync(SqliteConnection conn, Guid itemId, CancellationToken ct)
+    private sealed record SnapshotImageRecord(string FileName, string? BlobSha256, long? SizeBytes, byte[]? Bytes);
+
+    private sealed record SnapshotFileRecord(int Idx, string FileName, string? BlobSha256, long? SizeBytes, byte[]? Bytes);
+
+    private static async Task<SnapshotImageRecord?> ReadImageAsync(SqliteConnection conn, Guid itemId, int schemaVersion, CancellationToken ct)
     {
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT fileName, bytes FROM item_images WHERE itemId = $id LIMIT 1;";
+        cmd.CommandText = schemaVersion >= 2
+            ? "SELECT fileName, blobSha256, sizeBytes, bytes FROM item_images WHERE itemId = $id LIMIT 1;"
+            : "SELECT fileName, bytes FROM item_images WHERE itemId = $id LIMIT 1;";
         cmd.Parameters.AddWithValue("$id", itemId.ToString("D"));
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
             return null;
 
-        var fileName = reader.GetString(0);
-        var bytes = (byte[])reader[1];
-        return (fileName, bytes);
+        if (schemaVersion >= 2)
+        {
+            var fileName = reader.GetString(0);
+            var blobSha256 = reader.IsDBNull(1) ? null : reader.GetString(1);
+            long? sizeBytes = reader.IsDBNull(2) ? (long?)null : reader.GetInt64(2);
+            var bytes = reader.IsDBNull(3) ? null : (byte[])reader[3];
+            return new SnapshotImageRecord(fileName, blobSha256, sizeBytes, bytes);
+        }
+
+        return new SnapshotImageRecord(reader.GetString(0), null, null, (byte[])reader[1]);
     }
 
-    private static async Task<List<(int Idx, string FileName, byte[] Bytes)>> ReadFilesAsync(SqliteConnection conn, Guid itemId, CancellationToken ct)
+    private static async Task<List<SnapshotFileRecord>> ReadFilesAsync(SqliteConnection conn, Guid itemId, int schemaVersion, CancellationToken ct)
     {
-        var list = new List<(int Idx, string FileName, byte[] Bytes)>();
+        var list = new List<SnapshotFileRecord>();
 
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT idx, fileName, bytes FROM item_files WHERE itemId = $id ORDER BY idx ASC;";
+        cmd.CommandText = schemaVersion >= 2
+            ? "SELECT idx, fileName, blobSha256, sizeBytes, bytes FROM item_files WHERE itemId = $id ORDER BY idx ASC;"
+            : "SELECT idx, fileName, bytes FROM item_files WHERE itemId = $id ORDER BY idx ASC;";
         cmd.Parameters.AddWithValue("$id", itemId.ToString("D"));
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
-            var idx = reader.GetInt32(0);
-            var fileName = reader.GetString(1);
-            var bytes = (byte[])reader[2];
-            list.Add((Idx: idx, FileName: fileName, Bytes: bytes));
+            if (schemaVersion >= 2)
+            {
+                list.Add(new SnapshotFileRecord(
+                    reader.GetInt32(0),
+                    reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.IsDBNull(3) ? (long?)null : reader.GetInt64(3),
+                    reader.IsDBNull(4) ? null : (byte[])reader[4]));
+            }
+            else
+            {
+                list.Add(new SnapshotFileRecord(reader.GetInt32(0), reader.GetString(1), null, null, (byte[])reader[2]));
+            }
         }
 
         return list;
@@ -568,6 +630,108 @@ ORDER BY position ASC;
         }
     }
 
+    private static async Task<string?> WriteImportedImageAsync(
+        SnapshotImageRecord image,
+        Func<string, CancellationToken, Task<string?>>? ensureBlobPathAsync,
+        CancellationToken ct)
+    {
+        if (image.Bytes is { Length: > 0 })
+            return WriteImageFile(image.FileName, image.Bytes);
+
+        if (string.IsNullOrWhiteSpace(image.BlobSha256))
+            return null;
+
+        var blobPath = await EnsureLocalBlobPathAsync(image.BlobSha256, ensureBlobPathAsync, ct);
+        if (string.IsNullOrWhiteSpace(blobPath) || !File.Exists(blobPath))
+            return null;
+
+        try
+        {
+            var bytes = await File.ReadAllBytesAsync(blobPath, ct);
+            return WriteImageFile(image.FileName, bytes);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static async Task<bool> WriteImportedFileAsync(
+        string destinationPath,
+        SnapshotFileRecord file,
+        Func<string, CancellationToken, Task<string?>>? ensureBlobPathAsync,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (file.Bytes is { Length: > 0 })
+            {
+                await File.WriteAllBytesAsync(destinationPath, file.Bytes, ct);
+                return true;
+            }
+
+            if (string.IsNullOrWhiteSpace(file.BlobSha256))
+                return false;
+
+            var blobPath = await EnsureLocalBlobPathAsync(file.BlobSha256, ensureBlobPathAsync, ct);
+            if (string.IsNullOrWhiteSpace(blobPath) || !File.Exists(blobPath))
+                return false;
+
+            await using var input = new FileStream(blobPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            await using var output = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            await input.CopyToAsync(output, ct);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static async Task<string?> EnsureLocalBlobPathAsync(
+        string blobSha256,
+        Func<string, CancellationToken, Task<string?>>? ensureBlobPathAsync,
+        CancellationToken ct)
+    {
+        var localPath = GetLocalBlobPath(blobSha256);
+        if (File.Exists(localPath))
+            return localPath;
+
+        if (ensureBlobPathAsync is null)
+            return null;
+
+        var fetchedPath = await ensureBlobPathAsync(blobSha256, ct);
+        if (!string.IsNullOrWhiteSpace(fetchedPath) && File.Exists(fetchedPath))
+            return fetchedPath;
+
+        return File.Exists(localPath) ? localPath : null;
+    }
+
+    public static string GetLocalBlobPath(string blobSha256)
+    {
+        var normalized = NormalizeSha256(blobSha256);
+        if (string.IsNullOrWhiteSpace(normalized))
+            throw new ArgumentException("blob hash is empty", nameof(blobSha256));
+
+        var bucket1 = normalized.Substring(0, 2);
+        var bucket2 = normalized.Substring(2, 2);
+        var dir = Path.Combine(AppPaths.BlobsRoot, bucket1, bucket2);
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, normalized + ".blob");
+    }
+
+    private static string NormalizeSha256(string? value)
+    {
+        return (value ?? string.Empty).Trim().ToLowerInvariant();
+    }
+
+    private static string ComputeFileSha256(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        return Convert.ToHexString(sha.ComputeHash(stream)).ToLowerInvariant();
+    }
+
     private static void ReplaceItem(List<ClipboardItem> items, Guid id, Func<ClipboardItem, ClipboardItem> map)
     {
         for (var i = 0; i < items.Count; i++)
@@ -595,6 +759,13 @@ ORDER BY position ASC;
         dest.ExcludePinnedFromLimits = src.ExcludePinnedFromLimits;
         dest.ShelfEnabled = src.ShelfEnabled;
         dest.ShelfTriggerModifier = src.ShelfTriggerModifier;
+    }
+
+    private static AppSettings CloneSettings(AppSettings src)
+    {
+        var clone = new AppSettings();
+        CopySettings(clone, src);
+        return clone;
     }
 
     private static int TryParseIndexPrefix(string name)

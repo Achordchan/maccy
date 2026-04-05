@@ -9,6 +9,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Threading;
+using System.IO;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
 using Avalonia.Threading;
@@ -31,6 +32,7 @@ public partial class App : Application
     private ClipboardHistoryService? _history;
 
     private SyncService? _sync;
+    private SyncEventStreamService? _syncEvents;
 
     private ShelfService? _shelf;
 
@@ -144,13 +146,10 @@ public partial class App : Application
             {
                 try
                 {
-                    try
+                    if (_prefsWindow.DataContext is PreferencesWindowViewModel prefsVm)
                     {
-                        if (_prefsWindow.DataContext is PreferencesWindowViewModel prefsVm)
-                            prefsVm.ReloadFromSettings();
-                    }
-                    catch
-                    {
+                        prefsVm.ReloadFromSettings();
+                        prefsVm.OnWindowShown();
                     }
 
                     if (!_prefsWindow.IsVisible)
@@ -160,16 +159,45 @@ public partial class App : Application
                         else
                             _prefsWindow.Show();
                     }
-                }
-                catch
-                {
-                }
 
-                _prefsWindow.Activate();
-                return;
+                    _prefsWindow.Activate();
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    WritePreferencesErrorLog(ex);
+                    try
+                    {
+                        if (_prefsWindow.DataContext is PreferencesWindowViewModel staleVm)
+                            staleVm.Dispose();
+                    }
+                    catch
+                    {
+                    }
+
+                    try
+                    {
+                        _prefsWindow.Close();
+                    }
+                    catch
+                    {
+                    }
+
+                    _prefsWindow = null;
+                }
             }
 
-            var vm = new PreferencesWindowViewModel(_settings, _autoStart, TriggerManualUpdateCheck, OpenStorageLocation, _sync);
+            Action? triggerBackgroundSync = null;
+            if (owner.DataContext is MainWindowViewModel mainVm)
+                triggerBackgroundSync = () => mainVm.TriggerBackgroundSync("login");
+
+            var vm = new PreferencesWindowViewModel(
+                _settings,
+                _autoStart,
+                TriggerManualUpdateCheck,
+                OpenStorageLocation,
+                _sync,
+                triggerBackgroundSync);
             var w = new PreferencesWindow
             {
                 DataContext = vm,
@@ -182,6 +210,13 @@ public partial class App : Application
             vm.RequestClose += () => w.Close();
             w.Closed += (_, _) =>
             {
+                try
+                {
+                    vm.Dispose();
+                }
+                catch
+                {
+                }
                 _prefsWindow = null;
             };
 
@@ -190,11 +225,26 @@ public partial class App : Application
             else
                 w.Show();
 
+            vm.OnWindowShown();
             w.Activate();
+        }
+        catch (Exception ex)
+        {
+            WritePreferencesErrorLog(ex);
+            _prefsWindow = null;
+        }
+    }
+
+    private static void WritePreferencesErrorLog(Exception ex)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.AppDataRoot);
+            var path = Path.Combine(AppPaths.AppDataRoot, "preferences_last_error.txt");
+            File.WriteAllText(path, ex.ToString());
         }
         catch
         {
-            _prefsWindow = null;
         }
     }
 
@@ -428,7 +478,13 @@ public partial class App : Application
             vm.RequestEditNote += item => window.BeginEditNote(item);
             vm.ConfirmAsync = (title, message) => window.ShowConfirmAsync(title, message);
             window.DataContext = vm;
-            Dispatcher.UIThread.Post(() => vm.StartAutoSync());
+            DispatcherTimer.RunOnce(() => vm.StartAutoSync(), TimeSpan.FromSeconds(3));
+
+            if (_settings is not null)
+            {
+                _syncEvents = new SyncEventStreamService(_settings);
+                _syncEvents.Start(() => vm.TriggerBackgroundSync("sse"));
+            }
 
             var updateService = new UpdateService(UpdateManifestUrl);
             _updateCoordinator = new UpdateCoordinator(
@@ -484,6 +540,9 @@ public partial class App : Application
 
                 _persistence?.Dispose();
                 _persistence = null;
+
+                _syncEvents?.Dispose();
+                _syncEvents = null;
 
                 try
                 {

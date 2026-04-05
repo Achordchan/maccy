@@ -36,4 +36,14 @@ public static class AppPaths
             return root;
         }
     }
+
+    public static string BlobsRoot
+    {
+        get
+        {
+            var root = Path.Combine(AppDataRoot, "blobs");
+            Directory.CreateDirectory(root);
+            return root;
+        }
+    }
 }

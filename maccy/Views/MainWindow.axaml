@@ -167,8 +167,60 @@
                     </Border>
 
                     <Grid Grid.Column="2" VerticalAlignment="Center" Width="18" Height="18" ToolTip.Tip="{Binding SyncIconToolTip}">
-                        <Image Width="18" Height="18" Stretch="Uniform" IsVisible="{Binding ShowSyncSuccessIcon}" Source="avares://maccy/Assets/dui.png" />
-                        <Image Width="18" Height="18" Stretch="Uniform" IsVisible="{Binding ShowSyncErrorIcon}" Source="avares://maccy/Assets/cuo.png" />
+                        <Viewbox Width="18" Height="18" Stretch="Uniform" IsVisible="{Binding ShowSyncIdleIcon}">
+                            <Canvas Width="24" Height="24">
+                                <Path Data="M 7.5 18.8 C 5.0 18.8 3.0 16.8 3.0 14.4 C 3.0 12.1 4.6 10.2 6.9 9.8 C 7.5 6.9 10.0 4.8 13.0 4.8 C 16.4 4.8 19.1 7.2 19.7 10.4 C 21.7 10.8 23.2 12.5 23.2 14.8 C 23.2 17.0 21.4 18.8 19.1 18.8 L 7.5 18.8"
+                                      Stroke="{DynamicResource AppMuted2Foreground}"
+                                      StrokeThickness="1.8"
+                                      StrokeLineCap="Round"
+                                      Fill="Transparent" />
+                            </Canvas>
+                        </Viewbox>
+
+                        <Viewbox Width="18" Height="18" Stretch="Uniform" IsVisible="{Binding ShowSyncWorkingIcon}">
+                            <Canvas Width="24" Height="24">
+                                <Path Data="M 7.5 18.8 C 5.0 18.8 3.0 16.8 3.0 14.4 C 3.0 12.1 4.6 10.2 6.9 9.8 C 7.5 6.9 10.0 4.8 13.0 4.8 C 16.4 4.8 19.1 7.2 19.7 10.4 C 21.7 10.8 23.2 12.5 23.2 14.8 C 23.2 17.0 21.4 18.8 19.1 18.8 L 7.5 18.8"
+                                      Stroke="#F59E0B"
+                                      StrokeThickness="1.8"
+                                      StrokeLineCap="Round"
+                                      Fill="Transparent" />
+                                <Path Data="M 8.0 13.2 C 9.0 11.3 11.1 10.3 13.1 10.6 L 12.1 9.5 M 13.2 10.6 L 12.1 9.5 M 16.0 11.0 C 15.5 13.2 13.5 14.7 11.3 14.6 L 12.4 15.7 M 11.2 14.6 L 12.4 15.7"
+                                      Stroke="#F59E0B"
+                                      StrokeThickness="1.7"
+                                      StrokeLineCap="Round"
+                                      Fill="Transparent" />
+                            </Canvas>
+                        </Viewbox>
+
+                        <Viewbox Width="18" Height="18" Stretch="Uniform" IsVisible="{Binding ShowSyncSuccessIcon}">
+                            <Canvas Width="24" Height="24">
+                                <Path Data="M 7.5 18.8 C 5.0 18.8 3.0 16.8 3.0 14.4 C 3.0 12.1 4.6 10.2 6.9 9.8 C 7.5 6.9 10.0 4.8 13.0 4.8 C 16.4 4.8 19.1 7.2 19.7 10.4 C 21.7 10.8 23.2 12.5 23.2 14.8 C 23.2 17.0 21.4 18.8 19.1 18.8 L 7.5 18.8"
+                                      Stroke="#10B981"
+                                      StrokeThickness="1.8"
+                                      StrokeLineCap="Round"
+                                      Fill="Transparent" />
+                                <Path Data="M 9.0 13.0 L 11.6 15.5 L 16.0 10.8"
+                                      Stroke="#10B981"
+                                      StrokeThickness="2.0"
+                                      StrokeLineCap="Round"
+                                      Fill="Transparent" />
+                            </Canvas>
+                        </Viewbox>
+
+                        <Viewbox Width="18" Height="18" Stretch="Uniform" IsVisible="{Binding ShowSyncErrorIcon}">
+                            <Canvas Width="24" Height="24">
+                                <Path Data="M 7.5 18.8 C 5.0 18.8 3.0 16.8 3.0 14.4 C 3.0 12.1 4.6 10.2 6.9 9.8 C 7.5 6.9 10.0 4.8 13.0 4.8 C 16.4 4.8 19.1 7.2 19.7 10.4 C 21.7 10.8 23.2 12.5 23.2 14.8 C 23.2 17.0 21.4 18.8 19.1 18.8 L 7.5 18.8"
+                                      Stroke="#EF4444"
+                                      StrokeThickness="1.8"
+                                      StrokeLineCap="Round"
+                                      Fill="Transparent" />
+                                <Path Data="M 10.0 10.8 L 15.0 15.8 M 15.0 10.8 L 10.0 15.8"
+                                      Stroke="#EF4444"
+                                      StrokeThickness="2.0"
+                                      StrokeLineCap="Round"
+                                      Fill="Transparent" />
+                            </Canvas>
+                        </Viewbox>
                     </Grid>
 
                     <Button Grid.Column="3" Content="设置" Command="{Binding OpenPreferencesCommand}" />

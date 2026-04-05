@@ -4,13 +4,14 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using maccy.Services;
 
 namespace maccy.ViewModels;
 
-public partial class PreferencesWindowViewModel : ViewModelBase
+public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 {
     public sealed record ThemeOption(string Value, string Display);
 
@@ -23,6 +24,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase
     private readonly WindowsAutoStartService _autoStart;
     private readonly Action? _checkUpdates;
     private readonly Action? _openStorage;
+    private readonly Action? _triggerBackgroundSync;
 
     private readonly AuthService _authing;
 
@@ -35,6 +37,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase
     private int _settingsToastToken;
 
     private bool _suppressSettingsSideEffects;
+    private bool _disposed;
 
     public event Action? RequestClose;
 
@@ -70,6 +73,21 @@ public partial class PreferencesWindowViewModel : ViewModelBase
 
     [ObservableProperty]
     private string? _subscriptionStatusText;
+
+    [ObservableProperty]
+    private string _subscriptionTierText = "-";
+
+    [ObservableProperty]
+    private string _subscriptionStorageText = "-";
+
+    [ObservableProperty]
+    private string _subscriptionRetentionText = "-";
+
+    [ObservableProperty]
+    private string _subscriptionOverLimitText = "-";
+
+    [ObservableProperty]
+    private bool _subscriptionOverLimit;
 
     [ObservableProperty]
     private bool _redeemBusy;
@@ -186,38 +204,40 @@ public partial class PreferencesWindowViewModel : ViewModelBase
     public IAsyncRelayCommand RefreshSubscriptionCommand { get; }
 
     public PreferencesWindowViewModel(AppSettingsService settings, WindowsAutoStartService autoStart)
-        : this(settings, autoStart, null, null, null)
+        : this(settings, autoStart, null, null, null, null)
     {
     }
 
     public PreferencesWindowViewModel(AppSettingsService settings, WindowsAutoStartService autoStart, Action? checkUpdates)
-        : this(settings, autoStart, checkUpdates, null, null)
+        : this(settings, autoStart, checkUpdates, null, null, null)
     {
     }
 
     public PreferencesWindowViewModel(AppSettingsService settings, WindowsAutoStartService autoStart, Action? checkUpdates, Action? openStorage)
-        : this(settings, autoStart, checkUpdates, openStorage, null)
+        : this(settings, autoStart, checkUpdates, openStorage, null, null)
     {
     }
 
-    public PreferencesWindowViewModel(AppSettingsService settings, WindowsAutoStartService autoStart, Action? checkUpdates, Action? openStorage, SyncService? sync)
+    public PreferencesWindowViewModel(
+        AppSettingsService settings,
+        WindowsAutoStartService autoStart,
+        Action? checkUpdates,
+        Action? openStorage,
+        SyncService? sync,
+        Action? triggerBackgroundSync)
     {
         _settings = settings;
         _autoStart = autoStart;
         _checkUpdates = checkUpdates;
         _openStorage = openStorage;
-
         _sync = sync;
+        _triggerBackgroundSync = triggerBackgroundSync;
 
         _authing = new AuthService();
 
-        try
-        {
-            ToastService.Instance.ToastChanged += msg => ToastMessage = msg;
-        }
-        catch
-        {
-        }
+        ToastService.Instance.ToastChanged += OnToastChanged;
+
+        _settings.Changed += OnSettingsChanged;
 
         ReloadFromSettings();
 
@@ -243,6 +263,26 @@ public partial class PreferencesWindowViewModel : ViewModelBase
 
     private bool CanRefreshSubscription() => IsLoggedIn;
 
+    partial void OnIsLoggedInChanged(bool value)
+    {
+        RedeemCardCommand?.NotifyCanExecuteChanged();
+        RefreshSubscriptionCommand?.NotifyCanExecuteChanged();
+    }
+
+    private void OnSettingsChanged()
+    {
+        if (_disposed)
+            return;
+        Dispatcher.UIThread.Post(ReloadFromSettings);
+    }
+
+    private void OnToastChanged(string? msg)
+    {
+        if (_disposed)
+            return;
+        ToastMessage = msg;
+    }
+
     public void ReloadFromSettings()
     {
         _suppressSettingsSideEffects = true;
@@ -255,6 +295,8 @@ public partial class PreferencesWindowViewModel : ViewModelBase
             AuthEmailText = valid && !string.IsNullOrWhiteSpace(s.AuthUserEmail) ? s.AuthUserEmail! : AuthEmailText;
             AuthPasswordText = string.Empty;
             AuthStatusText = valid ? "已登录" : "未登录";
+            if (!valid)
+                ResetSubscriptionFields("未登录");
 
             NasAgentBaseUrlText = s.NasAgentBaseUrl ?? string.Empty;
             NasAgentBaseUrlDraft = s.NasAgentBaseUrl ?? string.Empty;
@@ -315,10 +357,14 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         {
             _suppressSettingsSideEffects = false;
         }
+    }
 
-        // 如果已登录，自动刷新订阅状态
-        if (IsLoggedIn)
-            _ = RefreshSubscriptionAsync(CancellationToken.None);
+    public void OnWindowShown()
+    {
+        if (!IsLoggedIn)
+            return;
+
+        _ = RefreshSubscriptionAsync(CancellationToken.None);
     }
 
     partial void OnShelfEnabledChanged(bool value)
@@ -583,9 +629,8 @@ public partial class PreferencesWindowViewModel : ViewModelBase
 
             ReloadFromSettings();
             ToastService.Instance.Show("登录成功");
-
-            // 自动刷新订阅状态
-            _ = RefreshSubscriptionAsync(ct);
+            await RefreshSubscriptionAsync(ct);
+            _triggerBackgroundSync?.Invoke();
         }
         catch (OperationCanceledException)
         {
@@ -645,7 +690,8 @@ public partial class PreferencesWindowViewModel : ViewModelBase
 
             ReloadFromSettings();
             ToastService.Instance.Show("注册成功");
-            _ = RefreshSubscriptionAsync(ct);
+            await RefreshSubscriptionAsync(ct);
+            _triggerBackgroundSync?.Invoke();
         }
         catch (OperationCanceledException)
         {
@@ -665,20 +711,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase
 
     private void Logout()
     {
-        try
-        {
-            _settings.Update(s =>
-            {
-                s.AuthAccessToken = null;
-                s.AuthRefreshToken = null;
-                s.AuthIdToken = null;
-                s.AuthExpiresAtUnixMs = 0;
-                s.AuthUserEmail = null;
-            });
-        }
-        catch
-        {
-        }
+        _settings.ClearAuthSession(clearUserEmail: true);
 
         ReloadFromSettings();
 
@@ -759,74 +792,18 @@ public partial class PreferencesWindowViewModel : ViewModelBase
             NasBusy = true;
             UploadSnapshotCommand.NotifyCanExecuteChanged();
 
-            await _sync.UploadAsync(ct);
+            var uploadResult = await _sync.UploadAsync(ct, reason: "preferences_upload");
+            await PersistSyncStateAfterUploadAsync(uploadResult, null, ct);
             ToastService.Instance.Show("已上传到 NAS");
         }
         catch (OperationCanceledException)
         {
             ToastService.Instance.Show("已取消");
         }
-        catch (InvalidOperationException ex)
-        {
-            try
-            {
-                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
-                File.WriteAllText(path, ex.ToString());
-            }
-            catch
-            {
-            }
-
-            if (ex.Message == "not logged in")
-                ToastService.Instance.Show("请先登录");
-            else if (ex.Message == "missing NAS base url")
-                ToastService.Instance.Show("请先填写 NAS 地址");
-            else
-                ToastService.Instance.Show("上传失败：" + (ex.Message ?? ex.GetType().Name) + "（详情见 sync_last_error.txt）");
-        }
-        catch (NasAgentApiException ex)
-        {
-            try
-            {
-                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
-                File.WriteAllText(path, "NAS API error\nstatus=" + (int)ex.StatusCode + "\n" + (ex.ResponseBody ?? string.Empty));
-            }
-            catch
-            {
-            }
-
-            if (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized || ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
-            {
-                var hasRefresh = !string.IsNullOrWhiteSpace(_settings.Current.AuthRefreshToken);
-                ToastService.Instance.Show(hasRefresh
-                    ? "未授权：已尝试自动刷新，请重试（详情见 sync_last_error.txt）"
-                    : "未授权：缺少 refresh_token，需要重新登录一次以启用自动续期");
-            }
-            else if ((int)ex.StatusCode == 413)
-                ToastService.Instance.Show("文件太大：NAS 端拒绝(413)");
-            else
-                ToastService.Instance.Show("上传失败：" + (int)ex.StatusCode);
-        }
         catch (Exception ex)
         {
-            var msg = ex.Message ?? string.Empty;
-            msg = msg.Replace("\r", " ").Replace("\n", " ").Trim();
-            if (msg.Length > 200)
-                msg = msg[..200] + "...";
-
-            try
-            {
-                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
-                File.WriteAllText(path, ex.ToString());
-            }
-            catch
-            {
-            }
-
-            if (string.IsNullOrWhiteSpace(msg))
-                ToastService.Instance.Show("上传失败：" + ex.GetType().Name + "（详情见存储目录 sync_last_error.txt）");
-            else
-                ToastService.Instance.Show("上传失败：" + ex.GetType().Name + " " + msg + "（详情见存储目录 sync_last_error.txt）");
+            WriteSyncErrorLog(ex);
+            ToastService.Instance.Show(ExplainSyncException(ex));
         }
         finally
         {
@@ -850,81 +827,36 @@ public partial class PreferencesWindowViewModel : ViewModelBase
             NasBusy = true;
             SyncNowCommand.NotifyCanExecuteChanged();
 
-            var direction = await _sync.DecideDirectionAsync(ct);
-            if (direction == SyncService.SyncDirection.None)
+            var manifest = await _sync.GetManifestInfoAsync(ct);
+            var decision = _sync.DecideDirectionWithState(manifest);
+            if (decision.Direction == SyncService.SyncDirection.None)
             {
+                _sync.PersistSyncState(decision.LocalFingerprint, decision.Manifest);
                 ToastService.Instance.Show("已是最新");
                 return;
             }
 
-            if (direction == SyncService.SyncDirection.Download)
+            if (decision.Direction == SyncService.SyncDirection.Download)
             {
-                await _sync.DownloadAndApplyAsync(ct);
+                await _sync.DownloadAndApplyAsync(ct, reason: "preferences_manual");
+                _sync.PersistSyncState(_sync.ComputeLocalFingerprint(), decision.Manifest);
                 ReloadFromSettings();
                 ToastService.Instance.Show("同步完成（已下载）");
                 return;
             }
 
-            await _sync.UploadAsync(ct);
+            var uploadResult = await _sync.UploadAsync(ct, reason: "preferences_manual");
+            await PersistSyncStateAfterUploadAsync(uploadResult, decision.Manifest, ct);
             ToastService.Instance.Show("同步完成（已上传）");
         }
         catch (OperationCanceledException)
         {
             ToastService.Instance.Show("已取消");
         }
-        catch (InvalidOperationException ex)
-        {
-            try
-            {
-                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
-                File.WriteAllText(path, ex.ToString());
-            }
-            catch
-            {
-            }
-
-            if (ex.Message == "not logged in")
-                ToastService.Instance.Show("请先登录");
-            else if (ex.Message == "missing NAS base url")
-                ToastService.Instance.Show("请先填写 NAS 地址");
-            else if (string.Equals(ex.Message, "subscription expired", StringComparison.OrdinalIgnoreCase)
-                || ex.Message == "订阅已过期")
-                ToastService.Instance.Show("订阅已过期，请续费后重试");
-            else
-                ToastService.Instance.Show("同步失败：" + (ex.Message ?? ex.GetType().Name));
-        }
-        catch (NasAgentApiException ex)
-        {
-            try
-            {
-                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
-                File.WriteAllText(path, "NAS API error\nstatus=" + (int)ex.StatusCode + "\n" + (ex.ResponseBody ?? string.Empty));
-            }
-            catch
-            {
-            }
-
-            if (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
-                ToastService.Instance.Show("登录已失效，请重新登录");
-            else if (ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
-                ToastService.Instance.Show("订阅无效或已过期");
-            else if (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
-                ToastService.Instance.Show("云端还没有快照");
-            else
-                ToastService.Instance.Show("同步失败：" + (int)ex.StatusCode);
-        }
         catch (Exception ex)
         {
-            try
-            {
-                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
-                File.WriteAllText(path, ex.ToString());
-            }
-            catch
-            {
-            }
-
-            ToastService.Instance.Show("同步失败：" + (ex.Message ?? ex.GetType().Name));
+            WriteSyncErrorLog(ex);
+            ToastService.Instance.Show(ExplainSyncException(ex));
         }
         finally
         {
@@ -958,7 +890,8 @@ public partial class PreferencesWindowViewModel : ViewModelBase
             NasBusy = true;
             DownloadAndApplySnapshotCommand.NotifyCanExecuteChanged();
 
-            await _sync.DownloadAndApplyAsync(ct);
+            await _sync.DownloadAndApplyAsync(ct, reason: "preferences_restore");
+            await PersistSyncStateAfterDownloadAsync(ct);
             ReloadFromSettings();
             ToastService.Instance.Show("已从 NAS 恢复");
         }
@@ -966,69 +899,10 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         {
             ToastService.Instance.Show("已取消");
         }
-        catch (InvalidOperationException ex)
-        {
-            try
-            {
-                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
-                File.WriteAllText(path, ex.ToString());
-            }
-            catch
-            {
-            }
-
-            if (ex.Message == "not logged in")
-                ToastService.Instance.Show("请先登录");
-            else if (ex.Message == "missing NAS base url")
-                ToastService.Instance.Show("请先填写 NAS 地址");
-            else
-                ToastService.Instance.Show("下载失败：" + (ex.Message ?? ex.GetType().Name) + "（详情见 sync_last_error.txt）");
-        }
-        catch (NasAgentApiException ex)
-        {
-            try
-            {
-                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
-                File.WriteAllText(path, "NAS API error\nstatus=" + (int)ex.StatusCode + "\n" + (ex.ResponseBody ?? string.Empty));
-            }
-            catch
-            {
-            }
-
-            if (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized || ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
-            {
-                var hasRefresh = !string.IsNullOrWhiteSpace(_settings.Current.AuthRefreshToken);
-                ToastService.Instance.Show(hasRefresh
-                    ? "未授权：已尝试自动刷新，请重试（详情见 sync_last_error.txt）"
-                    : "未授权：缺少 refresh_token，需要重新登录一次以启用自动续期");
-            }
-            else if ((int)ex.StatusCode == 413)
-                ToastService.Instance.Show("文件太大：NAS 端拒绝(413)");
-            else if (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
-                ToastService.Instance.Show("NAS 端还没有快照");
-            else
-                ToastService.Instance.Show("下载失败：" + (int)ex.StatusCode);
-        }
         catch (Exception ex)
         {
-            var msg = ex.Message ?? string.Empty;
-            msg = msg.Replace("\r", " ").Replace("\n", " ").Trim();
-            if (msg.Length > 200)
-                msg = msg[..200] + "...";
-
-            try
-            {
-                var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
-                File.WriteAllText(path, ex.ToString());
-            }
-            catch
-            {
-            }
-
-            if (string.IsNullOrWhiteSpace(msg))
-                ToastService.Instance.Show("下载失败：" + ex.GetType().Name + "（详情见存储目录 sync_last_error.txt）");
-            else
-                ToastService.Instance.Show("下载失败：" + ex.GetType().Name + " " + msg + "（详情见存储目录 sync_last_error.txt）");
+            WriteSyncErrorLog(ex);
+            ToastService.Instance.Show(ExplainSyncException(ex));
         }
         finally
         {
@@ -1043,7 +917,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         var token = await EnsureAccessTokenAsync(ct);
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(token))
         {
-            SubscriptionStatusText = "未登录";
+            ResetSubscriptionFields("未登录");
             return;
         }
 
@@ -1053,13 +927,13 @@ public partial class PreferencesWindowViewModel : ViewModelBase
             var status = await client.GetSubscriptionStatusAsync(token, ct);
             if (status is null)
             {
-                SubscriptionStatusText = "查询失败";
+                ResetSubscriptionFields("查询失败");
                 return;
             }
 
             if (!status.Subscribed)
             {
-                SubscriptionStatusText = "未订阅";
+                ResetSubscriptionFields("未订阅");
                 return;
             }
 
@@ -1067,10 +941,23 @@ public partial class PreferencesWindowViewModel : ViewModelBase
                 SubscriptionStatusText = $"订阅至 {expires:yyyy-MM-dd}";
             else
                 SubscriptionStatusText = "已订阅";
+
+            SubscriptionTierText = string.IsNullOrWhiteSpace(status.Tier) ? "未知" : status.Tier!;
+            SubscriptionStorageText = FormatStorage(status.StorageBytes, status.StorageLimitBytes);
+            SubscriptionRetentionText = status.RetentionDays.HasValue && status.RetentionDays.Value > 0
+                ? $"{status.RetentionDays.Value} 天"
+                : "未限制";
+
+            SubscriptionOverLimit = status.OverLimit
+                ?? (status.StorageBytes.HasValue
+                    && status.StorageLimitBytes.HasValue
+                    && status.StorageLimitBytes.Value > 0
+                    && status.StorageBytes.Value > status.StorageLimitBytes.Value);
+            SubscriptionOverLimitText = SubscriptionOverLimit ? "已超限（可能影响同步）" : "正常";
         }
         catch
         {
-            SubscriptionStatusText = "查询失败";
+            ResetSubscriptionFields("查询失败");
         }
     }
 
@@ -1132,6 +1019,179 @@ public partial class PreferencesWindowViewModel : ViewModelBase
         }
     }
 
+    private async Task PersistSyncStateAfterUploadAsync(
+        UploadSnapshotResult? uploadResult,
+        SyncService.SyncManifestInfo? fallbackManifest,
+        CancellationToken ct)
+    {
+        if (_sync is null)
+            return;
+
+        var localFingerprint = _sync.ComputeLocalFingerprint();
+        try
+        {
+            var latestManifest = await _sync.GetManifestInfoAsync(ct);
+            _sync.PersistSyncState(localFingerprint, latestManifest);
+            return;
+        }
+        catch
+        {
+        }
+
+        var fallback = fallbackManifest ?? new SyncService.SyncManifestInfo(
+            uploadResult?.Version,
+            DateTimeOffset.UtcNow,
+            uploadResult?.Sha256,
+            uploadResult?.Size,
+            null);
+        _sync.PersistSyncState(localFingerprint, fallback);
+    }
+
+    private async Task PersistSyncStateAfterDownloadAsync(CancellationToken ct)
+    {
+        if (_sync is null)
+            return;
+
+        try
+        {
+            var manifest = await _sync.GetManifestInfoAsync(ct);
+            _sync.PersistSyncState(_sync.ComputeLocalFingerprint(), manifest);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void WriteSyncErrorLog(Exception ex)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.AppDataRoot);
+            var path = Path.Combine(AppPaths.AppDataRoot, "sync_last_error.txt");
+            File.WriteAllText(path, ex.ToString());
+        }
+        catch
+        {
+        }
+    }
+
+    private static string ExplainSyncException(Exception ex)
+    {
+        if (ex is InvalidOperationException ioe)
+        {
+            var msg = (ioe.Message ?? string.Empty).Trim();
+            if (string.Equals(msg, "not logged in", StringComparison.Ordinal))
+                return "请先登录";
+            if (string.Equals(msg, "missing NAS base url", StringComparison.Ordinal))
+                return "请先填写 NAS 地址";
+            if (string.Equals(msg, "subscription expired", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(msg, "订阅已过期", StringComparison.Ordinal))
+                return "订阅已过期，请续费后重试";
+            if (!string.IsNullOrWhiteSpace(msg))
+                return msg;
+        }
+
+        if (ex is NasAgentApiException api)
+        {
+            if (api.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                return "登录已失效，请重新登录";
+            if (api.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return "云端还没有快照";
+            if ((int)api.StatusCode == 413)
+                return "同步数据过大，请清理后重试";
+            if (api.StatusCode == System.Net.HttpStatusCode.Forbidden)
+            {
+                if (IsOverLimit(api))
+                    return "云端存储已超限，请清理旧快照或升级套餐";
+                if (IsTierLimited(api))
+                    return "当前套餐不支持该同步操作，请升级套餐后重试";
+                if (IsExpired(api))
+                    return "订阅已过期，请续费后重试";
+                return "权限不足或订阅状态异常";
+            }
+
+            return $"同步失败({(int)api.StatusCode})";
+        }
+
+        if (ex is TimeoutException)
+            return "请求超时，请检查网络和反向代理";
+        if (ex is OperationCanceledException)
+            return "已取消";
+
+        var fallback = (ex.Message ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(fallback) ? "同步失败" : "同步失败：" + fallback;
+    }
+
+    private static bool IsExpired(NasAgentApiException api)
+    {
+        var body = api.ResponseBody ?? string.Empty;
+        return body.Contains("订阅已过期", StringComparison.OrdinalIgnoreCase)
+            || (body.Contains("subscription", StringComparison.OrdinalIgnoreCase)
+                && body.Contains("expired", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsOverLimit(NasAgentApiException api)
+    {
+        var code = (api.ErrorCode ?? string.Empty).Trim();
+        if (code.Contains("over_limit", StringComparison.OrdinalIgnoreCase)
+            || code.Contains("quota", StringComparison.OrdinalIgnoreCase)
+            || code.Contains("storage", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var body = api.ResponseBody ?? string.Empty;
+        return body.Contains("over limit", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("quota", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("存储已超限", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTierLimited(NasAgentApiException api)
+    {
+        var code = (api.ErrorCode ?? string.Empty).Trim();
+        if (code.Contains("tier", StringComparison.OrdinalIgnoreCase)
+            || code.Contains("plan", StringComparison.OrdinalIgnoreCase)
+            || code.Contains("subscription_required", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var body = api.ResponseBody ?? string.Empty;
+        return body.Contains("tier", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("plan", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("套餐", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ResetSubscriptionFields(string statusText)
+    {
+        SubscriptionStatusText = statusText;
+        SubscriptionTierText = "-";
+        SubscriptionStorageText = "-";
+        SubscriptionRetentionText = "-";
+        SubscriptionOverLimitText = "-";
+        SubscriptionOverLimit = false;
+    }
+
+    private static string FormatStorage(long? usedBytes, long? limitBytes)
+    {
+        var used = usedBytes.HasValue ? FormatBytes(usedBytes.Value) : "-";
+        var limit = limitBytes.HasValue && limitBytes.Value > 0 ? FormatBytes(limitBytes.Value) : "-";
+        return $"{used} / {limit}";
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 0)
+            bytes = 0;
+
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        var value = (double)bytes;
+        var unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.Length - 1)
+        {
+            value /= 1024;
+            unitIndex++;
+        }
+
+        return $"{value:0.##} {units[unitIndex]}";
+    }
+
     private static bool HasSignedInSession(AppSettings s)
     {
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -1146,10 +1206,21 @@ public partial class PreferencesWindowViewModel : ViewModelBase
     private async Task<string?> EnsureAccessTokenAsync(CancellationToken ct)
     {
         var current = _settings.Current;
+        var baseUrl = (_settings.Current.NasAgentBaseUrl ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            return null;
+
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var access = (current.AuthAccessToken ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(access) && current.AuthExpiresAtUnixMs > nowMs + 30_000)
-            return access;
+        {
+            var email = await _authing.GetCurrentEmailAsync(baseUrl, access, ct);
+            if (!string.IsNullOrWhiteSpace(email))
+                return access;
+
+            _settings.ClearAuthSession();
+            return null;
+        }
 
         var refresh = (current.AuthRefreshToken ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(refresh))
@@ -1157,7 +1228,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase
 
         try
         {
-            var token = await _authing.RefreshAsync(_settings.Current.NasAgentBaseUrl, refresh, ct);
+            var token = await _authing.RefreshAsync(baseUrl, refresh, ct);
             _settings.Update(s =>
             {
                 s.AuthAccessToken = token.AccessToken;
@@ -1170,9 +1241,38 @@ public partial class PreferencesWindowViewModel : ViewModelBase
             ReloadFromSettings();
             return _settings.Current.AuthAccessToken;
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch
         {
+            _settings.ClearAuthSession();
             return null;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        try
+        {
+            _settings.Changed -= OnSettingsChanged;
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            ToastService.Instance.ToastChanged -= OnToastChanged;
+        }
+        catch
+        {
         }
     }
 }

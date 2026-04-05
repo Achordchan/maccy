@@ -60,6 +60,19 @@ public sealed class AppSettingsService
         Save();
     }
 
+    public void ClearAuthSession(bool clearUserEmail = false)
+    {
+        Update(s =>
+        {
+            s.AuthAccessToken = null;
+            s.AuthRefreshToken = null;
+            s.AuthIdToken = null;
+            s.AuthExpiresAtUnixMs = 0;
+            if (clearUserEmail)
+                s.AuthUserEmail = null;
+        });
+    }
+
     private static bool MigrateLegacySyncBaseUrl(AppSettings settings)
     {
         var current = NormalizeBaseUrl(settings.NasAgentBaseUrl);

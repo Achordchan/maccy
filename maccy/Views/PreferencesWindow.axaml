@@ -48,7 +48,7 @@
                            Text="检查更新"
                            VerticalAlignment="Center"
                            Foreground="{DynamicResource AppForeground}" />
-                <Button Content="检测"
+                <Button Content="检查"
                         Command="{Binding CheckUpdatesCommand}"
                         Background="{DynamicResource AppControlBackground}"
                         Foreground="{DynamicResource AppForeground}"
@@ -208,7 +208,8 @@
                 <TextBlock Text="账户"
                            FontWeight="SemiBold"
                            Foreground="{DynamicResource AppForeground}" />
-                <Grid ColumnDefinitions="120,*">
+                <Grid ColumnDefinitions="120,*"
+                      ColumnSpacing="8">
                   <TextBlock Grid.Column="0"
                              Text="登录状态"
                              VerticalAlignment="Top"
@@ -217,43 +218,50 @@
                     <TextBlock Text="{Binding AuthStatusText}"
                                Foreground="{DynamicResource AppForeground}" />
 
-                    <StackPanel Spacing="8"
-                                IsVisible="{Binding IsLoggedIn, Converter={x:Static conv:InverseBoolConverter.Instance}}">
-                      <TextBox Width="300"
-                               Text="{Binding AuthEmailText}"
-                               Watermark="请输入邮箱"
-                               Background="{DynamicResource AppControlBackground}"
-                               Foreground="{DynamicResource AppForeground}"
-                               BorderBrush="{DynamicResource AppBorder}" />
-                      <TextBox Width="300"
-                               Text="{Binding AuthPasswordText}"
-                               PasswordChar="*"
-                               Watermark="请输入密码"
-                               Background="{DynamicResource AppControlBackground}"
-                               Foreground="{DynamicResource AppForeground}"
-                               BorderBrush="{DynamicResource AppBorder}" />
-                    </StackPanel>
+                    <Border IsVisible="{Binding IsLoggedIn, Converter={x:Static conv:InverseBoolConverter.Instance}}"
+                            Padding="12"
+                            CornerRadius="10"
+                            Background="{DynamicResource AppControlBackground}"
+                            BorderBrush="{DynamicResource AppBorder}"
+                            BorderThickness="1">
+                      <StackPanel Spacing="10">
+                        <TextBox Text="{Binding AuthEmailText}"
+                                 HorizontalAlignment="Stretch"
+                                 Watermark="请输入邮箱"
+                                 Background="{DynamicResource AppBackground}"
+                                 Foreground="{DynamicResource AppForeground}"
+                                 BorderBrush="{DynamicResource AppBorder}" />
+                        <TextBox Text="{Binding AuthPasswordText}"
+                                 HorizontalAlignment="Stretch"
+                                 PasswordChar="*"
+                                 Watermark="请输入密码"
+                                 Background="{DynamicResource AppBackground}"
+                                 Foreground="{DynamicResource AppForeground}"
+                                 BorderBrush="{DynamicResource AppBorder}" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                          <Button Content="登录"
+                                  Command="{Binding LoginCommand}"
+                                  IsEnabled="{Binding AuthBusy, Converter={x:Static conv:InverseBoolConverter.Instance}}"
+                                  Background="{DynamicResource AppControlBackground}"
+                                  Foreground="{DynamicResource AppForeground}"
+                                  BorderBrush="{DynamicResource AppBorder}"
+                                  Padding="12,6" />
+                          <Button Content="注册"
+                                  Command="{Binding RegisterCommand}"
+                                  IsEnabled="{Binding AuthBusy, Converter={x:Static conv:InverseBoolConverter.Instance}}"
+                                  Background="{DynamicResource AppControlBackground}"
+                                  Foreground="{DynamicResource AppForeground}"
+                                  BorderBrush="{DynamicResource AppBorder}"
+                                  Padding="12,6" />
+                        </StackPanel>
+                      </StackPanel>
+                    </Border>
 
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                      <Button Content="登录"
-                              Command="{Binding LoginCommand}"
-                              IsEnabled="{Binding AuthBusy, Converter={x:Static conv:InverseBoolConverter.Instance}}"
-                              IsVisible="{Binding IsLoggedIn, Converter={x:Static conv:InverseBoolConverter.Instance}}"
-                              Background="{DynamicResource AppControlBackground}"
-                              Foreground="{DynamicResource AppForeground}"
-                              BorderBrush="{DynamicResource AppBorder}"
-                              Padding="12,6" />
-                      <Button Content="注册"
-                              Command="{Binding RegisterCommand}"
-                              IsEnabled="{Binding AuthBusy, Converter={x:Static conv:InverseBoolConverter.Instance}}"
-                              IsVisible="{Binding IsLoggedIn, Converter={x:Static conv:InverseBoolConverter.Instance}}"
-                              Background="{DynamicResource AppControlBackground}"
-                              Foreground="{DynamicResource AppForeground}"
-                              BorderBrush="{DynamicResource AppBorder}"
-                              Padding="12,6" />
+                    <StackPanel Orientation="Horizontal"
+                                Spacing="8"
+                                IsVisible="{Binding IsLoggedIn}">
                       <Button Content="退出登录"
                               Command="{Binding LogoutCommand}"
-                              IsVisible="{Binding IsLoggedIn}"
                               Background="{DynamicResource AppControlBackground}"
                               Foreground="{DynamicResource AppForeground}"
                               BorderBrush="{DynamicResource AppBorder}"
@@ -263,11 +271,24 @@
                 </Grid>
               </StackPanel>
 
-              <StackPanel Spacing="8">
+              <Border IsVisible="{Binding IsLoggedIn, Converter={x:Static conv:InverseBoolConverter.Instance}}"
+                      Padding="12"
+                      CornerRadius="10"
+                      Background="{DynamicResource AppControlBackground}"
+                      BorderBrush="{DynamicResource AppBorder}"
+                      BorderThickness="1">
+                <TextBlock Text="登录后即可启用云同步，剪贴板历史将自动同步到云端。"
+                           Foreground="{DynamicResource AppMutedForeground}"
+                           TextWrapping="Wrap" />
+              </Border>
+
+              <StackPanel Spacing="8"
+                          IsVisible="{Binding IsLoggedIn}">
                 <TextBlock Text="同步"
                            FontWeight="SemiBold"
                            Foreground="{DynamicResource AppForeground}" />
-                <Grid ColumnDefinitions="120,*">
+                <Grid ColumnDefinitions="120,*"
+                      ColumnSpacing="8">
                   <TextBlock Grid.Column="0"
                              Text="手动操作"
                              VerticalAlignment="Center"
@@ -292,7 +313,8 @@
                            FontWeight="SemiBold"
                            Foreground="{DynamicResource AppForeground}" />
 
-                <Grid ColumnDefinitions="120,*">
+                <Grid ColumnDefinitions="120,*"
+                      ColumnSpacing="8">
                   <TextBlock Grid.Column="0"
                              Text="订阅状态"
                              VerticalAlignment="Center"
@@ -312,7 +334,56 @@
                   </StackPanel>
                 </Grid>
 
-                <Grid ColumnDefinitions="120,*">
+                <Grid ColumnDefinitions="120,*"
+                      ColumnSpacing="8">
+                  <TextBlock Grid.Column="0"
+                             Text="套餐"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <TextBlock Grid.Column="1"
+                             Text="{Binding SubscriptionTierText}"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppForeground}" />
+                </Grid>
+
+                <Grid ColumnDefinitions="120,*"
+                      ColumnSpacing="8">
+                  <TextBlock Grid.Column="0"
+                             Text="存储占用"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <TextBlock Grid.Column="1"
+                             Text="{Binding SubscriptionStorageText}"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppForeground}" />
+                </Grid>
+
+                <Grid ColumnDefinitions="120,*"
+                      ColumnSpacing="8">
+                  <TextBlock Grid.Column="0"
+                             Text="保留天数"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <TextBlock Grid.Column="1"
+                             Text="{Binding SubscriptionRetentionText}"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppForeground}" />
+                </Grid>
+
+                <Grid ColumnDefinitions="120,*"
+                      ColumnSpacing="8">
+                  <TextBlock Grid.Column="0"
+                             Text="超限状态"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <TextBlock Grid.Column="1"
+                             Text="{Binding SubscriptionOverLimitText}"
+                             VerticalAlignment="Center"
+                             Foreground="{DynamicResource AppForeground}" />
+                </Grid>
+
+                <Grid ColumnDefinitions="120,*"
+                      ColumnSpacing="8">
                   <TextBlock Grid.Column="0"
                              Text="兑换卡密"
                              VerticalAlignment="Center"
@@ -335,12 +406,6 @@
                   </StackPanel>
                 </Grid>
               </StackPanel>
-
-              <TextBlock Text="登录后即可启用云同步，剪贴板历史将自动同步到云端。"
-                         Foreground="{DynamicResource AppMutedForeground}"
-                         FontSize="12"
-                         TextWrapping="Wrap"
-                         MaxWidth="380" />
             </StackPanel>
           </ScrollViewer>
         </TabItem>

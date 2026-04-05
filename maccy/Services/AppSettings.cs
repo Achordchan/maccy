@@ -18,6 +18,14 @@ public sealed class AppSettings
 
     public string NasAgentBaseUrl { get; set; } = string.Empty;
 
+    public string? SyncLastLocalFingerprint { get; set; }
+
+    public string? SyncLastRemoteVersion { get; set; }
+
+    public string? SyncLastRemoteUpdatedAt { get; set; }
+
+    public string? SyncLastRemoteSha256 { get; set; }
+
     public int MaxItems { get; set; } = 200;
 
     public int MaxMegabytes { get; set; } = 300;

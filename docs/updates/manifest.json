@@ -1,14 +1,14 @@
 {
   "appId": "maccy",
   "latest": {
-    "version": "1.0.5",
+    "version": "1.0.6",
     "mandatory": false,
-    "notes": "移除 Authing，切换为自建邮箱密码认证与自托管同步后台；修复云同步设置页布局与中文界面；迁移旧同步数据到新账号体系。",
-    "publishedAt": "2026-03-08T15:43:18Z",
+    "notes": "后端迁移到 Python 并接入宝塔 Python 项目；修复登录与设置页状态问题；云同步加入 SSE 远端触发、gzip 传输与 Blob 去重上传，显著减少重复图片和文件的重复传输。",
+    "publishedAt": "2026-04-05T06:45:00Z",
     "installer": {
-      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.5/maccy-1.0.5-setup.exe",
-      "sha256": "80F7CA90D008CC8669D2BE65FC767CBD507C70BD434B5F3190D4515B42A244C1",
-      "size": 10581264
+      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.6/maccy-1.0.6-setup.exe",
+      "sha256": "0F6582215CDF53B5567483DE7B99C654437721151BF1EF663A4D6724D7D1A960",
+      "size": 10605953
     }
   }
 }

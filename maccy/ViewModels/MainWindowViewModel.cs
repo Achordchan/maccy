@@ -2,7 +2,6 @@
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Text.Json;
 using System.Globalization;
 using System.IO;
 using System.Net.Http;
@@ -96,6 +95,12 @@ public partial class MainWindowViewModel : ViewModelBase
     private SyncResultKind _syncResult;
 
     [ObservableProperty]
+    private bool _showSyncIdleIcon;
+
+    [ObservableProperty]
+    private bool _showSyncWorkingIcon;
+
+    [ObservableProperty]
     private bool _showSyncSuccessIcon;
 
     [ObservableProperty]
@@ -140,11 +145,19 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         get
         {
+            if (IsSyncing)
+            {
+                var working = string.IsNullOrWhiteSpace(LastSyncStatus) ? "同步中" : LastSyncStatus!.Trim();
+                return string.IsNullOrWhiteSpace(SyncStatusText)
+                    ? working
+                    : $"{working}\n{SyncProgressText}";
+            }
+
             if (!IsCloudSyncEnabled)
                 return "未启用云同步";
 
             if (LastSyncAt is null)
-                return "尚未同步";
+                return "已启用云同步\n等待首次同步";
 
             var ts = LastSyncAt.Value.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
             var status = string.IsNullOrWhiteSpace(LastSyncStatus) ? "同步" : LastSyncStatus!.Trim();
@@ -153,6 +166,7 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SyncIconToolTip))]
     private bool _isCloudSyncEnabled;
 
     public MainWindowViewModel()
@@ -178,7 +192,7 @@ public partial class MainWindowViewModel : ViewModelBase
             RequestFocusSearch?.Invoke();
         });
 
-        SyncNowCommand = new RelayCommand(() => _ = RunAutoSyncAsync(manual: true, showProgress: true));
+        SyncNowCommand = new RelayCommand(() => _ = RunAutoSyncAsync(manual: true, showProgress: true, reason: "manual"));
 
 
         ApplySelectedCommand = new RelayCommand(() => _ = ApplySelectedAsync());
@@ -276,7 +290,7 @@ public partial class MainWindowViewModel : ViewModelBase
             RequestFocusSearch?.Invoke();
         });
 
-        SyncNowCommand = new RelayCommand(() => _ = RunAutoSyncAsync(manual: true, showProgress: true));
+        SyncNowCommand = new RelayCommand(() => _ = RunAutoSyncAsync(manual: true, showProgress: true, reason: "manual"));
 
         ApplySelectedCommand = new RelayCommand(() => _ = ApplySelectedAsync());
         HideCommand = new RelayCommand(() => RequestHide?.Invoke());
@@ -342,6 +356,12 @@ public partial class MainWindowViewModel : ViewModelBase
         UpdateSyncIcons();
     }
 
+    partial void OnIsSyncingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(SyncIconToolTip));
+        UpdateSyncIcons();
+    }
+
     partial void OnIsSyncProgressVisibleChanged(bool value)
     {
         UpdateSyncIcons();
@@ -349,11 +369,15 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void UpdateSyncIcons()
     {
-        var showSuccess = !IsSyncProgressVisible && SyncResult == SyncResultKind.Success;
-        var showError = !IsSyncProgressVisible && SyncResult == SyncResultKind.Error;
+        var showWorking = IsCloudSyncEnabled && IsSyncing;
+        var showSuccess = IsCloudSyncEnabled && !showWorking && !IsSyncProgressVisible && SyncResult == SyncResultKind.Success;
+        var showError = IsCloudSyncEnabled && !showWorking && !IsSyncProgressVisible && SyncResult == SyncResultKind.Error;
+        var showIdle = !showWorking && !showSuccess && !showError;
 
         if (Dispatcher.UIThread.CheckAccess())
         {
+            ShowSyncIdleIcon = showIdle;
+            ShowSyncWorkingIcon = showWorking;
             ShowSyncSuccessIcon = showSuccess;
             ShowSyncErrorIcon = showError;
             return;
@@ -361,6 +385,8 @@ public partial class MainWindowViewModel : ViewModelBase
 
         Dispatcher.UIThread.Post(() =>
         {
+            ShowSyncIdleIcon = showIdle;
+            ShowSyncWorkingIcon = showWorking;
             ShowSyncSuccessIcon = showSuccess;
             ShowSyncErrorIcon = showError;
         });
@@ -388,7 +414,12 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public void StartAutoSync()
     {
-        _ = Task.Run(async () => await RunAutoSyncAsync(manual: false, showProgress: true));
+        _ = Task.Run(async () => await RunAutoSyncAsync(manual: false, showProgress: false, reason: "startup"));
+    }
+
+    public void TriggerBackgroundSync(string reason = "manual_background")
+    {
+        _ = Task.Run(async () => await RunAutoSyncAsync(manual: false, showProgress: false, reason: reason));
     }
 
     private void OnHistoryChangedForAutoSync()
@@ -419,7 +450,7 @@ public partial class MainWindowViewModel : ViewModelBase
             try
             {
                 await Task.Delay(1200, ct);
-                await RunAutoSyncAsync(manual: false, showProgress: false);
+                await RunAutoSyncAsync(manual: false, showProgress: false, reason: "auto");
             }
             catch (OperationCanceledException)
             {
@@ -631,7 +662,8 @@ public partial class MainWindowViewModel : ViewModelBase
             {
                 await Dispatcher.UIThread.InvokeAsync(() => { IsSyncing = true; });
                 await WaitHistoryLoadedAsync();
-                await _sync.UploadAsync(CancellationToken.None);
+                var uploadResult = await _sync.UploadAsync(CancellationToken.None, reason: "local_mutation");
+                await PersistSyncStateAfterUploadAsync(uploadResult, null, CancellationToken.None);
                 await Dispatcher.UIThread.InvokeAsync(() =>
                 {
                     SyncResult = SyncResultKind.Success;
@@ -725,7 +757,7 @@ public partial class MainWindowViewModel : ViewModelBase
         return false;
     }
 
-    private async Task RunAutoSyncAsync(bool manual, bool showProgress)
+    private async Task RunAutoSyncAsync(bool manual, bool showProgress, string reason = "auto")
     {
         if (_sync is null || _settings is null)
             return;
@@ -745,26 +777,25 @@ public partial class MainWindowViewModel : ViewModelBase
             IsSyncing = true;
             if (showProgress)
                 IsSyncProgressVisible = true;
+            else
+                IsSyncProgressVisible = false;
         });
 
         if (showProgress)
-            UpdateSyncStatus("准备同步", 5);
+            UpdateSyncStatus("检查远端", 10);
+        else
+            UpdateBackgroundSyncStatus("后台同步：检查远端");
 
         var success = false;
         try
         {
             await WaitHistoryLoadedAsync();
+            var manifest = await _sync.GetManifestInfoAsync(CancellationToken.None);
+            var decision = _sync.DecideDirectionWithState(manifest);
 
-            if (showProgress)
-                UpdateSyncStatus("检查远端", 15);
-            var manifestJson = await _sync.GetManifestJsonAsync(CancellationToken.None);
-
-            var localLatest = GetLocalLatestCapturedAt();
-            var remoteUpdatedAt = TryReadRemoteUpdatedAt(manifestJson);
-            var direction = DecideDirection(localLatest, remoteUpdatedAt);
-
-            if (direction == SyncDirection.None)
+            if (decision.Direction == SyncService.SyncDirection.None)
             {
+                _sync.PersistSyncState(decision.LocalFingerprint, decision.Manifest);
                 if (showProgress)
                 {
                     UpdateSyncStatus("已是最新", 100);
@@ -780,26 +811,40 @@ public partial class MainWindowViewModel : ViewModelBase
                 return;
             }
 
-            if (direction == SyncDirection.Download)
+            if (decision.Direction == SyncService.SyncDirection.Download)
             {
                 if (showProgress)
-                    UpdateSyncStatus("同步中", 40);
+                    UpdateSyncStatus("准备本地", 30);
+                else
+                    UpdateBackgroundSyncStatus("后台同步：准备下载");
 
                 _suppressAutoSync = true;
                 try
                 {
-                    await _sync.DownloadAndApplyAsync(CancellationToken.None);
+                    await _sync.DownloadAndApplyAsync(
+                        CancellationToken.None,
+                        p => ReportSyncProgress(p, showProgress),
+                        reason);
                 }
                 finally
                 {
                     _suppressAutoSync = false;
                 }
+
+                _sync.PersistSyncState(_sync.ComputeLocalFingerprint(), decision.Manifest);
             }
             else
             {
                 if (showProgress)
-                    UpdateSyncStatus("上传中", 40);
-                await _sync.UploadAsync(CancellationToken.None);
+                    UpdateSyncStatus("准备本地", 30);
+                else
+                    UpdateBackgroundSyncStatus("后台同步：准备上传");
+
+                var uploadResult = await _sync.UploadAsync(
+                    CancellationToken.None,
+                    p => ReportSyncProgress(p, showProgress),
+                    reason);
+                await PersistSyncStateAfterUploadAsync(uploadResult, decision.Manifest, CancellationToken.None);
             }
 
             if (showProgress)
@@ -812,7 +857,7 @@ public partial class MainWindowViewModel : ViewModelBase
             {
                 SyncResult = SyncResultKind.Success;
                 LastSyncAt = DateTimeOffset.Now;
-                LastSyncStatus = "同步成功";
+                LastSyncStatus = showProgress ? "同步成功" : "后台同步成功";
             });
             success = true;
         }
@@ -825,13 +870,13 @@ public partial class MainWindowViewModel : ViewModelBase
             {
                 SyncResult = SyncResultKind.Error;
                 LastSyncAt = DateTimeOffset.Now;
-                LastSyncStatus = "同步失败";
+                LastSyncStatus = showProgress ? "同步失败" : "后台同步失败";
             });
-            var reason = ExplainSyncError(ex);
+            var explain = ExplainSyncError(ex);
             if (manual)
-                ShowToast(reason);
+                ShowToast(explain);
             else if (!_initialSyncCompleted)
-                ShowToast("首次同步失败：" + reason);
+                ShowToast("首次同步失败：" + explain);
             if (showProgress)
                 await Task.Delay(450);
         }
@@ -848,7 +893,7 @@ public partial class MainWindowViewModel : ViewModelBase
                 }
             });
 
-            if (success && !_initialSyncCompleted && showProgress && !manual)
+            if (success && !_initialSyncCompleted && !manual)
                 _initialSyncCompleted = true;
 
             Interlocked.Exchange(ref _syncGate, 0);
@@ -885,60 +930,6 @@ public partial class MainWindowViewModel : ViewModelBase
         }
     }
 
-    private DateTimeOffset? GetLocalLatestCapturedAt()
-    {
-        if (_history is null)
-            return null;
-        try
-        {
-            if (_history.Items.Count == 0)
-                return null;
-            return _history.Items.Max(x => x.CapturedAt);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static DateTimeOffset? TryReadRemoteUpdatedAt(string? manifestJson)
-    {
-        if (string.IsNullOrWhiteSpace(manifestJson))
-            return null;
-        try
-        {
-            using var doc = JsonDocument.Parse(manifestJson);
-            if (!doc.RootElement.TryGetProperty("latest", out var latest))
-                return null;
-            if (!latest.TryGetProperty("updatedAt", out var updatedAt))
-                return null;
-            if (updatedAt.ValueKind != JsonValueKind.String)
-                return null;
-            if (DateTimeOffset.TryParse(updatedAt.GetString(), out var parsed))
-                return parsed;
-        }
-        catch
-        {
-        }
-
-        return null;
-    }
-
-    private static SyncDirection DecideDirection(DateTimeOffset? localLatest, DateTimeOffset? remoteUpdatedAt)
-    {
-        if (remoteUpdatedAt is null)
-            return localLatest is null ? SyncDirection.None : SyncDirection.Upload;
-        if (localLatest is null)
-            return SyncDirection.Download;
-
-        var localUtc = localLatest.Value.UtcDateTime;
-        var remoteUtc = remoteUpdatedAt.Value.UtcDateTime;
-        var diff = localUtc - remoteUtc;
-        if (Math.Abs(diff.TotalSeconds) <= 2)
-            return SyncDirection.None;
-        return diff.TotalSeconds > 0 ? SyncDirection.Upload : SyncDirection.Download;
-    }
-
     private static string ExplainSyncError(Exception ex)
     {
         if (ex is InvalidOperationException ioe)
@@ -958,12 +949,18 @@ public partial class MainWindowViewModel : ViewModelBase
 
         if (ex is NasAgentApiException api)
         {
+            if (api.StatusCode == System.Net.HttpStatusCode.Forbidden && IsOverLimit(api))
+                return "云端存储已超限，请清理旧快照或升级套餐";
+            if (api.StatusCode == System.Net.HttpStatusCode.Forbidden && IsTierLimited(api))
+                return "当前套餐不支持该同步操作，请升级套餐后重试";
             if (api.StatusCode == System.Net.HttpStatusCode.Forbidden && IsExpiredText(api.ResponseBody))
                 return "订阅已过期，请续费后重试";
             if (api.StatusCode == System.Net.HttpStatusCode.Unauthorized)
                 return "登录已失效，请重新登录";
             if (api.StatusCode == System.Net.HttpStatusCode.NotFound)
                 return "云端还没有快照";
+            if ((int)api.StatusCode == 413)
+                return "同步数据过大，请清理后重试";
             return $"同步失败({(int)api.StatusCode})";
         }
 
@@ -995,6 +992,87 @@ public partial class MainWindowViewModel : ViewModelBase
                 && body.Contains("expired", StringComparison.OrdinalIgnoreCase));
     }
 
+    private static bool IsOverLimit(NasAgentApiException api)
+    {
+        var code = (api.ErrorCode ?? string.Empty).Trim();
+        if (code.Contains("over_limit", StringComparison.OrdinalIgnoreCase)
+            || code.Contains("quota", StringComparison.OrdinalIgnoreCase)
+            || code.Contains("storage", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var body = api.ResponseBody ?? string.Empty;
+        return body.Contains("over limit", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("quota", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("存储已超限", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTierLimited(NasAgentApiException api)
+    {
+        var code = (api.ErrorCode ?? string.Empty).Trim();
+        if (code.Contains("tier", StringComparison.OrdinalIgnoreCase)
+            || code.Contains("plan", StringComparison.OrdinalIgnoreCase)
+            || code.Contains("subscription_required", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var body = api.ResponseBody ?? string.Empty;
+        return body.Contains("tier", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("plan", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("套餐", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ReportSyncProgress(SyncService.SyncProgress progress, bool showProgress)
+    {
+        var stage = progress.Code switch
+        {
+            "prepare_local" => "准备本地",
+            "export_snapshot" => "导出本地快照",
+            "upload_blobs" => "上传二进制对象",
+            "import_snapshot" => "导入本地快照",
+            "upload_snapshot" => "上传快照",
+            "download_snapshot" => "下载快照",
+            "persist_local" => "写入本地",
+            _ => string.IsNullOrWhiteSpace(progress.Message) ? "同步中" : progress.Message,
+        };
+
+        if (showProgress)
+            UpdateSyncStatus(stage, progress.Percent);
+        else
+            UpdateBackgroundSyncStatus("后台同步：" + stage);
+    }
+
+    private void UpdateBackgroundSyncStatus(string status)
+    {
+        Dispatcher.UIThread.Post(() => { LastSyncStatus = status; });
+    }
+
+    private async Task PersistSyncStateAfterUploadAsync(
+        UploadSnapshotResult? uploadResult,
+        SyncService.SyncManifestInfo? fallbackManifest,
+        CancellationToken ct)
+    {
+        if (_sync is null)
+            return;
+
+        var localFingerprint = _sync.ComputeLocalFingerprint();
+        try
+        {
+            var latestManifest = await _sync.GetManifestInfoAsync(ct);
+            _sync.PersistSyncState(localFingerprint, latestManifest);
+            return;
+        }
+        catch
+        {
+        }
+
+        var fallback = fallbackManifest ?? new SyncService.SyncManifestInfo(
+            uploadResult?.Version,
+            DateTimeOffset.UtcNow,
+            uploadResult?.Sha256,
+            uploadResult?.Size,
+            null);
+        _sync.PersistSyncState(localFingerprint, fallback);
+    }
+
     private static void WriteSyncErrorLog(Exception ex)
     {
         try
@@ -1021,13 +1099,6 @@ public partial class MainWindowViewModel : ViewModelBase
             SyncStatusText = status;
             SyncProgressPercent = capped;
         });
-    }
-
-    private enum SyncDirection
-    {
-        None,
-        Upload,
-        Download,
     }
 
     public enum SyncResultKind

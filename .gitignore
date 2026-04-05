@@ -30,10 +30,19 @@ $RECYCLE.BIN/
 # Logs
 *.log
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
 # Publish / artifacts
 **/publish/
 **/artifacts/
 **/out-test/
 tmp/
+build_tmp/
 
 update.md

@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maccy 管理后台</title>
+<link rel="stylesheet" href="/static/admin/admin.css">
+</head>
+<body data-theme="dark">
+<div class="page">
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-lockup">
+          <div class="brand-mark"></div>
+          <div class="brand-name">MACCY CTRL</div>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <div class="nav-label">CONTROL</div>
+        <button class="nav-item active" data-view="users" type="button">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"></rect>
+              <path d="M9 4.5v15"></path>
+              <path d="M9 10.5h11.5"></path>
+            </svg>
+          </span>
+          <span>总览</span>
+        </button>
+        <button class="nav-item" data-view="subscriptions" type="button">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 19v-1.2a3.3 3.3 0 0 0-3.3-3.3H7.3A3.3 3.3 0 0 0 4 17.8V19"></path>
+              <circle cx="10" cy="8" r="3"></circle>
+              <path d="M17 10.5h4"></path>
+              <path d="M19 8.5v4"></path>
+            </svg>
+          </span>
+          <span>用户与套餐</span>
+        </button>
+        <button class="nav-item" data-view="cards" type="button">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 9.5h16"></path>
+              <path d="M8 14.5h3"></path>
+              <rect x="3.5" y="5.5" width="17" height="13" rx="2.5"></rect>
+            </svg>
+          </span>
+          <span>卡密管理</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="admin-chip">
+          <strong id="adminName">Baymax Ops</strong>
+          <span id="adminMeta">尚未登录</span>
+        </div>
+        <div class="sidebar-aux">
+          <button id="themeToggle" class="aux-btn" type="button">切换主题</button>
+          <button id="logoutButton" class="aux-btn" type="button">退出登录</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div class="hero">
+          <div class="eyebrow">Maccy Cloud Control</div>
+          <h1>同步与套餐后台</h1>
+          <p>把账号、容量、备份和同步健康压进一个真正可操作的控制台。深色是控制面板，浅色是办公室白天模式，两套都保持同一层级与密度。</p>
+        </div>
+        <div class="toolbar">
+          <button id="healthBadge" class="btn badge-btn" type="button">
+            <span class="btn-icon btn-icon-dot" aria-hidden="true"></span>
+            <span>实时健康中</span>
+          </button>
+          <button id="refreshButton" class="btn-ghost" type="button">
+            <span class="btn-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 11a8 8 0 1 0 2 5.3"></path>
+                <path d="M20 4v7h-7"></path>
+              </svg>
+            </span>
+            <span>刷新数据</span>
+          </button>
+          <button id="generateTopButton" class="btn-accent" type="button">
+            <span class="btn-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 5v14"></path>
+                <path d="M5 12h14"></path>
+              </svg>
+            </span>
+            <span>生成卡密</span>
+          </button>
+        </div>
+      </div>
+
+      <section class="status-banner">
+        <div class="status-pill">
+          <span class="status-dot"></span>
+          <span id="statusPillText">实时健康中</span>
+        </div>
+        <p id="statusBannerText">近 24 小时上传成功率稳定，正在根据当前用户、套餐与卡密数据生成总览。</p>
+      </section>
+
+      <section class="metrics">
+        <article class="metric-card">
+          <h3>活跃用户</h3>
+          <div id="metricUsers" class="metric-value">0</div>
+          <div id="metricUsersTag" class="metric-tag success">已连接</div>
+        </article>
+        <article class="metric-card">
+          <h3>已分配套餐</h3>
+          <div id="metricTiered" class="metric-value">0</div>
+          <div id="metricTieredTag" class="metric-tag success">等待数据</div>
+        </article>
+        <article class="metric-card">
+          <h3>存储占用</h3>
+          <div id="metricStorage" class="metric-value">0 B</div>
+          <div id="metricStorageTag" class="metric-tag success">正常</div>
+        </article>
+        <article class="metric-card">
+          <h3>有效订阅</h3>
+          <div id="metricSubs" class="metric-value">0</div>
+          <div id="metricSubsTag" class="metric-tag success">等待数据</div>
+        </article>
+      </section>
+
+      <section class="content-grid">
+        <div class="surface">
+          <div class="surface-head">
+            <div>
+              <h2 id="tableTitle">重点账号队列</h2>
+              <p id="tableSubtitle">不是把全部用户堆上来，而是把最需要干预的对象顶到前排。</p>
+            </div>
+            <div class="segmented">
+              <button class="active" data-view-button="users" type="button">用户</button>
+              <button data-view-button="subscriptions" type="button">订阅</button>
+              <button data-view-button="cards" type="button">卡密</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <div id="tableHead" class="table-head"></div>
+            <div id="tableBody"></div>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div id="quickActionsCard" class="side-card">
+            <h3>高频操作</h3>
+            <p>把最常用的后台动作放到一列，避免在多个页面和接口之间来回跳转。</p>
+
+            <div id="overviewPanel" class="action-group">
+              <button id="generateButtonAlt" class="btn-accent" type="button">批量生成卡密</button>
+              <button id="setProButton" class="btn" type="button">一键分配 Pro 套餐</button>
+            </div>
+
+            <div id="cardsPanel" class="action-group hidden-panel">
+              <div class="two-col">
+                <div class="field">
+                  <label for="cardCount">生成数量</label>
+                  <input id="cardCount" type="number" min="1" max="100" value="1">
+                </div>
+                <div class="field">
+                  <label for="cardDays">有效天数</label>
+                  <input id="cardDays" type="number" min="1" max="3650" value="30">
+                </div>
+              </div>
+              <button id="generateButton" class="btn-accent" type="button">批量生成卡密</button>
+              <div id="cardResult" class="muted"></div>
+            </div>
+
+            <div id="subscriptionPanel" class="action-group hidden-panel">
+              <div class="field">
+                <label for="upgradeTarget">用户邮箱 / 用户 ID</label>
+                <input id="upgradeTarget" type="text" placeholder="例如 achordchan@gmail.com">
+              </div>
+              <div class="two-col">
+                <div class="field">
+                  <label for="upgradeDays">续期天数</label>
+                  <input id="upgradeDays" type="number" min="0" max="3650" value="30">
+                </div>
+                <div class="field">
+                  <label for="upgradeTier">套餐档位</label>
+                  <select id="upgradeTier">
+                    <option value="">不变更</option>
+                    <option value="Mini">Mini</option>
+                    <option value="Plus">Plus</option>
+                    <option value="Pro">Pro</option>
+                    <option value="Ultra">Ultra</option>
+                  </select>
+                </div>
+              </div>
+              <button id="upgradeButton" class="btn-accent" type="button">升级订阅并设置套餐</button>
+              <button id="setTierButton" class="btn" type="button">仅设置套餐</button>
+              <button id="clearTierButton" class="btn-ghost" type="button">清除套餐</button>
+            </div>
+
+            <div id="passwordPanel" class="action-group hidden-panel">
+              <div class="field">
+                <label for="resetPassword">重置为新密码</label>
+                <input id="resetPassword" type="text" placeholder="至少 8 位，例如 Temp@2026">
+              </div>
+              <button id="resetPasswordButton" class="btn" type="button">重置用户密码</button>
+            </div>
+          </div>
+
+          <div class="side-card">
+            <h3 class="icon-title">
+              <span class="title-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 3.5 21 8v8l-9 4.5L3 16V8L12 3.5Z"></path>
+                  <path d="M12 8v5"></path>
+                  <circle cx="12" cy="16.5" r=".8" fill="currentColor" stroke="none"></circle>
+                </svg>
+              </span>
+              <span>风险提醒</span>
+            </h3>
+            <p>优先展示最接近容量上限、套餐缺失或订阅失效的账号，方便先处理最有破坏性的同步风险。</p>
+            <div id="riskList" class="risk-list"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div id="loginOverlay" class="login-overlay visible">
+  <form id="loginForm" class="login-card">
+    <div class="eyebrow">ADMIN ACCESS</div>
+    <h2>后台账号登录</h2>
+    <p>这里不再使用原始 admin key。登录后会获得短期后台访问 token；后端仍兼容旧 key，但这个页面默认只走账号密码。</p>
+
+    <div class="action-group">
+      <div class="field">
+        <label for="adminEmail">管理员邮箱</label>
+        <input id="adminEmail" type="email" autocomplete="username" placeholder="admin@example.com">
+      </div>
+      <div class="field">
+        <label for="adminPassword">管理员密码</label>
+        <input id="adminPassword" type="password" autocomplete="current-password" placeholder="请输入后台密码">
+      </div>
+    </div>
+
+    <div class="login-actions">
+      <button class="btn-accent" type="submit">登录后台</button>
+      <button id="loginThemeToggle" class="btn" type="button">切换主题</button>
+    </div>
+
+    <div class="status-row">
+      <span id="loginHint">等待登录</span>
+      <span id="loginExpiry"></span>
+    </div>
+  </form>
+</div>
+
+<div id="toast" class="toast"></div>
+<script src="/static/admin/admin.js"></script>
+</body>
+</html>
