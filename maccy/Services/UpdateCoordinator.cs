@@ -16,6 +16,8 @@ public sealed class UpdateCoordinator
     private readonly Action _shutdown;
     private readonly string _downloadFolder;
     private int _checking;
+    private int _pendingManualCheck;
+    private UpdateCheckWindow? _manualCheckWindow;
 
     public UpdateCoordinator(UpdateService service, Func<Window?> getOwner, Action shutdown)
     {
@@ -27,73 +29,193 @@ public sealed class UpdateCoordinator
 
     public async Task CheckAndPromptAsync(bool manual)
     {
-        if (Interlocked.Exchange(ref _checking, 1) == 1)
+        if (Interlocked.CompareExchange(ref _checking, 1, 0) == 1)
+        {
+            if (manual)
+            {
+                Interlocked.Exchange(ref _pendingManualCheck, 1);
+                await ShowOrUpdateManualCheckWindowAsync("已有检查正在进行，稍后继续...");
+            }
             return;
+        }
 
         try
         {
-            var result = await _service.CheckAsync(CancellationToken.None);
+            if (manual)
+                await ShowOrUpdateManualCheckWindowAsync("正在连接更新服务器，请稍候...");
 
-            if (result.Status == UpdateStatus.UpToDate)
+            var runManual = manual;
+            while (true)
             {
-                if (manual)
-                    await ShowMessageAsync("检测更新", "当前已是最新版本。");
-                return;
-            }
+                if (runManual)
+                    await ShowOrUpdateManualCheckWindowAsync("正在检查是否有新版本...");
 
-            if (result.Status == UpdateStatus.Error)
-            {
-                if (manual)
-                    await ShowMessageAsync("检测更新失败", result.ErrorMessage ?? "未知错误");
-                return;
-            }
+                var result = await _service.CheckAsync(
+                    CancellationToken.None,
+                    runManual ? UpdateManualCheckStatus : null);
 
-            if (result.Update is null)
-                return;
-
-            var owner = _getOwner();
-            if (owner is null)
-                return;
-
-            var action = await Dispatcher.UIThread.InvokeAsync(async () =>
-            {
-                try
+                if (result.Status == UpdateStatus.UpToDate)
                 {
+                    if (runManual)
+                        await CloseManualCheckWindowAsync();
+
+                    if (runManual)
+                        await ShowMessageAsync("检查更新", "当前已经是最新版本。");
+
+                    if (!ConsumePendingManualCheck())
+                        return;
+
+                    runManual = true;
+                    continue;
+                }
+
+                if (result.Status == UpdateStatus.Error)
+                {
+                    if (runManual)
+                        await CloseManualCheckWindowAsync();
+
+                    if (runManual)
+                        await ShowMessageAsync("检查更新失败", result.ErrorMessage ?? "未知错误");
+
+                    if (!ConsumePendingManualCheck())
+                        return;
+
+                    runManual = true;
+                    continue;
+                }
+
+                if (result.Update is null)
+                {
+                    if (runManual)
+                        await CloseManualCheckWindowAsync();
+
+                    if (!ConsumePendingManualCheck())
+                        return;
+
+                    runManual = true;
+                    continue;
+                }
+
+                var owner = _getOwner();
+                if (owner is null)
+                {
+                    await CloseManualCheckWindowAsync();
+                    return;
+                }
+
+                if (runManual)
+                    await CloseManualCheckWindowAsync();
+
+                var action = await Dispatcher.UIThread.InvokeAsync(async () =>
+                {
+                    try
+                    {
+                        if (owner.IsVisible)
+                            owner.Activate();
+                    }
+                    catch
+                    {
+                    }
+
+                    var prompt = new UpdatePromptWindow(result.Update, result.Update.Mandatory);
                     if (owner.IsVisible)
-                        owner.Activate();
-                }
-                catch
+                    {
+                        prompt.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+                        prompt.Topmost = runManual || result.Update.Mandatory;
+                        return await prompt.ShowDialogAsync(owner);
+                    }
+
+                    prompt.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+                    prompt.Topmost = true;
+                    prompt.Show();
+                    prompt.Activate();
+                    return await prompt.WaitForResultAsync();
+                });
+
+                if (action == UpdatePromptResult.UpdateNow)
                 {
+                    await DownloadAndInstallAsync(result.Update, owner);
+                    return;
                 }
 
-                var prompt = new UpdatePromptWindow(result.Update, result.Update.Mandatory);
-                if (owner.IsVisible)
+                if (result.Update.Mandatory)
                 {
-                    prompt.WindowStartupLocation = WindowStartupLocation.CenterOwner;
-                    prompt.Topmost = manual || result.Update.Mandatory;
-                    return await prompt.ShowDialogAsync(owner);
+                    ShutdownApp();
+                    return;
                 }
 
-                prompt.WindowStartupLocation = WindowStartupLocation.CenterScreen;
-                prompt.Topmost = true;
-                prompt.Show();
-                prompt.Activate();
-                return await prompt.WaitForResultAsync();
-            });
+                if (!ConsumePendingManualCheck())
+                    return;
 
-            if (action == UpdatePromptResult.UpdateNow)
-            {
-                await DownloadAndInstallAsync(result.Update, owner);
-                return;
+                runManual = true;
             }
-
-            if (result.Update.Mandatory)
-                ShutdownApp();
         }
         finally
         {
             Interlocked.Exchange(ref _checking, 0);
+            await CloseManualCheckWindowAsync();
         }
+    }
+
+    private bool ConsumePendingManualCheck()
+    {
+        return Interlocked.Exchange(ref _pendingManualCheck, 0) == 1;
+    }
+
+    private async Task ShowOrUpdateManualCheckWindowAsync(string status)
+    {
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            var owner = _getOwner();
+
+            if (_manualCheckWindow is null)
+            {
+                _manualCheckWindow = new UpdateCheckWindow();
+                _manualCheckWindow.Closed += (_, _) =>
+                {
+                    _manualCheckWindow = null;
+                };
+
+                if (owner is not null && owner.IsVisible)
+                {
+                    _manualCheckWindow.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+                    _manualCheckWindow.Show(owner);
+                }
+                else
+                {
+                    _manualCheckWindow.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+                    _manualCheckWindow.Show();
+                }
+            }
+
+            _manualCheckWindow.Topmost = true;
+            _manualCheckWindow.SetStatus(status);
+            _manualCheckWindow.Activate();
+        });
+    }
+
+    private void UpdateManualCheckStatus(string status)
+    {
+        _ = ShowOrUpdateManualCheckWindowAsync(status);
+    }
+
+    private async Task CloseManualCheckWindowAsync()
+    {
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (_manualCheckWindow is null)
+                return;
+
+            try
+            {
+                _manualCheckWindow.Close();
+            }
+            catch
+            {
+            }
+
+            _manualCheckWindow = null;
+        });
     }
 
     private async Task DownloadAndInstallAsync(UpdateInfo update, Window owner)
@@ -176,9 +298,6 @@ public sealed class UpdateCoordinator
         if (string.IsNullOrWhiteSpace(p))
             throw new ArgumentException("installer path is empty", nameof(installerPath));
 
-        // Avoid running the installer while our process still holds file locks (maccy.exe).
-        // Spawn a detached helper that waits for THIS process to exit, then starts the installer.
-        // (A fixed sleep is not reliable on slower machines.)
         var pid = Environment.ProcessId;
         var installer = p.Replace("'", "''");
 

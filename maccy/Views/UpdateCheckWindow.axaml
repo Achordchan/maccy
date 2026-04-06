@@ -1,0 +1,34 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="maccy.Views.UpdateCheckWindow"
+        Width="420"
+        Height="148"
+        CanResize="False"
+        ShowInTaskbar="False"
+        SystemDecorations="None"
+        Background="Transparent">
+
+  <Border Padding="16"
+          Background="{DynamicResource AppPanelBackground}"
+          BorderBrush="{DynamicResource AppBorder}"
+          BorderThickness="1"
+          CornerRadius="14"
+          BoxShadow="0 16 34 0 #22000000, 0 2 8 0 #16000000">
+    <StackPanel Spacing="12">
+      <TextBlock x:Name="TitleText"
+                 Text="检查更新中"
+                 FontSize="16"
+                 FontWeight="SemiBold"
+                 Foreground="{DynamicResource AppForeground}" />
+
+      <ProgressBar x:Name="ProgressBar"
+                   Height="10"
+                   IsIndeterminate="True" />
+
+      <TextBlock x:Name="StatusText"
+                 Text="正在连接更新服务器，请稍候..."
+                 FontSize="12"
+                 Foreground="{DynamicResource AppMutedForeground}" />
+    </StackPanel>
+  </Border>
+</Window>

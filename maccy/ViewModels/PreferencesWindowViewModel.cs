@@ -292,9 +292,12 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
             var valid = HasSignedInSession(s);
             IsLoggedIn = valid;
-            AuthEmailText = valid && !string.IsNullOrWhiteSpace(s.AuthUserEmail) ? s.AuthUserEmail! : AuthEmailText;
+            var signedInEmail = valid && !string.IsNullOrWhiteSpace(s.AuthUserEmail) ? s.AuthUserEmail!.Trim() : string.Empty;
+            AuthEmailText = !string.IsNullOrWhiteSpace(signedInEmail) ? signedInEmail : AuthEmailText;
             AuthPasswordText = string.Empty;
-            AuthStatusText = valid ? "已登录" : "未登录";
+            AuthStatusText = valid
+                ? (!string.IsNullOrWhiteSpace(signedInEmail) ? $"已登录（{signedInEmail}）" : "已登录")
+                : "未登录";
             if (!valid)
                 ResetSubscriptionFields("未登录");
 

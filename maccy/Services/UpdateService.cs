@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net.Http;
+using System.Net;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -43,6 +44,17 @@ public sealed class UpdateCheckResult
 
 public sealed class UpdateService
 {
+    private static readonly TimeSpan ManifestAttemptTimeout = TimeSpan.FromSeconds(8);
+    private static readonly HttpStatusCode[] TransientStatusCodes =
+    [
+        HttpStatusCode.RequestTimeout,
+        HttpStatusCode.TooManyRequests,
+        HttpStatusCode.InternalServerError,
+        HttpStatusCode.BadGateway,
+        HttpStatusCode.ServiceUnavailable,
+        HttpStatusCode.GatewayTimeout,
+    ];
+
     private readonly HttpClient _http;
     private readonly string _manifestUrl;
 
@@ -82,7 +94,7 @@ public sealed class UpdateService
         }
     }
 
-    public async Task<UpdateCheckResult> CheckAsync(CancellationToken ct)
+    public async Task<UpdateCheckResult> CheckAsync(CancellationToken ct, Action<string>? status = null)
     {
         if (string.IsNullOrWhiteSpace(_manifestUrl))
             return UpdateCheckResult.Error("manifest url is empty");
@@ -90,11 +102,32 @@ public sealed class UpdateService
         UpdateManifest? manifest;
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get, _manifestUrl);
-            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-            resp.EnsureSuccessStatusCode();
-            await using var stream = await resp.Content.ReadAsStreamAsync(ct);
-            manifest = await JsonSerializer.DeserializeAsync<UpdateManifest>(stream, cancellationToken: ct);
+            status?.Invoke("正在检查是否有新版本...");
+            manifest = await ExecuteWithRetryAsync(
+                maxAttempts: 3,
+                delayFactory: attempt => TimeSpan.FromMilliseconds(700 * attempt),
+                operation: async (attempt, retryCt) =>
+                {
+                    if (attempt > 1)
+                        status?.Invoke($"更新服务器响应较慢，正在第 {attempt} 次重试...");
+
+                    using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(retryCt);
+                    attemptCts.CancelAfter(ManifestAttemptTimeout);
+                    using var req = new HttpRequestMessage(HttpMethod.Get, _manifestUrl);
+                    try
+                    {
+                        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, attemptCts.Token);
+                        resp.EnsureSuccessStatusCode();
+                        await using var stream = await resp.Content.ReadAsStreamAsync(attemptCts.Token);
+                        return await JsonSerializer.DeserializeAsync<UpdateManifest>(stream, cancellationToken: attemptCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!retryCt.IsCancellationRequested)
+                    {
+                        throw new TimeoutException("检查更新超时");
+                    }
+                },
+                shouldRetry: ShouldRetryManifest,
+                ct: ct);
         }
         catch (OperationCanceledException)
         {
@@ -156,30 +189,49 @@ public sealed class UpdateService
         {
         }
 
-        long totalRead = 0;
-        long? total = null;
-
-        using var req = new HttpRequestMessage(HttpMethod.Get, update.InstallerUrl);
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-        resp.EnsureSuccessStatusCode();
-
-        total = resp.Content.Headers.ContentLength;
-
-        await using (var input = await resp.Content.ReadAsStreamAsync(ct))
-        await using (var output = File.Create(temp))
-        {
-            var buffer = new byte[81920];
-            while (true)
+        await ExecuteWithRetryAsync(
+            maxAttempts: 3,
+            delayFactory: attempt => TimeSpan.FromSeconds(attempt),
+            operation: async (_, retryCt) =>
             {
-                var read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
-                if (read <= 0)
-                    break;
+                try
+                {
+                    if (File.Exists(temp))
+                        File.Delete(temp);
+                }
+                catch
+                {
+                }
 
-                await output.WriteAsync(buffer.AsMemory(0, read), ct);
-                totalRead += read;
-                progress?.Invoke(totalRead, total);
-            }
-        }
+                long totalRead = 0;
+                long? total = null;
+
+                using var req = new HttpRequestMessage(HttpMethod.Get, update.InstallerUrl);
+                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, retryCt);
+                resp.EnsureSuccessStatusCode();
+
+                total = resp.Content.Headers.ContentLength;
+
+                await using (var input = await resp.Content.ReadAsStreamAsync(retryCt))
+                await using (var output = File.Create(temp))
+                {
+                    var buffer = new byte[81920];
+                    while (true)
+                    {
+                        var read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), retryCt);
+                        if (read <= 0)
+                            break;
+
+                        await output.WriteAsync(buffer.AsMemory(0, read), retryCt);
+                        totalRead += read;
+                        progress?.Invoke(totalRead, total);
+                    }
+                }
+
+                return true;
+            },
+            shouldRetry: ShouldRetryDownload,
+            ct: ct);
 
         if (!string.IsNullOrWhiteSpace(update.InstallerSha256))
         {
@@ -276,6 +328,65 @@ public sealed class UpdateService
         Failed:
 
         version = new Version(0, 0, 0);
+        return false;
+    }
+
+    private static async Task<T> ExecuteWithRetryAsync<T>(
+        int maxAttempts,
+        Func<int, TimeSpan> delayFactory,
+        Func<int, CancellationToken, Task<T>> operation,
+        Func<Exception, bool> shouldRetry,
+        CancellationToken ct)
+    {
+        Exception? lastError = null;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                return await operation(attempt, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (attempt < maxAttempts && shouldRetry(ex))
+            {
+                lastError = ex;
+                await Task.Delay(delayFactory(attempt), ct);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                break;
+            }
+        }
+
+        throw lastError ?? new InvalidOperationException("retry operation failed");
+    }
+
+    private static bool ShouldRetryManifest(Exception ex)
+    {
+        return IsTransientHttpFailure(ex) || ex is TimeoutException;
+    }
+
+    private static bool ShouldRetryDownload(Exception ex)
+    {
+        return IsTransientHttpFailure(ex) || ex is IOException;
+    }
+
+    private static bool IsTransientHttpFailure(Exception ex)
+    {
+        if (ex is HttpRequestException hre)
+        {
+            if (hre.StatusCode is null)
+                return true;
+
+            return Array.IndexOf(TransientStatusCodes, hre.StatusCode.Value) >= 0;
+        }
+
         return false;
     }
 }

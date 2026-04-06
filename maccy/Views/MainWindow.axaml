@@ -109,7 +109,7 @@
                             VerticalAlignment="Center"
                             Cursor="Hand"
                             PointerPressed="OnAuthorPressed">
-                        <TextBlock Text="Achord"
+                        <TextBlock Text="About"
                                    Foreground="{DynamicResource AppMutedForeground}"
                                    FontSize="12"
                                    VerticalAlignment="Center" />

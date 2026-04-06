@@ -14,6 +14,10 @@ public partial class AuthorInfoWindow : Window
 {
     private static readonly Uri AvatarUri = new("https://avatars.githubusercontent.com/u/179492542?v=4");
     private const string EmailAddress = "achordchan@gmail.com";
+    private const string ProjectUrl = "https://gitee.com/Achordchan/maccy";
+    private const string PrivacyUrl = "https://gitee.com/Achordchan/maccy/blob/master/docs/privacy.md";
+    private const string LicenseUrl = "https://gitee.com/Achordchan/maccy/blob/master/LICENSE";
+    private const string SponsorUrl = "https://gitee.com/Achordchan/maccy/blob/master/docs/sponsor.md";
 
     public AuthorInfoWindow()
     {
@@ -37,7 +41,10 @@ public partial class AuthorInfoWindow : Window
             var bmp = new Bitmap(ms);
             var img = this.FindControl<Image>("AvatarImage");
             if (img is not null)
+            {
                 img.Source = bmp;
+                img.Opacity = 1;
+            }
         }
         catch
         {
@@ -57,7 +64,7 @@ public partial class AuthorInfoWindow : Window
 
     private void OnProjectClick(object? sender, RoutedEventArgs e)
     {
-        OpenUrl("https://gitee.com/");
+        OpenUrl(ProjectUrl);
     }
 
     private void OnEmailClick(object? sender, RoutedEventArgs e)
@@ -67,16 +74,16 @@ public partial class AuthorInfoWindow : Window
 
     private void OnPrivacyClick(object? sender, RoutedEventArgs e)
     {
-        OpenUrl("https://gitee.com/");
+        OpenUrl(PrivacyUrl);
     }
 
     private void OnLicenseClick(object? sender, RoutedEventArgs e)
     {
-        OpenUrl("https://gitee.com/");
+        OpenUrl(LicenseUrl);
     }
 
     private void OnSponsorClick(object? sender, RoutedEventArgs e)
     {
-        OpenUrl("https://gitee.com/");
+        OpenUrl(SponsorUrl);
     }
 }
