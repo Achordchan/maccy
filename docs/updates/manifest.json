@@ -6,7 +6,7 @@
     "notes": "后端切换为 Python 并接入宝塔 Python 项目；修复登录态、设置页与检查更新反馈问题；云同步加入 SSE 触发、gzip 传输和 Blob 去重上传，减少重复图片与文件传输。",
     "publishedAt": "2026-04-06T10:17:52Z",
     "installer": {
-      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.7/maccy-1.0.7-setup.exe",
+      "url": "https://gitee.com/Achordchan/maccy/raw/master/docs/updates/files/maccy-1.0.7-setup.exe",
       "sha256": "AA8BB502FE95787AC4E17130C750EAAD1DE9F591439D34306127BEB80AF7BAEA",
       "size": 10610829
     }
