@@ -6,7 +6,7 @@
 #if !FileExists(MyExePath)
   #error "Published EXE not found: " + MyExePath + " (run: dotnet publish -c Release -r win-x64 -o artifacts\\publish\\win-x64)"
 #endif
-#define MyAppVersionShort "1.0.8"
+#define MyAppVersionShort "1.0.9"
 #define MyAppId "{{4F6E38C4-29B6-4C3C-9D36-9B0D2F38C4F1}}"
 
 [Setup]
