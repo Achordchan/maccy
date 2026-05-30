@@ -20,6 +20,12 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+try:
+    sys.stdout.reconfigure(errors="replace")
+    sys.stderr.reconfigure(errors="replace")
+except Exception:
+    pass
+
 
 def _message_box(title: str, text: str) -> None:
     if os.name != "nt":
@@ -360,7 +366,7 @@ def _collect_config_gui(repo: Path, manifest_path: Path) -> dict | None:
 
 
 def _run(cmd: list[str], cwd: Path) -> None:
-    p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, shell=False)
+    p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False)
     if p.stdout:
         sys.stdout.write(p.stdout)
     if p.stderr:
@@ -726,7 +732,7 @@ def _run_pipeline_gui(repo: Path, cfg: dict) -> int:
             code, info = payload  # type: ignore
             append("\n完成清单：\n")
             for item in info.get("completed", []):
-                append("[✓] " + str(item) + "\n")
+                append("[OK] " + str(item) + "\n")
             append("\n产物信息：\n")
             append("installer: " + str(info.get("installer")) + "\n")
             append("package: " + str(info.get("package")) + "\n")
@@ -917,7 +923,7 @@ def _find_iscc(explicit: str | None) -> Path:
 
 
 def _run_text(cmd: list[str], cwd: Path) -> str:
-    p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, shell=False)
+    p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False)
     if p.returncode != 0:
         sys.stdout.write(p.stdout)
         sys.stderr.write(p.stderr)
@@ -1431,7 +1437,7 @@ def main() -> int:
 
     print("\n完成清单：")
     for item in completed:
-        print(f"[✓] {item}")
+        print(f"[OK] {item}")
 
     print("\n产物信息：")
     print(f"installer: {installer_path}")
