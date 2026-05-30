@@ -969,7 +969,8 @@ def _http_json(method: str, url: str, *, fields: dict[str, str] | None = None, h
         except Exception:
             body = ""
 
-        msg = f"HTTP {getattr(e, 'code', '?')} {getattr(e, 'reason', '')} for {method} {url}"
+        safe_url = re.sub(r"([?&]access_token=)[^&]+", r"\1<redacted>", url)
+        msg = f"HTTP {getattr(e, 'code', '?')} {getattr(e, 'reason', '')} for {method} {safe_url}"
         if body.strip():
             msg += "\n" + body.strip()
         sys.stderr.write(msg + "\n")
