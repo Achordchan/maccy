@@ -792,13 +792,13 @@ def _set_csproj_version(csproj: Path, version: str) -> None:
 
 def _set_iss_version(iss: Path, version: str) -> None:
     text = iss.read_text(encoding="utf-8")
-    text2 = re.sub(
+    text2, count = re.subn(
         r'(#define\s+MyAppVersionShort\s+")([^"]+)(")',
         r"\g<1>" + version + r"\3",
         text,
         count=1,
     )
-    if text2 == text:
+    if count < 1:
         raise RuntimeError("MyAppVersionShort not found in " + str(iss))
     iss.write_text(text2, encoding="utf-8")
 
