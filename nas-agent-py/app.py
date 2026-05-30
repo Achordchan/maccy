@@ -7,10 +7,13 @@ import json
 import os
 import secrets
 import shutil
+import smtplib
 import sqlite3
 import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+from email.utils import formataddr
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -29,6 +32,10 @@ ACCESS_TOKEN_HOURS = 2
 REFRESH_TOKEN_DAYS = 30
 ADMIN_TOKEN_HOURS = 12
 ADMIN_AUDIENCE = "maccy-admin"
+PASSWORD_CODE_DIGITS = 6
+PASSWORD_CODE_TTL_MINUTES = 10
+PASSWORD_CODE_RESEND_COOLDOWN_SECONDS = 60
+PASSWORD_CODE_MAX_ATTEMPTS = 5
 
 
 def load_dotenv_file(dotenv_path: Path) -> None:
@@ -56,6 +63,14 @@ class Settings:
     issuer: str
     audience: str
     signing_key: str
+    smtp_host: str
+    smtp_port: int
+    smtp_user: str
+    smtp_password: str
+    smtp_from: str
+    smtp_from_name: str
+    smtp_starttls: bool
+    smtp_ssl: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +153,22 @@ class SyncEventBroker:
 APP_DIR = Path(__file__).resolve().parent
 load_dotenv_file(APP_DIR / ".env")
 PASSWORD_HASHER = AspNetPasswordHasher()
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.getenv(name, default)).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 SETTINGS = Settings(
     storage_root=Path(os.getenv("STORAGE_ROOT", "/data")).expanduser(),
     admin_key=os.getenv("ADMIN_KEY", "change-me"),
@@ -146,6 +177,14 @@ SETTINGS = Settings(
     issuer=os.getenv("AUTH_ISSUER", "maccy-self-hosted"),
     audience=os.getenv("AUTH_AUDIENCE", "maccy-client"),
     signing_key=os.getenv("AUTH_SIGNING_KEY", "change-me-to-a-long-random-secret"),
+    smtp_host=os.getenv("SMTP_HOST", "").strip(),
+    smtp_port=env_int("SMTP_PORT", 587),
+    smtp_user=os.getenv("SMTP_USER", "").strip(),
+    smtp_password=os.getenv("SMTP_PASSWORD", ""),
+    smtp_from=os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "")).strip(),
+    smtp_from_name=os.getenv("SMTP_FROM_NAME", "Maccy Cloud").strip(),
+    smtp_starttls=env_bool("SMTP_STARTTLS", True),
+    smtp_ssl=env_bool("SMTP_SSL", False),
 )
 DB_PATH = SETTINGS.storage_root / "subscriptions.db"
 SYNC_EVENT_BROKER = SyncEventBroker()
@@ -282,6 +321,105 @@ async def auth_refresh(request: Request) -> JSONResponse:
 async def auth_me(authorization: str | None = Header(default=None)) -> JSONResponse:
     user = require_user(authorization)
     return JSONResponse({"id": user["id"], "email": user["email"]})
+
+
+@app.post("/auth/password/code")
+async def auth_password_code(request: Request, authorization: str | None = Header(default=None)) -> JSONResponse:
+    payload = await read_json(request)
+    if payload is None:
+        return error_json(400, "invalid request")
+
+    purpose = normalize_password_code_purpose(payload.get("purpose"))
+    if purpose is None:
+        return error_json(400, "invalid purpose")
+
+    if purpose == "change":
+        user = require_user(authorization)
+        email = normalize_email(user["email"])
+    else:
+        email = normalize_email(payload.get("email"))
+        if not is_valid_email(email):
+            return error_json(400, "invalid email")
+        user = get_user_by_email(DB_PATH, email)
+        if user is None:
+            return JSONResponse({"success": True, "cooldownSeconds": PASSWORD_CODE_RESEND_COOLDOWN_SECONDS})
+
+    if not is_email_service_configured(SETTINGS):
+        return error_json(503, "email service not configured")
+
+    with db_connection(DB_PATH) as conn:
+        cooldown = get_password_code_cooldown_seconds(conn, email, purpose)
+        if cooldown > 0:
+            return JSONResponse({"success": True, "cooldownSeconds": cooldown})
+
+        code = generate_password_code()
+        code_id = create_password_code(conn, email, purpose, code)
+        conn.commit()
+
+    try:
+        await asyncio.to_thread(send_password_code_email, SETTINGS, email, code, purpose)
+    except Exception:
+        delete_password_code(DB_PATH, code_id)
+        return error_json(503, "failed to send email")
+
+    return JSONResponse({"success": True, "cooldownSeconds": PASSWORD_CODE_RESEND_COOLDOWN_SECONDS})
+
+
+@app.post("/auth/password/reset")
+async def auth_password_reset(request: Request) -> JSONResponse:
+    payload = await read_json(request)
+    if payload is None:
+        return error_json(400, "invalid request")
+
+    email = normalize_email(payload.get("email"))
+    code = str(payload.get("code") or "").strip()
+    new_password = str(payload.get("newPassword") or "")
+    if not is_valid_email(email):
+        return error_json(400, "invalid email")
+    if len(new_password) < 8:
+        return error_json(400, "password must be at least 8 characters")
+
+    user = get_user_by_email(DB_PATH, email)
+    if user is None:
+        return error_json(400, "invalid or expired code")
+
+    with db_connection(DB_PATH) as conn:
+        ok, error = verify_password_code(conn, email, "reset", code)
+        if not ok:
+            conn.commit()
+            return error_json(400, error or "invalid or expired code")
+
+        update_user_password(conn, user["id"], new_password)
+        revoke_refresh_tokens_for_user(conn, user["id"])
+        conn.commit()
+
+    return JSONResponse({"success": True})
+
+
+@app.post("/auth/password/change")
+async def auth_password_change(request: Request, authorization: str | None = Header(default=None)) -> JSONResponse:
+    user = require_user(authorization)
+    payload = await read_json(request)
+    if payload is None:
+        return error_json(400, "invalid request")
+
+    email = normalize_email(user["email"])
+    code = str(payload.get("code") or "").strip()
+    new_password = str(payload.get("newPassword") or "")
+    if len(new_password) < 8:
+        return error_json(400, "password must be at least 8 characters")
+
+    with db_connection(DB_PATH) as conn:
+        ok, error = verify_password_code(conn, email, "change", code)
+        if not ok:
+            conn.commit()
+            return error_json(400, error or "invalid or expired code")
+
+        update_user_password(conn, user["id"], new_password)
+        revoke_refresh_tokens_for_user(conn, user["id"])
+        conn.commit()
+
+    return JSONResponse({"success": True})
 
 
 @app.get("/subscription/status")
@@ -795,6 +933,18 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS password_verification_codes (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  used_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_password_codes_email_purpose_created
+  ON password_verification_codes (email, purpose, created_at);
 """
         )
         ensure_column(conn, "users", "tier", "TEXT")
@@ -944,6 +1094,147 @@ def require_admin(authorization: str | None) -> dict[str, Any]:
 
 def is_admin_password_login_configured(settings: Settings) -> bool:
     return bool(normalize_email(settings.admin_email) and settings.admin_password)
+
+
+def normalize_password_code_purpose(value: Any) -> str | None:
+    purpose = str(value or "").strip().lower()
+    if purpose in {"reset", "change"}:
+        return purpose
+    return None
+
+
+def generate_password_code() -> str:
+    upper_bound = 10 ** PASSWORD_CODE_DIGITS
+    return f"{secrets.randbelow(upper_bound):0{PASSWORD_CODE_DIGITS}d}"
+
+
+def hash_password_code(email: str, purpose: str, code: str) -> str:
+    return hash_text(f"{normalize_email(email)}:{purpose}:{code.strip()}")
+
+
+def is_email_service_configured(settings: Settings) -> bool:
+    return bool(settings.smtp_host and settings.smtp_port > 0 and settings.smtp_from)
+
+
+def send_password_code_email(settings: Settings, email: str, code: str, purpose: str) -> None:
+    action = "修改密码" if purpose == "change" else "找回密码"
+    message = EmailMessage()
+    message["Subject"] = f"Maccy 云同步{action}验证码"
+    message["From"] = formataddr((settings.smtp_from_name or "Maccy Cloud", settings.smtp_from))
+    message["To"] = email
+    message.set_content(
+        "\n".join(
+            [
+                f"你正在为 Maccy 云同步账号执行{action}操作。",
+                f"验证码：{code}",
+                f"验证码 {PASSWORD_CODE_TTL_MINUTES} 分钟内有效，请勿转发给他人。",
+                "如果这不是你的操作，请忽略此邮件。",
+            ]
+        )
+    )
+
+    smtp_cls = smtplib.SMTP_SSL if settings.smtp_ssl else smtplib.SMTP
+    with smtp_cls(settings.smtp_host, settings.smtp_port, timeout=15) as server:
+        if not settings.smtp_ssl and settings.smtp_starttls:
+            server.starttls()
+        if settings.smtp_user:
+            server.login(settings.smtp_user, settings.smtp_password)
+        server.send_message(message)
+
+
+def get_password_code_cooldown_seconds(conn: sqlite3.Connection, email: str, purpose: str) -> int:
+    row = conn.execute(
+        "SELECT created_at FROM password_verification_codes "
+        "WHERE email=? AND purpose=? ORDER BY created_at DESC LIMIT 1",
+        (normalize_email(email), purpose),
+    ).fetchone()
+    if row is None:
+        return 0
+
+    elapsed = (now_utc() - parse_utc(row["created_at"])).total_seconds()
+    remaining = PASSWORD_CODE_RESEND_COOLDOWN_SECONDS - elapsed
+    if remaining <= 0:
+        return 0
+    return max(1, int(remaining + 0.999))
+
+
+def create_password_code(conn: sqlite3.Connection, email: str, purpose: str, code: str) -> str:
+    now = now_utc()
+    code_id = uuid4().hex
+    conn.execute(
+        "INSERT INTO password_verification_codes "
+        "(id,email,purpose,code_hash,expires_at,attempts,used_at,created_at) "
+        "VALUES (?,?,?,?,?,0,NULL,?)",
+        (
+            code_id,
+            normalize_email(email),
+            purpose,
+            hash_password_code(email, purpose, code),
+            format_utc(now + timedelta(minutes=PASSWORD_CODE_TTL_MINUTES)),
+            format_utc(now),
+        ),
+    )
+    return code_id
+
+
+def delete_password_code(db_path: Path, code_id: str) -> None:
+    with db_connection(db_path) as conn:
+        conn.execute("DELETE FROM password_verification_codes WHERE id=?", (code_id,))
+        conn.commit()
+
+
+def verify_password_code(conn: sqlite3.Connection, email: str, purpose: str, code: str) -> tuple[bool, str | None]:
+    normalized_email = normalize_email(email)
+    normalized_code = str(code or "").strip()
+    row = conn.execute(
+        "SELECT id,code_hash,expires_at,attempts,used_at FROM password_verification_codes "
+        "WHERE email=? AND purpose=? AND used_at IS NULL ORDER BY created_at DESC LIMIT 1",
+        (normalized_email, purpose),
+    ).fetchone()
+    if row is None:
+        return False, "invalid or expired code"
+
+    now = now_utc()
+    code_id = str(row["id"])
+    attempts = int(row["attempts"] or 0)
+    if attempts >= PASSWORD_CODE_MAX_ATTEMPTS:
+        mark_password_code_used(conn, code_id)
+        return False, "too many code attempts"
+
+    if parse_utc(row["expires_at"]) <= now:
+        mark_password_code_used(conn, code_id)
+        return False, "invalid or expired code"
+
+    if not normalized_code.isdigit() or len(normalized_code) != PASSWORD_CODE_DIGITS:
+        increment_password_code_attempts(conn, code_id, attempts)
+        if attempts + 1 >= PASSWORD_CODE_MAX_ATTEMPTS:
+            mark_password_code_used(conn, code_id)
+            return False, "too many code attempts"
+        return False, "invalid or expired code"
+
+    if hash_password_code(normalized_email, purpose, normalized_code) != row["code_hash"]:
+        increment_password_code_attempts(conn, code_id, attempts)
+        if attempts + 1 >= PASSWORD_CODE_MAX_ATTEMPTS:
+            mark_password_code_used(conn, code_id)
+            return False, "too many code attempts"
+        return False, "invalid or expired code"
+
+    mark_password_code_used(conn, code_id)
+    return True, None
+
+
+def increment_password_code_attempts(conn: sqlite3.Connection, code_id: str, attempts: int) -> None:
+    conn.execute(
+        "UPDATE password_verification_codes SET attempts=? WHERE id=?",
+        (attempts + 1, code_id),
+    )
+
+
+def mark_password_code_used(conn: sqlite3.Connection, code_id: str) -> None:
+    conn.execute(
+        "UPDATE password_verification_codes SET used_at=? WHERE id=? AND used_at IS NULL",
+        (utc_now_text(), code_id),
+    )
 
 
 def extract_bearer_token(authorization: str | None) -> str | None:

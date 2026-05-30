@@ -38,6 +38,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
     private bool _suppressSettingsSideEffects;
     private bool _disposed;
+    private CancellationTokenSource? _passwordCodeCooldownCts;
 
     public event Action? RequestClose;
 
@@ -58,6 +59,33 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty]
     private string _authPasswordText = string.Empty;
+
+    [ObservableProperty]
+    private bool _showForgotPasswordForm;
+
+    [ObservableProperty]
+    private bool _showChangePasswordForm;
+
+    [ObservableProperty]
+    private string _passwordCodeText = string.Empty;
+
+    [ObservableProperty]
+    private string _newPasswordText = string.Empty;
+
+    [ObservableProperty]
+    private string _confirmNewPasswordText = string.Empty;
+
+    [ObservableProperty]
+    private bool _passwordCodeBusy;
+
+    [ObservableProperty]
+    private int _passwordCodeCooldownSeconds;
+
+    public string PasswordCodeButtonText => PasswordCodeCooldownSeconds > 0
+        ? $"{PasswordCodeCooldownSeconds}s 后重发"
+        : "发送验证码";
+
+    public bool IsPasswordDialogVisible => ShowForgotPasswordForm || ShowChangePasswordForm;
 
     [ObservableProperty]
     private bool _nasBusy;
@@ -189,6 +217,18 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
     public IRelayCommand LogoutCommand { get; }
 
+    public IRelayCommand ToggleForgotPasswordCommand { get; }
+
+    public IRelayCommand ToggleChangePasswordCommand { get; }
+
+    public IRelayCommand ClosePasswordDialogCommand { get; }
+
+    public IAsyncRelayCommand SendPasswordCodeCommand { get; }
+
+    public IAsyncRelayCommand ResetPasswordCommand { get; }
+
+    public IAsyncRelayCommand ChangePasswordCommand { get; }
+
     public IAsyncRelayCommand TestNasConnectionCommand { get; }
 
     public IAsyncRelayCommand SyncNowCommand { get; }
@@ -248,6 +288,12 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         LoginCommand = new AsyncRelayCommand(LoginAsync, () => !AuthBusy);
         RegisterCommand = new AsyncRelayCommand(RegisterAsync, () => !AuthBusy);
         LogoutCommand = new RelayCommand(Logout);
+        ToggleForgotPasswordCommand = new RelayCommand(ToggleForgotPassword);
+        ToggleChangePasswordCommand = new RelayCommand(ToggleChangePassword);
+        ClosePasswordDialogCommand = new RelayCommand(DismissPasswordDialog);
+        SendPasswordCodeCommand = new AsyncRelayCommand(SendPasswordCodeAsync, CanSendPasswordCode);
+        ResetPasswordCommand = new AsyncRelayCommand(ResetPasswordAsync, CanSubmitPasswordReset);
+        ChangePasswordCommand = new AsyncRelayCommand(ChangePasswordAsync, CanSubmitPasswordReset);
         TestNasConnectionCommand = new AsyncRelayCommand(TestNasConnectionAsync, () => !NasBusy);
         SyncNowCommand = new AsyncRelayCommand(SyncNowAsync, () => !NasBusy);
 
@@ -263,10 +309,57 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
     private bool CanRefreshSubscription() => IsLoggedIn;
 
+    private bool CanSendPasswordCode() =>
+        !PasswordCodeBusy
+        && PasswordCodeCooldownSeconds <= 0
+        && (ShowForgotPasswordForm || ShowChangePasswordForm);
+
+    private bool CanSubmitPasswordReset() => !PasswordCodeBusy;
+
     partial void OnIsLoggedInChanged(bool value)
     {
         RedeemCardCommand?.NotifyCanExecuteChanged();
         RefreshSubscriptionCommand?.NotifyCanExecuteChanged();
+        SendPasswordCodeCommand?.NotifyCanExecuteChanged();
+        if (value)
+            ShowForgotPasswordForm = false;
+        else
+            ShowChangePasswordForm = false;
+    }
+
+    partial void OnShowForgotPasswordFormChanged(bool value)
+    {
+        if (value)
+        {
+            ShowChangePasswordForm = false;
+            ClearPasswordRecoveryInputs();
+        }
+        OnPropertyChanged(nameof(IsPasswordDialogVisible));
+        SendPasswordCodeCommand?.NotifyCanExecuteChanged();
+    }
+
+    partial void OnShowChangePasswordFormChanged(bool value)
+    {
+        if (value)
+        {
+            ShowForgotPasswordForm = false;
+            ClearPasswordRecoveryInputs();
+        }
+        OnPropertyChanged(nameof(IsPasswordDialogVisible));
+        SendPasswordCodeCommand?.NotifyCanExecuteChanged();
+    }
+
+    partial void OnPasswordCodeBusyChanged(bool value)
+    {
+        SendPasswordCodeCommand?.NotifyCanExecuteChanged();
+        ResetPasswordCommand?.NotifyCanExecuteChanged();
+        ChangePasswordCommand?.NotifyCanExecuteChanged();
+    }
+
+    partial void OnPasswordCodeCooldownSecondsChanged(int value)
+    {
+        OnPropertyChanged(nameof(PasswordCodeButtonText));
+        SendPasswordCodeCommand?.NotifyCanExecuteChanged();
     }
 
     private void OnSettingsChanged()
@@ -712,6 +805,260 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         ToastService.Instance.Show("已退出登录");
     }
 
+    private void ToggleForgotPassword()
+    {
+        if (IsLoggedIn)
+            return;
+
+        ShowChangePasswordForm = false;
+        ShowForgotPasswordForm = true;
+        ClearPasswordRecoveryInputs();
+    }
+
+    private void ToggleChangePassword()
+    {
+        if (!IsLoggedIn)
+            return;
+
+        ShowForgotPasswordForm = false;
+        ShowChangePasswordForm = true;
+        ClearPasswordRecoveryInputs();
+    }
+
+    public void DismissPasswordDialog()
+    {
+        ShowForgotPasswordForm = false;
+        ShowChangePasswordForm = false;
+        ClearPasswordRecoveryInputs();
+    }
+
+    private async Task SendPasswordCodeAsync(CancellationToken ct)
+    {
+        if (PasswordCodeBusy || PasswordCodeCooldownSeconds > 0)
+            return;
+
+        var isChange = IsLoggedIn && ShowChangePasswordForm;
+        var isReset = !IsLoggedIn && ShowForgotPasswordForm;
+        if (!isChange && !isReset)
+            return;
+
+        var baseUrl = EnsureOfficialSyncBaseUrl();
+        var email = isChange
+            ? (_settings.Current.AuthUserEmail ?? AuthEmailText ?? string.Empty).Trim()
+            : (AuthEmailText ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(email) || !email.Contains('@'))
+        {
+            ToastService.Instance.Show("请输入有效邮箱");
+            return;
+        }
+
+        try
+        {
+            PasswordCodeBusy = true;
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromMinutes(2));
+
+            string? accessToken = null;
+            var purpose = isChange ? "change" : "reset";
+            if (isChange)
+            {
+                accessToken = await EnsureAccessTokenAsync(cts.Token);
+                if (string.IsNullOrWhiteSpace(accessToken))
+                {
+                    ReloadFromSettings();
+                    ToastService.Instance.Show("登录已失效，请重新登录");
+                    return;
+                }
+            }
+
+            var cooldown = await _authing.SendPasswordCodeAsync(baseUrl, purpose, email, accessToken, cts.Token);
+            StartPasswordCodeCooldown(cooldown);
+            ToastService.Instance.Show("验证码已发送，请检查邮箱");
+        }
+        catch (OperationCanceledException)
+        {
+            ToastService.Instance.Show("发送验证码已取消");
+        }
+        catch (Exception ex)
+        {
+            WriteAuthErrorLog(ex);
+            ToastService.Instance.Show(ExplainAuthException(ex, "发送验证码失败"));
+        }
+        finally
+        {
+            PasswordCodeBusy = false;
+        }
+    }
+
+    private async Task ResetPasswordAsync(CancellationToken ct)
+    {
+        if (PasswordCodeBusy)
+            return;
+
+        var email = (AuthEmailText ?? string.Empty).Trim();
+        if (!ValidatePasswordRecoveryInputs(email))
+            return;
+
+        try
+        {
+            PasswordCodeBusy = true;
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromMinutes(2));
+
+            await _authing.ResetPasswordAsync(
+                EnsureOfficialSyncBaseUrl(),
+                email,
+                PasswordCodeText,
+                NewPasswordText,
+                cts.Token);
+
+            ClearAuthAfterPasswordUpdated(email);
+            ShowForgotPasswordForm = false;
+            ToastService.Instance.Show("密码已更新，请使用新密码重新登录");
+        }
+        catch (OperationCanceledException)
+        {
+            ToastService.Instance.Show("找回密码已取消");
+        }
+        catch (Exception ex)
+        {
+            WriteAuthErrorLog(ex);
+            ToastService.Instance.Show(ExplainAuthException(ex, "找回密码失败"));
+        }
+        finally
+        {
+            PasswordCodeBusy = false;
+        }
+    }
+
+    private async Task ChangePasswordAsync(CancellationToken ct)
+    {
+        if (PasswordCodeBusy)
+            return;
+
+        var email = (_settings.Current.AuthUserEmail ?? AuthEmailText ?? string.Empty).Trim();
+        if (!ValidatePasswordRecoveryInputs(email))
+            return;
+
+        try
+        {
+            PasswordCodeBusy = true;
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromMinutes(2));
+
+            var accessToken = await EnsureAccessTokenAsync(cts.Token);
+            if (string.IsNullOrWhiteSpace(accessToken))
+            {
+                ReloadFromSettings();
+                ToastService.Instance.Show("登录已失效，请重新登录");
+                return;
+            }
+
+            await _authing.ChangePasswordAsync(
+                EnsureOfficialSyncBaseUrl(),
+                accessToken,
+                PasswordCodeText,
+                NewPasswordText,
+                cts.Token);
+
+            ClearAuthAfterPasswordUpdated(email);
+            ShowChangePasswordForm = false;
+            ToastService.Instance.Show("密码已更新，请使用新密码重新登录");
+        }
+        catch (OperationCanceledException)
+        {
+            ToastService.Instance.Show("修改密码已取消");
+        }
+        catch (Exception ex)
+        {
+            WriteAuthErrorLog(ex);
+            ToastService.Instance.Show(ExplainAuthException(ex, "修改密码失败"));
+        }
+        finally
+        {
+            PasswordCodeBusy = false;
+        }
+    }
+
+    private bool ValidatePasswordRecoveryInputs(string email)
+    {
+        if (string.IsNullOrWhiteSpace(email) || !email.Contains('@'))
+        {
+            ToastService.Instance.Show("请输入有效邮箱");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(PasswordCodeText))
+        {
+            ToastService.Instance.Show("请输入验证码");
+            return false;
+        }
+
+        if ((NewPasswordText ?? string.Empty).Length < 8)
+        {
+            ToastService.Instance.Show("新密码至少 8 位");
+            return false;
+        }
+
+        if (!string.Equals(NewPasswordText, ConfirmNewPasswordText, StringComparison.Ordinal))
+        {
+            ToastService.Instance.Show("两次输入的新密码不一致");
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ClearAuthAfterPasswordUpdated(string email)
+    {
+        _settings.Update(s => s.AuthUserEmail = email);
+        _settings.ClearAuthSession(clearUserEmail: false);
+        ClearPasswordRecoveryInputs();
+        AuthPasswordText = string.Empty;
+        ReloadFromSettings();
+        AuthEmailText = email;
+    }
+
+    private void ClearPasswordRecoveryInputs()
+    {
+        PasswordCodeText = string.Empty;
+        NewPasswordText = string.Empty;
+        ConfirmNewPasswordText = string.Empty;
+    }
+
+    private void StartPasswordCodeCooldown(int seconds)
+    {
+        _passwordCodeCooldownCts?.Cancel();
+        _passwordCodeCooldownCts?.Dispose();
+        _passwordCodeCooldownCts = null;
+
+        PasswordCodeCooldownSeconds = Math.Max(0, seconds);
+        if (PasswordCodeCooldownSeconds <= 0)
+            return;
+
+        var cooldownCts = new CancellationTokenSource();
+        _passwordCodeCooldownCts = cooldownCts;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!cooldownCts.IsCancellationRequested && PasswordCodeCooldownSeconds > 0)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), cooldownCts.Token);
+                    var next = Math.Max(0, PasswordCodeCooldownSeconds - 1);
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (ReferenceEquals(_passwordCodeCooldownCts, cooldownCts))
+                            PasswordCodeCooldownSeconds = next;
+                    });
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        });
+    }
+
     private string EnsureOfficialSyncBaseUrl()
     {
         var current = (_settings.Current.NasAgentBaseUrl ?? string.Empty).Trim().TrimEnd('/');
@@ -1118,6 +1465,18 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
         if (msg.Contains("invalid email or password", StringComparison.OrdinalIgnoreCase))
             return "邮箱或密码不正确";
+        if (msg.Contains("invalid email", StringComparison.OrdinalIgnoreCase))
+            return "请输入有效邮箱";
+        if (msg.Contains("password must be at least", StringComparison.OrdinalIgnoreCase))
+            return "新密码至少 8 位";
+        if (msg.Contains("invalid or expired code", StringComparison.OrdinalIgnoreCase))
+            return "验证码错误或已过期";
+        if (msg.Contains("too many code attempts", StringComparison.OrdinalIgnoreCase))
+            return "验证码错误次数过多，请重新获取";
+        if (msg.Contains("email service not configured", StringComparison.OrdinalIgnoreCase))
+            return "邮件服务尚未配置，请联系管理员";
+        if (msg.Contains("failed to send email", StringComparison.OrdinalIgnoreCase))
+            return "验证码邮件发送失败，请稍后重试";
         if (msg.Contains("invalid request", StringComparison.OrdinalIgnoreCase))
             return "登录请求格式异常，请重启应用后重试";
         if (msg.Contains("missing", StringComparison.OrdinalIgnoreCase)
@@ -1334,6 +1693,15 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         try
         {
             ToastService.Instance.ToastChanged -= OnToastChanged;
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            _passwordCodeCooldownCts?.Cancel();
+            _passwordCodeCooldownCts?.Dispose();
         }
         catch
         {

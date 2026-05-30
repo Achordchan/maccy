@@ -7,6 +7,7 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Media.Imaging;
 using Avalonia.Interactivity;
 using System.Diagnostics;
+using System.Reflection;
 
 namespace maccy.Views;
 
@@ -22,6 +23,7 @@ public partial class AuthorInfoWindow : Window
     public AuthorInfoWindow()
     {
         InitializeComponent();
+        SetVersionText();
         Opened += async (_, _) => await TryLoadAvatarAsync();
         Deactivated += (_, _) => Close();
     }
@@ -51,6 +53,23 @@ public partial class AuthorInfoWindow : Window
         }
     }
 
+    private void SetVersionText()
+    {
+        try
+        {
+            var version = Assembly.GetExecutingAssembly().GetName().Version;
+            if (version is null)
+                return;
+
+            var text = this.FindControl<TextBlock>("VersionText");
+            if (text is not null)
+                text.Text = $"v{version.Major}.{version.Minor}.{version.Build}";
+        }
+        catch
+        {
+        }
+    }
+
     private static void OpenUrl(string url)
     {
         try
@@ -70,6 +89,11 @@ public partial class AuthorInfoWindow : Window
     private void OnEmailClick(object? sender, RoutedEventArgs e)
     {
         OpenUrl($"mailto:{EmailAddress}");
+    }
+
+    private void OnCloseClick(object? sender, RoutedEventArgs e)
+    {
+        Close();
     }
 
     private void OnPrivacyClick(object? sender, RoutedEventArgs e)

@@ -14,8 +14,9 @@
 
   <Border Padding="14"
           Background="{DynamicResource AppBackground}">
-    <Grid RowDefinitions="*,Auto">
-      <TabControl Grid.Row="0">
+    <Grid>
+      <Grid RowDefinitions="*,Auto">
+        <TabControl Grid.Row="0">
         <TabItem Header="通用">
           <ScrollViewer VerticalScrollBarVisibility="Auto"
                         HorizontalScrollBarVisibility="Disabled">
@@ -253,19 +254,33 @@
                                   Foreground="{DynamicResource AppForeground}"
                                   BorderBrush="{DynamicResource AppBorder}"
                                   Padding="12,6" />
+                          <Button Content="忘记密码"
+                                  Command="{Binding ToggleForgotPasswordCommand}"
+                                  Background="{DynamicResource AppControlBackground}"
+                                  Foreground="{DynamicResource AppForeground}"
+                                  BorderBrush="{DynamicResource AppBorder}"
+                                  Padding="12,6" />
                         </StackPanel>
                       </StackPanel>
                     </Border>
 
-                    <StackPanel Orientation="Horizontal"
-                                Spacing="8"
+                    <StackPanel Spacing="8"
                                 IsVisible="{Binding IsLoggedIn}">
-                      <Button Content="退出登录"
-                              Command="{Binding LogoutCommand}"
-                              Background="{DynamicResource AppControlBackground}"
-                              Foreground="{DynamicResource AppForeground}"
-                              BorderBrush="{DynamicResource AppBorder}"
-                              Padding="12,6" />
+                      <StackPanel Orientation="Horizontal"
+                                  Spacing="8">
+                        <Button Content="退出登录"
+                                Command="{Binding LogoutCommand}"
+                                Background="{DynamicResource AppControlBackground}"
+                                Foreground="{DynamicResource AppForeground}"
+                                BorderBrush="{DynamicResource AppBorder}"
+                                Padding="12,6" />
+                        <Button Content="修改密码"
+                                Command="{Binding ToggleChangePasswordCommand}"
+                                Background="{DynamicResource AppControlBackground}"
+                                Foreground="{DynamicResource AppForeground}"
+                                BorderBrush="{DynamicResource AppBorder}"
+                                Padding="12,6" />
+                      </StackPanel>
                     </StackPanel>
                   </StackPanel>
                 </Grid>
@@ -409,22 +424,161 @@
             </StackPanel>
           </ScrollViewer>
         </TabItem>
-      </TabControl>
+        </TabControl>
 
-      <StackPanel Grid.Row="1" Spacing="10">
-        <Border Height="1"
-                Background="{DynamicResource AppDivider}"
-                Margin="0,10,0,0" />
-        <StackPanel Orientation="Horizontal"
-                    HorizontalAlignment="Right"
-                    Spacing="10">
-          <Button Content="关闭"
-                  Command="{Binding CloseCommand}"
-                  Background="{DynamicResource AppControlBackground}"
-                  Foreground="{DynamicResource AppForeground}"
-                  BorderBrush="{DynamicResource AppBorder}" />
+        <StackPanel Grid.Row="1" Spacing="10">
+          <Border Height="1"
+                  Background="{DynamicResource AppDivider}"
+                  Margin="0,10,0,0" />
+          <StackPanel Orientation="Horizontal"
+                      HorizontalAlignment="Right"
+                      Spacing="10">
+            <Button Content="关闭"
+                    Command="{Binding CloseCommand}"
+                    Background="{DynamicResource AppControlBackground}"
+                    Foreground="{DynamicResource AppForeground}"
+                    BorderBrush="{DynamicResource AppBorder}" />
+          </StackPanel>
         </StackPanel>
-      </StackPanel>
+      </Grid>
+
+      <Grid Panel.ZIndex="50"
+            IsVisible="{Binding IsPasswordDialogVisible}"
+            Background="#99000000">
+        <Border Width="392"
+                Padding="18"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                CornerRadius="16"
+                Background="{DynamicResource AppPanelBackground}"
+                BorderBrush="{DynamicResource AppBorder}"
+                BorderThickness="1">
+          <DockPanel LastChildFill="True">
+            <StackPanel DockPanel.Dock="Bottom" Spacing="12">
+              <Border Height="1"
+                      Background="{DynamicResource AppDivider}"
+                      Margin="0,6,0,0" />
+              <StackPanel Orientation="Horizontal"
+                          HorizontalAlignment="Right"
+                          Spacing="8">
+                <Button Content="取消"
+                        Command="{Binding ClosePasswordDialogCommand}"
+                        Background="{DynamicResource AppControlBackground}"
+                        Foreground="{DynamicResource AppForeground}"
+                        BorderBrush="{DynamicResource AppBorder}"
+                        Padding="12,6" />
+                <Button Content="重置密码"
+                        IsVisible="{Binding ShowForgotPasswordForm}"
+                        Command="{Binding ResetPasswordCommand}"
+                        IsEnabled="{Binding PasswordCodeBusy, Converter={x:Static conv:InverseBoolConverter.Instance}}"
+                        Padding="12,6" />
+                <Button Content="确认修改"
+                        IsVisible="{Binding ShowChangePasswordForm}"
+                        Command="{Binding ChangePasswordCommand}"
+                        IsEnabled="{Binding PasswordCodeBusy, Converter={x:Static conv:InverseBoolConverter.Instance}}"
+                        Padding="12,6" />
+              </StackPanel>
+            </StackPanel>
+
+            <StackPanel Spacing="12">
+              <StackPanel Spacing="4">
+                <TextBlock Text="找回密码"
+                           IsVisible="{Binding ShowForgotPasswordForm}"
+                           FontSize="18"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource AppForeground}" />
+                <TextBlock Text="修改密码"
+                           IsVisible="{Binding ShowChangePasswordForm}"
+                           FontSize="18"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource AppForeground}" />
+                <TextBlock Text="验证码会发送到你的邮箱，修改成功后需要重新登录。"
+                           Foreground="{DynamicResource AppMutedForeground}"
+                           TextWrapping="Wrap" />
+              </StackPanel>
+
+              <StackPanel Spacing="10">
+                <StackPanel Spacing="5"
+                            IsVisible="{Binding ShowForgotPasswordForm}">
+                  <TextBlock Text="邮箱"
+                             FontSize="12"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <TextBox Text="{Binding AuthEmailText}"
+                           HorizontalAlignment="Stretch"
+                           Watermark="请输入邮箱"
+                           Background="{DynamicResource AppBackground}"
+                           Foreground="{DynamicResource AppForeground}"
+                           BorderBrush="{DynamicResource AppBorder}" />
+                </StackPanel>
+
+                <StackPanel Spacing="5"
+                            IsVisible="{Binding ShowChangePasswordForm}">
+                  <TextBlock Text="当前账号"
+                             FontSize="12"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <Border Padding="10,8"
+                          CornerRadius="8"
+                          Background="{DynamicResource AppBackground}"
+                          BorderBrush="{DynamicResource AppBorder}"
+                          BorderThickness="1">
+                    <TextBlock Text="{Binding AuthStatusText}"
+                               Foreground="{DynamicResource AppForeground}" />
+                  </Border>
+                </StackPanel>
+
+                <StackPanel Spacing="5">
+                  <TextBlock Text="验证码"
+                             FontSize="12"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <Grid ColumnDefinitions="*,Auto"
+                        ColumnSpacing="8">
+                    <TextBox Grid.Column="0"
+                             Text="{Binding PasswordCodeText}"
+                             HorizontalAlignment="Stretch"
+                             Watermark="6 位邮箱验证码"
+                             Background="{DynamicResource AppBackground}"
+                             Foreground="{DynamicResource AppForeground}"
+                             BorderBrush="{DynamicResource AppBorder}" />
+                    <Button Grid.Column="1"
+                            Content="{Binding PasswordCodeButtonText}"
+                            Command="{Binding SendPasswordCodeCommand}"
+                            Background="{DynamicResource AppControlBackground}"
+                            Foreground="{DynamicResource AppForeground}"
+                            BorderBrush="{DynamicResource AppBorder}"
+                            Padding="12,6" />
+                  </Grid>
+                </StackPanel>
+
+                <StackPanel Spacing="5">
+                  <TextBlock Text="新密码"
+                             FontSize="12"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <TextBox Text="{Binding NewPasswordText}"
+                           HorizontalAlignment="Stretch"
+                           PasswordChar="*"
+                           Watermark="至少 8 位"
+                           Background="{DynamicResource AppBackground}"
+                           Foreground="{DynamicResource AppForeground}"
+                           BorderBrush="{DynamicResource AppBorder}" />
+                </StackPanel>
+
+                <StackPanel Spacing="5">
+                  <TextBlock Text="确认新密码"
+                             FontSize="12"
+                             Foreground="{DynamicResource AppMutedForeground}" />
+                  <TextBox Text="{Binding ConfirmNewPasswordText}"
+                           HorizontalAlignment="Stretch"
+                           PasswordChar="*"
+                           Watermark="再次输入新密码"
+                           Background="{DynamicResource AppBackground}"
+                           Foreground="{DynamicResource AppForeground}"
+                           BorderBrush="{DynamicResource AppBorder}" />
+                </StackPanel>
+              </StackPanel>
+            </StackPanel>
+          </DockPanel>
+        </Border>
+      </Grid>
 
       <Border HorizontalAlignment="Center"
               VerticalAlignment="Bottom"

@@ -14,237 +14,372 @@
     <ResourceDictionary>
       <ResourceDictionary.ThemeDictionaries>
         <ResourceDictionary x:Key="Dark">
-          <SolidColorBrush x:Key="AuthorCardBackground" Color="#FF171717" />
-          <SolidColorBrush x:Key="AuthorCardBorder" Color="#FF2D2D2D" />
-          <SolidColorBrush x:Key="AuthorRaisedBackground" Color="#FF202020" />
-          <SolidColorBrush x:Key="AuthorRaisedBorder" Color="#FF2E2E2E" />
-          <SolidColorBrush x:Key="AuthorPrimaryBackground" Color="#FFF1ECE7" />
-          <SolidColorBrush x:Key="AuthorPrimaryForeground" Color="#FF171717" />
-          <SolidColorBrush x:Key="AuthorAccentForeground" Color="#FFB67D58" />
+          <SolidColorBrush x:Key="AuthorWindowBackground" Color="#FF1E1E1E" />
+          <SolidColorBrush x:Key="AuthorPanelBackground" Color="#FF171717" />
+          <SolidColorBrush x:Key="AuthorPanelBorder" Color="#FF333333" />
+          <SolidColorBrush x:Key="AuthorControlBackground" Color="#FF262626" />
+          <SolidColorBrush x:Key="AuthorControlHoverBackground" Color="#FF303030" />
+          <SolidColorBrush x:Key="AuthorControlPressedBackground" Color="#FF353535" />
+          <SolidColorBrush x:Key="AuthorForeground" Color="#FFEAEAEA" />
+          <SolidColorBrush x:Key="AuthorMutedForeground" Color="#FFA8A8A8" />
+          <SolidColorBrush x:Key="AuthorDimForeground" Color="#FF7A7A7A" />
+          <SolidColorBrush x:Key="AuthorAccent" Color="#FFE0A23B" />
+          <SolidColorBrush x:Key="AuthorAccentSoft" Color="#33E0A23B" />
+          <SolidColorBrush x:Key="AuthorIconForeground" Color="#FFCFCFCF" />
+          <SolidColorBrush x:Key="AuthorLine" Color="#FF333333" />
         </ResourceDictionary>
 
         <ResourceDictionary x:Key="Light">
-          <SolidColorBrush x:Key="AuthorCardBackground" Color="#FFFDFCFB" />
-          <SolidColorBrush x:Key="AuthorCardBorder" Color="#FFE6DDD6" />
-          <SolidColorBrush x:Key="AuthorRaisedBackground" Color="#FFF4EFEB" />
-          <SolidColorBrush x:Key="AuthorRaisedBorder" Color="#FFE6D8CE" />
-          <SolidColorBrush x:Key="AuthorPrimaryBackground" Color="#FF8F5A3C" />
-          <SolidColorBrush x:Key="AuthorPrimaryForeground" Color="#FFFFFFFF" />
-          <SolidColorBrush x:Key="AuthorAccentForeground" Color="#FF8F5A3C" />
+          <SolidColorBrush x:Key="AuthorWindowBackground" Color="#FFF6F6F6" />
+          <SolidColorBrush x:Key="AuthorPanelBackground" Color="#FFFFFFFF" />
+          <SolidColorBrush x:Key="AuthorPanelBorder" Color="#FFE1E1E1" />
+          <SolidColorBrush x:Key="AuthorControlBackground" Color="#FFFFFFFF" />
+          <SolidColorBrush x:Key="AuthorControlHoverBackground" Color="#FFF1F1F1" />
+          <SolidColorBrush x:Key="AuthorControlPressedBackground" Color="#FFE9E9E9" />
+          <SolidColorBrush x:Key="AuthorForeground" Color="#FF1A1A1A" />
+          <SolidColorBrush x:Key="AuthorMutedForeground" Color="#FF5E5E5E" />
+          <SolidColorBrush x:Key="AuthorDimForeground" Color="#FF7A7A7A" />
+          <SolidColorBrush x:Key="AuthorAccent" Color="#FFB87818" />
+          <SolidColorBrush x:Key="AuthorAccentSoft" Color="#22B87818" />
+          <SolidColorBrush x:Key="AuthorIconForeground" Color="#FF555555" />
+          <SolidColorBrush x:Key="AuthorLine" Color="#FFE7E7E7" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
     </ResourceDictionary>
   </Window.Resources>
 
-  <Border Background="{DynamicResource AuthorCardBackground}"
-          BorderBrush="{DynamicResource AuthorCardBorder}"
-          BorderThickness="1"
-          CornerRadius="20"
-          Padding="18"
-          BoxShadow="0 18 38 0 #22000000, 0 3 10 0 #12000000">
+  <Window.Styles>
+    <Style Selector="Button.authorAction">
+      <Setter Property="Height" Value="46" />
+      <Setter Property="Padding" Value="9,0" />
+      <Setter Property="Background" Value="{DynamicResource AuthorControlBackground}" />
+      <Setter Property="Foreground" Value="{DynamicResource AuthorForeground}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AuthorPanelBorder}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="11" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.authorAction:pointerover">
+      <Setter Property="Background" Value="{DynamicResource AuthorControlHoverBackground}" />
+    </Style>
+    <Style Selector="Button.authorAction:pressed">
+      <Setter Property="Background" Value="{DynamicResource AuthorControlPressedBackground}" />
+    </Style>
 
-    <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="12">
-      <Grid ColumnDefinitions="Auto,*" ColumnSpacing="14">
-        <Border Width="78"
-                Height="78"
-                CornerRadius="22"
-                ClipToBounds="True"
-                BorderBrush="{DynamicResource AuthorCardBorder}"
+    <Style Selector="Button.contactRow">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="CornerRadius" Value="8" />
+    </Style>
+    <Style Selector="Button.contactRow:pointerover">
+      <Setter Property="Background" Value="{DynamicResource AuthorAccentSoft}" />
+    </Style>
+
+    <Style Selector="Button.closeButton">
+      <Setter Property="Width" Value="28" />
+      <Setter Property="Height" Value="28" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="8" />
+    </Style>
+    <Style Selector="Button.closeButton:pointerover">
+      <Setter Property="Background" Value="{DynamicResource AuthorControlHoverBackground}" />
+    </Style>
+  </Window.Styles>
+
+  <Border Background="{DynamicResource AuthorWindowBackground}"
+          BorderBrush="{DynamicResource AuthorPanelBorder}"
+          BorderThickness="1"
+          CornerRadius="16"
+          Padding="18"
+          BoxShadow="0 18 38 0 #26000000, 0 3 10 0 #18000000">
+    <Grid RowDefinitions="36,154,46" RowSpacing="16">
+      <Grid Grid.Row="0"
+            ColumnDefinitions="*,Auto,Auto"
+            ColumnSpacing="12">
+        <TextBlock Text="关于 Maccy"
+                   Foreground="{DynamicResource AuthorForeground}"
+                   FontSize="18"
+                   FontWeight="SemiBold"
+                   VerticalAlignment="Center" />
+
+        <Border Grid.Column="1"
+                Height="28"
+                MinWidth="70"
+                Padding="14,0"
+                Background="{DynamicResource AuthorControlBackground}"
+                BorderBrush="{DynamicResource AuthorPanelBorder}"
                 BorderThickness="1"
-                BoxShadow="0 10 24 0 #20000000">
-          <Grid>
-            <Border>
-              <Border.Background>
-                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                  <GradientStop Color="#FFAE7550" Offset="0" />
-                  <GradientStop Color="#FF2A2A2A" Offset="1" />
-                </LinearGradientBrush>
-              </Border.Background>
-            </Border>
-            <TextBlock Text="A+"
-                       Foreground="White"
-                       FontFamily="Georgia"
-                       FontSize="32"
-                       HorizontalAlignment="Center"
-                       VerticalAlignment="Center"
-                       Margin="0,-2,0,0" />
-            <Image Name="AvatarImage"
-                   Stretch="UniformToFill"
-                   Opacity="0" />
-          </Grid>
+                CornerRadius="10"
+                VerticalAlignment="Center">
+          <TextBlock Name="VersionText"
+                     Text="v1.0.9"
+                     Foreground="{DynamicResource AuthorMutedForeground}"
+                     FontSize="14"
+                     VerticalAlignment="Center"
+                     HorizontalAlignment="Center" />
         </Border>
 
-        <StackPanel Grid.Column="1"
-                    VerticalAlignment="Center"
-                    Spacing="3">
-          <TextBlock Text="AUTHOR"
-                     Foreground="{DynamicResource AuthorAccentForeground}"
-                     FontSize="10"
-                     FontWeight="SemiBold"
-                     LetterSpacing="2" />
-          <TextBlock Text="Achord Chan"
-                     Foreground="{DynamicResource AppForeground}"
-                     FontFamily="Georgia"
-                     FontSize="29"
-                     FontWeight="SemiBold" />
-          <TextBlock Text="Maccy 作者"
-                     Foreground="{DynamicResource AppMutedForeground}"
-                     FontSize="14" />
-          <TextBlock Text="Independent Builder"
-                     Foreground="{DynamicResource AuthorAccentForeground}"
-                     FontSize="11"
-                     LetterSpacing="0.6" />
-        </StackPanel>
+        <Button Grid.Column="2"
+                Classes="closeButton"
+                Click="OnCloseClick">
+          <Path Width="14"
+                Height="14"
+                Stretch="Uniform"
+                Stroke="{DynamicResource AuthorMutedForeground}"
+                StrokeThickness="2.2"
+                StrokeLineCap="Round"
+                Data="M 3 3 L 21 21 M 21 3 L 3 21" />
+        </Button>
       </Grid>
 
-      <Border Grid.Row="1"
-              Background="{DynamicResource AuthorRaisedBackground}"
-              BorderBrush="{DynamicResource AuthorRaisedBorder}"
-              BorderThickness="1"
-              CornerRadius="16"
-              Padding="14,12">
-        <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="9">
-          <Button Grid.Row="0"
-                  Background="Transparent"
-                  BorderThickness="0"
-                  Padding="0"
-                  HorizontalContentAlignment="Stretch"
-                  Click="OnEmailClick">
-            <Grid ColumnDefinitions="44,*" ColumnSpacing="12">
-              <TextBlock Text="Email"
-                         Foreground="{DynamicResource AppMuted2Foreground}"
-                         FontSize="11"
-                         VerticalAlignment="Center" />
+      <Grid Grid.Row="1"
+            ColumnDefinitions="136,*"
+            ColumnSpacing="14">
+        <Border Background="{DynamicResource AuthorPanelBackground}"
+                BorderBrush="{DynamicResource AuthorPanelBorder}"
+                BorderThickness="1"
+                CornerRadius="13"
+                Padding="14">
+          <StackPanel HorizontalAlignment="Center"
+                      VerticalAlignment="Center"
+                      Spacing="8">
+            <Border Width="72"
+                    Height="72"
+                    CornerRadius="18"
+                    ClipToBounds="True"
+                    BorderBrush="{DynamicResource AuthorPanelBorder}"
+                    BorderThickness="1">
+              <Grid>
+                <Border>
+                  <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                      <GradientStop Color="#FF383838" Offset="0" />
+                      <GradientStop Color="#FF161616" Offset="1" />
+                    </LinearGradientBrush>
+                  </Border.Background>
+                </Border>
+                <TextBlock Text="A+"
+                           Foreground="{DynamicResource AuthorAccent}"
+                           FontSize="22"
+                           FontWeight="SemiBold"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center" />
+                <Image Name="AvatarImage"
+                       Stretch="UniformToFill"
+                       Opacity="0" />
+              </Grid>
+            </Border>
+
+            <StackPanel Spacing="2">
+              <TextBlock Text="Achord Chan"
+                         Foreground="{DynamicResource AuthorForeground}"
+                         FontSize="15"
+                         FontWeight="SemiBold"
+                         HorizontalAlignment="Center" />
+              <TextBlock Text="Maccy 作者"
+                         Foreground="{DynamicResource AuthorMutedForeground}"
+                         FontSize="12"
+                         HorizontalAlignment="Center" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <Border Grid.Column="1"
+                Background="{DynamicResource AuthorPanelBackground}"
+                BorderBrush="{DynamicResource AuthorPanelBorder}"
+                BorderThickness="1"
+                CornerRadius="13"
+                Padding="16,14">
+          <Grid RowDefinitions="20,1,30,1,30,1,22"
+                RowSpacing="3">
+            <TextBlock Text="联系信息"
+                       Foreground="{DynamicResource AuthorMutedForeground}"
+                       FontSize="12"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center" />
+
+            <Border Grid.Row="1"
+                    Background="Transparent" />
+
+            <Button Grid.Row="2"
+                    Classes="contactRow"
+                    Click="OnEmailClick">
+              <Grid ColumnDefinitions="28,*" ColumnSpacing="12">
+                <Viewbox Width="20"
+                         Height="20"
+                         VerticalAlignment="Center">
+                  <Canvas Width="24" Height="24">
+                    <Path Data="M 3 6.5 C 3 5.7 3.7 5 4.5 5 L 19.5 5 C 20.3 5 21 5.7 21 6.5 L 21 17.5 C 21 18.3 20.3 19 19.5 19 L 4.5 19 C 3.7 19 3 18.3 3 17.5 Z M 4 7 L 12 13 L 20 7"
+                          Stroke="{DynamicResource AuthorIconForeground}"
+                          StrokeThickness="1.8"
+                          StrokeLineCap="Round"
+                          Fill="Transparent" />
+                  </Canvas>
+                </Viewbox>
+                <TextBlock Grid.Column="1"
+                           Text="achordchan@gmail.com"
+                           Foreground="{DynamicResource AuthorForeground}"
+                           FontSize="15"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center" />
+              </Grid>
+            </Button>
+
+            <Border Grid.Row="3"
+                    Height="1"
+                    Background="{DynamicResource AuthorLine}" />
+
+            <Grid Grid.Row="4"
+                  ColumnDefinitions="28,*"
+                  ColumnSpacing="12">
+              <Viewbox Width="20"
+                       Height="20"
+                       VerticalAlignment="Center">
+                <Canvas Width="24" Height="24">
+                  <Path Data="M 7.2 4.5 C 6.8 3.5 5.8 3 4.8 3.3 L 3.6 3.7 C 2.8 4 2.4 4.8 2.5 5.6 C 3.3 12.5 8.7 18 15.6 21.1 C 16.4 21.5 17.3 21.3 17.9 20.7 L 18.8 19.8 C 19.6 19 19.6 17.8 18.8 17 L 16.9 15.1 C 16.3 14.5 15.3 14.4 14.6 14.9 L 13.5 15.6 C 11.5 14.4 9.8 12.7 8.6 10.7 L 9.3 9.6 C 9.8 8.9 9.7 7.9 9.1 7.3 Z"
+                        Stroke="{DynamicResource AuthorIconForeground}"
+                        StrokeThickness="1.8"
+                        StrokeLineCap="Round"
+                        Fill="Transparent" />
+                </Canvas>
+              </Viewbox>
               <TextBlock Grid.Column="1"
-                         Text="achordchan@gmail.com"
-                         Foreground="{DynamicResource AppForeground}"
-                         FontSize="14"
-                         HorizontalAlignment="Left"
+                         Text="131 6023 5855"
+                         Foreground="{DynamicResource AuthorForeground}"
+                         FontSize="15"
+                         FontWeight="SemiBold"
                          VerticalAlignment="Center" />
             </Grid>
-          </Button>
 
-          <Border Grid.Row="1"
-                  Height="1"
-                  Background="{DynamicResource AuthorRaisedBorder}" />
+            <Border Grid.Row="5"
+                    Height="1"
+                    Background="{DynamicResource AuthorLine}" />
 
-          <Grid Grid.Row="2"
-                ColumnDefinitions="44,*"
-                ColumnSpacing="12">
-            <TextBlock Text="Phone"
-                       Foreground="{DynamicResource AppMuted2Foreground}"
-                       FontSize="11"
-                       VerticalAlignment="Center" />
-            <TextBlock Grid.Column="1"
-                       Text="131 6023 5855"
-                       Foreground="{DynamicResource AppForeground}"
-                       FontSize="14"
-                       HorizontalAlignment="Left"
-                       VerticalAlignment="Center" />
+            <Grid Grid.Row="6"
+                  ColumnDefinitions="28,*"
+                  ColumnSpacing="12">
+              <Viewbox Width="18"
+                       Height="18"
+                       VerticalAlignment="Center">
+                <Canvas Width="24" Height="24">
+                  <Path Data="M 12 13 C 14.2 13 16 11.2 16 9 C 16 6.8 14.2 5 12 5 C 9.8 5 8 6.8 8 9 C 8 11.2 9.8 13 12 13 Z M 5 21 C 5.8 17.5 8.4 15.5 12 15.5 C 15.6 15.5 18.2 17.5 19 21"
+                        Stroke="{DynamicResource AuthorIconForeground}"
+                        StrokeThickness="1.8"
+                        StrokeLineCap="Round"
+                        Fill="Transparent" />
+                </Canvas>
+              </Viewbox>
+              <TextBlock Grid.Column="1"
+                         Text="Independent Builder"
+                         Foreground="{DynamicResource AuthorMutedForeground}"
+                         FontSize="13"
+                         FontWeight="SemiBold"
+                         VerticalAlignment="Center" />
+            </Grid>
           </Grid>
-        </Grid>
-      </Border>
+        </Border>
+      </Grid>
 
       <Grid Grid.Row="2"
-            Width="436"
-            HorizontalAlignment="Center"
-            ColumnDefinitions="101,101,101,101"
-            RowDefinitions="64"
+            ColumnDefinitions="*,*,*,*"
             ColumnSpacing="10">
-        <Button Grid.Row="0"
-                Grid.Column="0"
-                HorizontalAlignment="Stretch"
-                VerticalAlignment="Stretch"
-                Background="{DynamicResource AuthorPrimaryBackground}"
-                Foreground="{DynamicResource AuthorPrimaryForeground}"
-                BorderBrush="Transparent"
-                BorderThickness="0"
-                CornerRadius="15"
-                Padding="12,12"
-                HorizontalContentAlignment="Stretch"
+        <Button Grid.Column="0"
+                Classes="authorAction"
                 Click="OnProjectClick">
-          <StackPanel Spacing="4">
-            <TextBlock Text="PROJECT"
-                       Foreground="{DynamicResource AuthorAccentForeground}"
-                       FontSize="10"
-                       FontWeight="SemiBold"
-                       LetterSpacing="1.4" />
-            <TextBlock Text="项目主页"
-                       FontSize="14"
-                       FontWeight="SemiBold" />
-          </StackPanel>
+          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="6">
+            <Border Width="3"
+                    Height="30"
+                    Background="{DynamicResource AuthorAccent}"
+                    CornerRadius="2"
+                    VerticalAlignment="Center" />
+            <Grid Grid.Column="1"
+                  ColumnDefinitions="16,*"
+                  ColumnSpacing="6"
+                  VerticalAlignment="Center">
+              <Viewbox Width="16" Height="16">
+                <Canvas Width="24" Height="24">
+                  <Path Data="M 12 21 C 17 21 21 17 21 12 C 21 7 17 3 12 3 C 7 3 3 7 3 12 C 3 17 7 21 12 21 Z M 3.5 12 L 20.5 12 M 12 3 C 9.6 5.5 8.5 8.5 8.5 12 C 8.5 15.5 9.6 18.5 12 21 M 12 3 C 14.4 5.5 15.5 8.5 15.5 12 C 15.5 15.5 14.4 18.5 12 21"
+                        Stroke="{DynamicResource AuthorIconForeground}"
+                        StrokeThickness="1.8"
+                        StrokeLineCap="Round"
+                        Fill="Transparent" />
+                </Canvas>
+              </Viewbox>
+              <TextBlock Grid.Column="1"
+                         Text="项目主页"
+                         FontSize="13"
+                         FontWeight="SemiBold"
+                         VerticalAlignment="Center" />
+            </Grid>
+          </Grid>
         </Button>
 
-        <Button Grid.Row="0"
-                Grid.Column="1"
-                HorizontalAlignment="Stretch"
-                VerticalAlignment="Stretch"
-                Background="{DynamicResource AuthorRaisedBackground}"
-                Foreground="{DynamicResource AppForeground}"
-                BorderBrush="{DynamicResource AuthorRaisedBorder}"
-                BorderThickness="1"
-                CornerRadius="15"
-                Padding="12,12"
-                HorizontalContentAlignment="Stretch"
+        <Button Grid.Column="1"
+                Classes="authorAction"
                 Click="OnPrivacyClick">
-          <StackPanel Spacing="4">
-            <TextBlock Text="LEGAL"
-                       Foreground="{DynamicResource AuthorAccentForeground}"
-                       FontSize="10"
+          <Grid ColumnDefinitions="16,*" ColumnSpacing="6">
+            <Viewbox Width="16" Height="16">
+              <Canvas Width="24" Height="24">
+                <Path Data="M 12 3 L 20 6 L 20 11 C 20 15.6 17.2 19.2 12 21 C 6.8 19.2 4 15.6 4 11 L 4 6 Z M 9 12 L 11.2 14.2 L 15.5 9.7"
+                      Stroke="{DynamicResource AuthorIconForeground}"
+                      StrokeThickness="1.8"
+                      StrokeLineCap="Round"
+                      Fill="Transparent" />
+              </Canvas>
+            </Viewbox>
+            <TextBlock Grid.Column="1"
+                       Text="隐私条款"
+                       FontSize="13"
                        FontWeight="SemiBold"
-                       LetterSpacing="1.4" />
-            <TextBlock Text="隐私条款"
-                       FontSize="14"
-                       FontWeight="SemiBold" />
-          </StackPanel>
+                       VerticalAlignment="Center" />
+          </Grid>
         </Button>
 
-        <Button Grid.Row="0"
-                Grid.Column="2"
-                HorizontalAlignment="Stretch"
-                VerticalAlignment="Stretch"
-                Background="{DynamicResource AuthorRaisedBackground}"
-                Foreground="{DynamicResource AppForeground}"
-                BorderBrush="{DynamicResource AuthorRaisedBorder}"
-                BorderThickness="1"
-                CornerRadius="15"
-                Padding="12,12"
-                HorizontalContentAlignment="Stretch"
+        <Button Grid.Column="2"
+                Classes="authorAction"
                 Click="OnLicenseClick">
-          <StackPanel Spacing="4">
-            <TextBlock Text="LICENSE"
-                       Foreground="{DynamicResource AuthorAccentForeground}"
-                       FontSize="10"
+          <Grid ColumnDefinitions="16,*" ColumnSpacing="6">
+            <Viewbox Width="16" Height="16">
+              <Canvas Width="24" Height="24">
+                <Path Data="M 9 6 L 4 12 L 9 18 M 15 6 L 20 12 L 15 18 M 13.2 5 L 10.8 19"
+                      Stroke="{DynamicResource AuthorIconForeground}"
+                      StrokeThickness="1.9"
+                      StrokeLineCap="Round"
+                      Fill="Transparent" />
+              </Canvas>
+            </Viewbox>
+            <TextBlock Grid.Column="1"
+                       Text="开源许可"
+                       FontSize="13"
                        FontWeight="SemiBold"
-                       LetterSpacing="1.4" />
-            <TextBlock Text="开源许可"
-                       FontSize="14"
-                       FontWeight="SemiBold" />
-          </StackPanel>
+                       VerticalAlignment="Center" />
+          </Grid>
         </Button>
 
-        <Button Grid.Row="0"
-                Grid.Column="3"
-                HorizontalAlignment="Stretch"
-                VerticalAlignment="Stretch"
-                Background="{DynamicResource AuthorRaisedBackground}"
-                Foreground="{DynamicResource AppForeground}"
-                BorderBrush="{DynamicResource AuthorRaisedBorder}"
-                BorderThickness="1"
-                CornerRadius="15"
-                Padding="12,12"
-                HorizontalContentAlignment="Stretch"
+        <Button Grid.Column="3"
+                Classes="authorAction"
                 Click="OnSponsorClick">
-          <StackPanel Spacing="4">
-            <TextBlock Text="SUPPORT"
-                       Foreground="{DynamicResource AuthorAccentForeground}"
-                       FontSize="10"
+          <Grid ColumnDefinitions="16,*" ColumnSpacing="6">
+            <Viewbox Width="16" Height="16">
+              <Canvas Width="24" Height="24">
+                <Path Data="M 12 20 C 8 16.5 4.5 13.6 4.5 9.4 C 4.5 6.8 6.4 5 8.7 5 C 10 5 11.2 5.7 12 6.8 C 12.8 5.7 14 5 15.3 5 C 17.6 5 19.5 6.8 19.5 9.4 C 19.5 13.6 16 16.5 12 20 Z"
+                      Stroke="{DynamicResource AuthorIconForeground}"
+                      StrokeThickness="1.8"
+                      StrokeLineCap="Round"
+                      Fill="Transparent" />
+              </Canvas>
+            </Viewbox>
+            <TextBlock Grid.Column="1"
+                       Text="赞助作者"
+                       FontSize="13"
                        FontWeight="SemiBold"
-                       LetterSpacing="1.4" />
-            <TextBlock Text="赞助作者"
-                       FontSize="14"
-                       FontWeight="SemiBold" />
-          </StackPanel>
+                       VerticalAlignment="Center" />
+          </Grid>
         </Button>
       </Grid>
     </Grid>
