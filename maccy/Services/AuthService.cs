@@ -42,7 +42,7 @@ public sealed class AuthService
 
     public async Task<string?> GetCurrentEmailAsync(string baseUrl, string accessToken, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(accessToken))
+        if (string.IsNullOrWhiteSpace(accessToken))
             return null;
 
         using var req = new HttpRequestMessage(HttpMethod.Get, NormalizeBaseUrl(baseUrl) + "/auth/me");
@@ -95,7 +95,7 @@ public sealed class AuthService
     {
         var url = (value ?? string.Empty).Trim().TrimEnd('/');
         if (string.IsNullOrWhiteSpace(url))
-            throw new InvalidOperationException("missing NAS base url");
+            return ServerDefaults.OfficialSyncBaseUrl;
         return url;
     }
 

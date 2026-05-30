@@ -593,14 +593,9 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         if (AuthBusy)
             return;
 
-        var baseUrl = (_settings.Current.NasAgentBaseUrl ?? string.Empty).Trim();
+        var baseUrl = EnsureOfficialSyncBaseUrl();
         var email = (AuthEmailText ?? string.Empty).Trim();
         var password = AuthPasswordText ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(baseUrl))
-        {
-            ToastService.Instance.Show("请先填写 NAS 地址");
-            return;
-        }
         if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
         {
             ToastService.Instance.Show("请输入邮箱和密码");
@@ -625,9 +620,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
                 s.AuthIdToken = token.IdToken;
                 s.AuthExpiresAtUnixMs = token.ExpiresAtUtc.ToUnixTimeMilliseconds();
                 s.AuthUserEmail = token.Email ?? email;
-                // 自动填充官方服务器地址
-                if (string.IsNullOrWhiteSpace(s.NasAgentBaseUrl))
-                    s.NasAgentBaseUrl = ServerDefaults.OfficialSyncBaseUrl;
+                s.NasAgentBaseUrl = ServerDefaults.OfficialSyncBaseUrl;
             });
 
             ReloadFromSettings();
@@ -656,14 +649,9 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         if (AuthBusy)
             return;
 
-        var baseUrl = (_settings.Current.NasAgentBaseUrl ?? string.Empty).Trim();
+        var baseUrl = EnsureOfficialSyncBaseUrl();
         var email = (AuthEmailText ?? string.Empty).Trim();
         var password = AuthPasswordText ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(baseUrl))
-        {
-            ToastService.Instance.Show("请先填写 NAS 地址");
-            return;
-        }
         if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
         {
             ToastService.Instance.Show("请输入邮箱和密码");
@@ -687,8 +675,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
                 s.AuthIdToken = token.IdToken;
                 s.AuthExpiresAtUnixMs = token.ExpiresAtUtc.ToUnixTimeMilliseconds();
                 s.AuthUserEmail = token.Email ?? email;
-                if (string.IsNullOrWhiteSpace(s.NasAgentBaseUrl))
-                    s.NasAgentBaseUrl = ServerDefaults.OfficialSyncBaseUrl;
+                s.NasAgentBaseUrl = ServerDefaults.OfficialSyncBaseUrl;
             });
 
             ReloadFromSettings();
@@ -721,9 +708,19 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         ToastService.Instance.Show("已退出登录");
     }
 
+    private string EnsureOfficialSyncBaseUrl()
+    {
+        var current = (_settings.Current.NasAgentBaseUrl ?? string.Empty).Trim().TrimEnd('/');
+        var official = ServerDefaults.OfficialSyncBaseUrl.TrimEnd('/');
+        if (!string.Equals(current, official, StringComparison.OrdinalIgnoreCase))
+            _settings.Update(s => s.NasAgentBaseUrl = ServerDefaults.OfficialSyncBaseUrl);
+
+        return ServerDefaults.OfficialSyncBaseUrl;
+    }
+
     private void SaveNasUrl()
     {
-        var v = (NasAgentBaseUrlDraft ?? string.Empty).Trim();
+        var v = ServerDefaults.OfficialSyncBaseUrl;
         var current = (_settings.Current.NasAgentBaseUrl ?? string.Empty).Trim();
         if (string.Equals(current, v, StringComparison.Ordinal))
             return;
@@ -731,7 +728,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         _settings.Update(s => s.NasAgentBaseUrl = v);
         NasAgentBaseUrlText = v;
         OnPropertyChanged(nameof(IsNasUrlDirty));
-        ToastService.Instance.Show("设置已生效");
+        ToastService.Instance.Show("云同步服务已使用官方地址");
     }
 
     partial void OnNasAgentBaseUrlDraftChanged(string value)
@@ -749,12 +746,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         if (NasBusy)
             return;
 
-        var baseUrl = (_settings.Current.NasAgentBaseUrl ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(baseUrl))
-        {
-            ToastService.Instance.Show("请先填写 NAS 地址");
-            return;
-        }
+        var baseUrl = EnsureOfficialSyncBaseUrl();
 
         try
         {
@@ -763,7 +755,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
             var client = new NasAgentClient(baseUrl);
             var ok = await client.CheckHealthAsync(ct);
-            ToastService.Instance.Show(ok ? "NAS Agent 正常" : "NAS Agent 不可达");
+            ToastService.Instance.Show(ok ? "云同步服务正常" : "云同步服务不可达");
         }
         catch (OperationCanceledException)
         {
@@ -771,7 +763,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         }
         catch
         {
-            ToastService.Instance.Show("NAS Agent 不可达");
+            ToastService.Instance.Show("云同步服务不可达");
         }
         finally
         {
@@ -797,7 +789,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
             var uploadResult = await _sync.UploadAsync(ct, reason: "preferences_upload");
             await PersistSyncStateAfterUploadAsync(uploadResult, null, ct);
-            ToastService.Instance.Show("已上传到 NAS");
+            ToastService.Instance.Show("已上传到云端");
         }
         catch (OperationCanceledException)
         {
@@ -896,7 +888,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
             await _sync.DownloadAndApplyAsync(ct, reason: "preferences_restore");
             await PersistSyncStateAfterDownloadAsync(ct);
             ReloadFromSettings();
-            ToastService.Instance.Show("已从 NAS 恢复");
+            ToastService.Instance.Show("已从云端恢复");
         }
         catch (OperationCanceledException)
         {
@@ -916,7 +908,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
     private async Task RefreshSubscriptionAsync(CancellationToken ct)
     {
-        var baseUrl = _settings.Current.NasAgentBaseUrl;
+        var baseUrl = EnsureOfficialSyncBaseUrl();
         var token = await EnsureAccessTokenAsync(ct);
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(token))
         {
@@ -976,7 +968,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
             return;
         }
 
-        var baseUrl = _settings.Current.NasAgentBaseUrl;
+        var baseUrl = EnsureOfficialSyncBaseUrl();
         var token = await EnsureAccessTokenAsync(ct);
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(token))
         {
@@ -1086,7 +1078,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
             if (string.Equals(msg, "not logged in", StringComparison.Ordinal))
                 return "请先登录";
             if (string.Equals(msg, "missing NAS base url", StringComparison.Ordinal))
-                return "请先填写 NAS 地址";
+                return "云同步服务地址缺失，请重启应用后重试";
             if (string.Equals(msg, "subscription expired", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(msg, "订阅已过期", StringComparison.Ordinal))
                 return "订阅已过期，请续费后重试";
@@ -1209,9 +1201,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
     private async Task<string?> EnsureAccessTokenAsync(CancellationToken ct)
     {
         var current = _settings.Current;
-        var baseUrl = (_settings.Current.NasAgentBaseUrl ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(baseUrl))
-            return null;
+        var baseUrl = EnsureOfficialSyncBaseUrl();
 
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var access = (current.AuthAccessToken ?? string.Empty).Trim();
@@ -1239,6 +1229,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
                 s.AuthIdToken = string.IsNullOrWhiteSpace(token.IdToken) ? current.AuthIdToken : token.IdToken;
                 s.AuthExpiresAtUnixMs = token.ExpiresAtUtc.ToUnixTimeMilliseconds();
                 s.AuthUserEmail = string.IsNullOrWhiteSpace(token.Email) ? current.AuthUserEmail : token.Email;
+                s.NasAgentBaseUrl = ServerDefaults.OfficialSyncBaseUrl;
             });
 
             ReloadFromSettings();

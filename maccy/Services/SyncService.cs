@@ -444,9 +444,12 @@ public sealed class SyncService
     {
         var s = _settings.Current;
 
-        var baseUrl = (s.NasAgentBaseUrl ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(baseUrl))
-            throw new InvalidOperationException("missing NAS base url");
+        var baseUrl = NormalizeOfficialSyncBaseUrl();
+        if (!string.Equals((s.NasAgentBaseUrl ?? string.Empty).Trim().TrimEnd('/'), baseUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            _settings.Update(x => x.NasAgentBaseUrl = ServerDefaults.OfficialSyncBaseUrl);
+            s = _settings.Current;
+        }
 
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         if (s.AuthExpiresAtUnixMs <= nowMs + 60_000)
@@ -458,6 +461,11 @@ public sealed class SyncService
             throw new InvalidOperationException("not logged in");
 
         return (baseUrl, token);
+    }
+
+    private static string NormalizeOfficialSyncBaseUrl()
+    {
+        return ServerDefaults.OfficialSyncBaseUrl.TrimEnd('/');
     }
 
     private static bool IsAuthError(NasAgentApiException ex)
@@ -523,7 +531,7 @@ public sealed class SyncService
 
         try
         {
-            var token = await _authing.RefreshAsync(_settings.Current.NasAgentBaseUrl, refresh, ct);
+            var token = await _authing.RefreshAsync(ServerDefaults.OfficialSyncBaseUrl, refresh, ct);
             _settings.Update(s =>
             {
                 s.AuthAccessToken = token.AccessToken;
@@ -531,6 +539,7 @@ public sealed class SyncService
                 s.AuthIdToken = string.IsNullOrWhiteSpace(token.IdToken) ? current.AuthIdToken : token.IdToken;
                 s.AuthExpiresAtUnixMs = token.ExpiresAtUtc.ToUnixTimeMilliseconds();
                 s.AuthUserEmail = string.IsNullOrWhiteSpace(token.Email) ? current.AuthUserEmail : token.Email;
+                s.NasAgentBaseUrl = ServerDefaults.OfficialSyncBaseUrl;
             });
             return true;
         }

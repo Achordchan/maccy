@@ -1,5 +1,4 @@
 using System;
-using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -95,11 +94,16 @@ public sealed class WindowsHotkeyService : IDisposable
         if (_hwnd == IntPtr.Zero)
             return;
 
-        if (!NativeMethods.RegisterHotKey(_hwnd, 1, _modifiers, _vk))
-            throw new Win32Exception(Marshal.GetLastWin32Error());
-
+        var hotkeyRegistered = false;
         try
         {
+            hotkeyRegistered = NativeMethods.RegisterHotKey(_hwnd, 1, _modifiers, _vk);
+            if (!hotkeyRegistered)
+            {
+                _running = false;
+                return;
+            }
+
             while (_running && NativeMethods.GetMessage(out var msg, IntPtr.Zero, 0, 0))
             {
                 NativeMethods.TranslateMessage(ref msg);
@@ -110,8 +114,17 @@ public sealed class WindowsHotkeyService : IDisposable
         {
             try
             {
-                if (_hwnd != IntPtr.Zero)
+                if (hotkeyRegistered && _hwnd != IntPtr.Zero)
                     NativeMethods.UnregisterHotKey(_hwnd, 1);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                if (_hwnd != IntPtr.Zero)
+                    NativeMethods.DestroyWindow(_hwnd);
             }
             catch
             {

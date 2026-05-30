@@ -45,4 +45,8 @@ venv/
 tmp/
 build_tmp/
 
+# Local agent/browser temp files
+.codex-tmp/
+.playwright-mcp/
+
 update.md

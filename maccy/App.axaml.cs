@@ -43,8 +43,6 @@ public partial class App : Application
     private UpdateCoordinator? _updateCoordinator;
     private DispatcherTimer? _updateCheckTimer;
 
-    private bool _allowExit;
-
     private DispatcherTimer? _autoHideRetryTimer;
 
     private IClassicDesktopStyleApplicationLifetime? _desktop;
@@ -55,6 +53,10 @@ public partial class App : Application
     private static readonly TimeSpan TrayDoubleClickThreshold = TimeSpan.FromMilliseconds(380);
 
     private const string AppMutexName = "maccy_mutex";
+
+    private const string StartupAlreadyRunningMessage = "Maccy 已在运行，禁止多开。";
+
+    private const string StartupAlreadyRunningTitle = "Maccy";
 
     private const string UpdateManifestUrl = "https://gitee.com/Achordchan/maccy/raw/master/docs/updates/manifest.json";
 
@@ -286,14 +288,6 @@ public partial class App : Application
     {
         try
         {
-            _allowExit = true;
-        }
-        catch
-        {
-        }
-
-        try
-        {
             _prefsWindow?.Close();
         }
         catch
@@ -383,6 +377,70 @@ public partial class App : Application
         }
     }
 
+    private bool TryAcquireSingleInstanceLock()
+    {
+        try
+        {
+            _appMutex = new Mutex(false, AppMutexName, out var createdNew);
+            if (createdNew)
+                return true;
+
+            Debug.WriteLine(StartupAlreadyRunningMessage);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _appMutex = null;
+            Debug.WriteLine($"创建单实例互斥锁失败，将继续启动: {ex}");
+            return true;
+        }
+    }
+
+    private void ShowAlreadyRunningDialog()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            _ = NativeMethods.MessageBox(
+                IntPtr.Zero,
+                StartupAlreadyRunningMessage,
+                StartupAlreadyRunningTitle,
+                NativeMethods.MB_OK | NativeMethods.MB_ICONINFORMATION | NativeMethods.MB_SETFOREGROUND | NativeMethods.MB_TOPMOST);
+        }
+        catch
+        {
+        }
+    }
+
+    private void RegisterHotkey(MainWindow window)
+    {
+        if (_hotkey is not null)
+            return;
+
+        try
+        {
+            _hotkey = new WindowsHotkeyService(
+                WindowsHotkeyService.MOD_CONTROL | WindowsHotkeyService.MOD_ALT,
+                WindowsHotkeyService.VK_2);
+            _hotkey.HotkeyPressed += (_, _) =>
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    ToggleWindowNearCursor(window);
+                });
+            };
+            _hotkey.Start();
+        }
+        catch (Exception ex)
+        {
+            _hotkey?.Dispose();
+            _hotkey = null;
+            Debug.WriteLine($"启动热键服务失败: {ex}");
+        }
+    }
+
     public override void OnFrameworkInitializationCompleted()
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
@@ -390,13 +448,14 @@ public partial class App : Application
             _desktop = desktop;
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
-            try
+            if (!TryAcquireSingleInstanceLock())
             {
-                _appMutex = new Mutex(false, AppMutexName);
-            }
-            catch
-            {
+                ShowAlreadyRunningDialog();
+                _appMutex?.Dispose();
                 _appMutex = null;
+                desktop.Shutdown();
+                Environment.Exit(0);
+                return;
             }
 
             // Avoid duplicate validations from both Avalonia and the CommunityToolkit. 
@@ -501,18 +560,6 @@ public partial class App : Application
                 };
             }
 
-            _hotkey = new WindowsHotkeyService(
-                WindowsHotkeyService.MOD_CONTROL | WindowsHotkeyService.MOD_ALT,
-                WindowsHotkeyService.VK_2);
-            _hotkey.HotkeyPressed += (_, _) =>
-            {
-                Dispatcher.UIThread.Post(() =>
-                {
-                    ToggleWindowNearCursor(window);
-                });
-            };
-            _hotkey.Start();
-
             window.Hide();
 
             _clipboardWatcher = new WindowsClipboardWatcher();
@@ -525,6 +572,9 @@ public partial class App : Application
                 });
             };
             _clipboardWatcher.Start();
+
+            // 主流程稳定后再注册全局热键，降低启动期卡死概率。
+            DispatcherTimer.RunOnce(() => RegisterHotkey(window), TimeSpan.FromMilliseconds(800));
 
             desktop.Exit += (_, _) =>
             {
@@ -705,6 +755,13 @@ public partial class App : Application
     private static class NativeMethods
     {
         public const int SW_SHOWNORMAL = 1;
+        public const uint MB_OK = 0x00000000;
+        public const uint MB_ICONINFORMATION = 0x00000040;
+        public const uint MB_SETFOREGROUND = 0x00010000;
+        public const uint MB_TOPMOST = 0x00040000;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int MessageBox(IntPtr hWnd, string lpText, string lpCaption, uint uType);
 
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hWnd);

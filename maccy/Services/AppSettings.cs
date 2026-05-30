@@ -16,7 +16,7 @@ public sealed class AppSettings
 
     public string? AuthUserEmail { get; set; }
 
-    public string NasAgentBaseUrl { get; set; } = string.Empty;
+    public string NasAgentBaseUrl { get; set; } = ServerDefaults.OfficialSyncBaseUrl;
 
     public string? SyncLastLocalFingerprint { get; set; }
 

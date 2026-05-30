@@ -767,7 +767,7 @@ public partial class MainWindowViewModel : ViewModelBase
         if (!CanAutoSync())
         {
             if (manual)
-                ShowToast("请先登录并填写 NAS 地址");
+                ShowToast("请先登录");
             Interlocked.Exchange(ref _syncGate, 0);
             return;
         }
@@ -905,9 +905,6 @@ public partial class MainWindowViewModel : ViewModelBase
         if (_settings is null)
             return false;
         var s = _settings.Current;
-        if (string.IsNullOrWhiteSpace(s.NasAgentBaseUrl))
-            return false;
-
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var hasValidAccess = !string.IsNullOrWhiteSpace(s.AuthAccessToken)
             && s.AuthExpiresAtUnixMs > nowMs + 60_000;
@@ -942,7 +939,7 @@ public partial class MainWindowViewModel : ViewModelBase
             if (string.Equals(msg, "not logged in", StringComparison.Ordinal))
                 return "登录已失效，请重新登录";
             if (string.Equals(msg, "missing NAS base url", StringComparison.Ordinal))
-                return "请先填写 NAS 地址";
+                return "云同步服务地址缺失，请重启应用后重试";
             if (!string.IsNullOrWhiteSpace(msg))
                 return msg;
         }
@@ -972,7 +969,7 @@ public partial class MainWindowViewModel : ViewModelBase
             var msg = (hre.Message ?? string.Empty).Trim();
             if (!string.IsNullOrWhiteSpace(msg))
                 return "同步服务不可达：" + msg;
-            return "同步服务不可达，请检查 NAS 地址和反向代理";
+            return "同步服务不可达，请稍后重试";
         }
 
         if (ex is OperationCanceledException)

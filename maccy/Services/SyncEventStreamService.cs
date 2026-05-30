@@ -95,12 +95,7 @@ public sealed class SyncEventStreamService : IDisposable
         {
             try
             {
-                var baseUrl = (_settings.Current.NasAgentBaseUrl ?? string.Empty).Trim();
-                if (string.IsNullOrWhiteSpace(baseUrl))
-                {
-                    await Task.Delay(delay, ct);
-                    continue;
-                }
+                var baseUrl = ServerDefaults.OfficialSyncBaseUrl;
 
                 var accessToken = await EnsureAccessTokenAsync(ct);
                 if (string.IsNullOrWhiteSpace(accessToken))
@@ -214,9 +209,6 @@ public sealed class SyncEventStreamService : IDisposable
     private async Task<string?> EnsureAccessTokenAsync(CancellationToken ct)
     {
         var current = _settings.Current;
-        var baseUrl = (current.NasAgentBaseUrl ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(baseUrl))
-            return null;
 
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var access = (current.AuthAccessToken ?? string.Empty).Trim();
@@ -229,14 +221,13 @@ public sealed class SyncEventStreamService : IDisposable
     private async Task<bool> TryRefreshAndPersistAsync(CancellationToken ct)
     {
         var current = _settings.Current;
-        var baseUrl = (current.NasAgentBaseUrl ?? string.Empty).Trim();
         var refresh = (current.AuthRefreshToken ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(refresh))
+        if (string.IsNullOrWhiteSpace(refresh))
             return false;
 
         try
         {
-            var token = await _authing.RefreshAsync(baseUrl, refresh, ct);
+            var token = await _authing.RefreshAsync(ServerDefaults.OfficialSyncBaseUrl, refresh, ct);
             _settings.Update(s =>
             {
                 s.AuthAccessToken = token.AccessToken;
@@ -244,6 +235,7 @@ public sealed class SyncEventStreamService : IDisposable
                 s.AuthIdToken = string.IsNullOrWhiteSpace(token.IdToken) ? current.AuthIdToken : token.IdToken;
                 s.AuthExpiresAtUnixMs = token.ExpiresAtUtc.ToUnixTimeMilliseconds();
                 s.AuthUserEmail = string.IsNullOrWhiteSpace(token.Email) ? current.AuthUserEmail : token.Email;
+                s.NasAgentBaseUrl = ServerDefaults.OfficialSyncBaseUrl;
             });
             return true;
         }
@@ -260,10 +252,6 @@ public sealed class SyncEventStreamService : IDisposable
 
     private static string BuildConnectionSignature(AppSettings settings)
     {
-        var baseUrl = (settings.NasAgentBaseUrl ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(baseUrl))
-            return string.Empty;
-
         var access = (settings.AuthAccessToken ?? string.Empty).Trim();
         var refresh = (settings.AuthRefreshToken ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(access) && string.IsNullOrWhiteSpace(refresh))
@@ -271,7 +259,7 @@ public sealed class SyncEventStreamService : IDisposable
 
         return string.Join(
             "|",
-            baseUrl,
+            ServerDefaults.OfficialSyncBaseUrl,
             access,
             refresh,
             settings.AuthExpiresAtUnixMs.ToString());
