@@ -1,21 +1,21 @@
 {
   "appId": "maccy",
   "latest": {
-    "version": "1.0.9",
+    "version": "1.0.10",
     "mandatory": false,
-    "notes": "新增轻量更新能力：新版本检测后在主窗口版本号旁显示更新按钮，优先使用 zip 替换包后台更新，并保留安装包兜底。发布脚本现在同时生成 setup.exe 与 win-x64.zip，并更新 manifest.package。",
-    "publishedAt": "2026-05-30T18:49:23Z",
+    "notes": "Password recovery with email verification code; account settings and author page refinements.",
+    "publishedAt": "2026-05-30T20:22:32Z",
     "installer": {
-      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.9/maccy-1.0.9-setup.exe",
-      "sha256": "D88B7F5DBEF8442B0BA0787C1FA27E59C2E3C9D1820B7FB337DCE17893490F35",
-      "size": 10770070
+      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.10/maccy-1.0.10-setup.exe",
+      "sha256": "62CA370096EDC4BF39382BD2FE126BF2822C871CDCAF2FF88C66024B420038B5",
+      "size": 10779213
     },
     "package": {
       "kind": "zip",
       "runtime": "win-x64",
-      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.9/maccy-1.0.9-win-x64.zip",
-      "sha256": "74F46E7832EDECD642FF8B797C4128B986CDF743DFD101F8542F33E299EB757C",
-      "size": 12205695
+      "url": "https://gitee.com/Achordchan/maccy/releases/download/v1.0.10/maccy-1.0.10-win-x64.zip",
+      "sha256": "0B89D58CFF7BB8EA48C9F8ABA03C828BB8B366218D2AD6E151EBB14D21006B69",
+      "size": 12217580
     }
   }
 }
