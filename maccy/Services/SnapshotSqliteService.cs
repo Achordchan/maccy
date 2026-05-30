@@ -19,6 +19,8 @@ public sealed class SnapshotSqliteService
 
     public sealed record SnapshotExportResult(long SnapshotSize, string SnapshotSha256, IReadOnlyList<SnapshotBlob> Blobs);
 
+    public sealed record SnapshotReadResult(AppSettings? Settings, IReadOnlyList<ClipboardItem> Items, int ImageCount, int FileCount);
+
     public async Task<SnapshotExportResult> ExportAsync(
         string snapshotPath,
         IReadOnlyList<ClipboardItem> items,
@@ -124,6 +126,24 @@ CREATE TABLE item_files (
         Func<string, CancellationToken, Task<string?>>? ensureBlobPathAsync = null,
         CancellationToken ct = default)
     {
+        var data = await ReadAsync(snapshotPath, ensureBlobPathAsync, ct);
+
+        if (data.Settings is not null)
+        {
+            settings.Update(cur => CopySettings(cur, data.Settings));
+            ApplyHistoryLimits(history, settings.Current);
+        }
+
+        await history.ReplaceAllAsync(data.Items, ct);
+
+        return new SnapshotImportResult(data.Items.Count, data.ImageCount, data.FileCount);
+    }
+
+    public async Task<SnapshotReadResult> ReadAsync(
+        string snapshotPath,
+        Func<string, CancellationToken, Task<string?>>? ensureBlobPathAsync = null,
+        CancellationToken ct = default)
+    {
         if (string.IsNullOrWhiteSpace(snapshotPath))
             throw new ArgumentException("snapshotPath is empty", nameof(snapshotPath));
         if (!File.Exists(snapshotPath))
@@ -150,63 +170,60 @@ CREATE TABLE item_files (
                 if (item.Kind == ClipboardContentKind.Image)
                 {
                     var img = await ReadImageAsync(conn, item.Id, parsed, ct);
-                    if (img is not null)
-                    {
-                        var path = await WriteImportedImageAsync(img, ensureBlobPathAsync, ct);
-                        if (!string.IsNullOrWhiteSpace(path))
-                        {
-                            writtenImageCount++;
-                            items[i] = item with { ImageFilePath = path };
-                        }
-                    }
+                    if (img is null)
+                        throw new InvalidOperationException("snapshot image payload missing");
+
+                    var path = await WriteImportedImageAsync(img, ensureBlobPathAsync, ct);
+                    if (string.IsNullOrWhiteSpace(path))
+                        throw new InvalidOperationException("snapshot image blob missing");
+
+                    writtenImageCount++;
+                    items[i] = item with { ImageFilePath = path };
                 }
 
                 if (item.Kind == ClipboardContentKind.FileList)
                 {
                     var fileEntries = await ReadFilesAsync(conn, item.Id, parsed, ct);
-                    if (fileEntries.Count > 0)
+                    if (fileEntries.Count == 0)
+                        throw new InvalidOperationException("snapshot file payload missing");
+
+                    var dir = Path.Combine(AppPaths.FilesRoot, item.Id.ToString("N"));
+                    Directory.CreateDirectory(dir);
+                    var localPaths = new List<string>();
+
+                    foreach (var f in fileEntries)
                     {
-                        var dir = Path.Combine(AppPaths.FilesRoot, item.Id.ToString("N"));
-                        Directory.CreateDirectory(dir);
-                        var localPaths = new List<string>();
+                        var safeName = SanitizeFileName(f.FileName);
+                        var dest = Path.Combine(dir, f.Idx.ToString("D4") + "_" + safeName);
+                        var wrote = await WriteImportedFileAsync(dest, f, ensureBlobPathAsync, ct);
+                        if (!wrote)
+                            throw new InvalidOperationException("snapshot file blob missing");
 
-                        foreach (var f in fileEntries)
-                        {
-                            var safeName = SanitizeFileName(f.FileName);
-                            var dest = Path.Combine(dir, f.Idx.ToString("D4") + "_" + safeName);
-                            var wrote = await WriteImportedFileAsync(dest, f, ensureBlobPathAsync, ct);
-                            if (wrote)
-                            {
-                                writtenFileCount++;
-                                localPaths.Add(dest);
-                            }
-                        }
-
-                        if (localPaths.Count > 0)
-                            items[i] = item with { FilePaths = localPaths };
+                        writtenFileCount++;
+                        localPaths.Add(dest);
                     }
+
+                    items[i] = item with { FilePaths = localPaths };
                 }
             }
 
-            return (ImportedSettings: importedSettings, Items: items, WrittenImageCount: writtenImageCount, WrittenFileCount: writtenFileCount);
+            AppSettings? imported = null;
+            if (!string.IsNullOrWhiteSpace(importedSettings))
+            {
+                try
+                {
+                    imported = JsonSerializer.Deserialize<AppSettings>(importedSettings);
+                }
+                catch
+                {
+                    imported = null;
+                }
+            }
+
+            return new SnapshotReadResult(imported, items, writtenImageCount, writtenFileCount);
         }, ct);
 
-        if (!string.IsNullOrWhiteSpace(data.ImportedSettings))
-        {
-            try
-            {
-                var s = JsonSerializer.Deserialize<AppSettings>(data.ImportedSettings);
-                if (s is not null)
-                    settings.Update(cur => CopySettings(cur, s));
-            }
-            catch
-            {
-            }
-        }
-
-        await history.ReplaceAllAsync(data.Items, ct);
-
-        return new SnapshotImportResult(data.Items.Count, data.WrittenImageCount, data.WrittenFileCount);
+        return data;
     }
 
     private static async Task InsertMetaAsync(SqliteConnection conn, SqliteTransaction tx, CancellationToken ct)
@@ -300,19 +317,21 @@ INSERT OR REPLACE INTO items(
 
             if (item.Kind == ClipboardContentKind.Image)
             {
-                TryInsertImage(conn, tx, item, blobs, ct);
+                if (!TryInsertImage(conn, tx, item, blobs, ct))
+                    throw new InvalidOperationException("local image payload missing");
             }
 
             if (item.Kind == ClipboardContentKind.FileList)
             {
-                TryInsertFiles(conn, tx, item, blobs, ct);
+                if (!TryInsertFiles(conn, tx, item, blobs, ct))
+                    throw new InvalidOperationException("local file payload missing");
             }
 
             position++;
         }
     }
 
-    private static void TryInsertImage(
+    private static bool TryInsertImage(
         SqliteConnection conn,
         SqliteTransaction tx,
         ClipboardItem item,
@@ -320,7 +339,7 @@ INSERT OR REPLACE INTO items(
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(item.ImageFilePath) || !File.Exists(item.ImageFilePath))
-            return;
+            return false;
 
         string sha256;
         long sizeBytes;
@@ -329,16 +348,16 @@ INSERT OR REPLACE INTO items(
             var imageInfo = new FileInfo(item.ImageFilePath);
             sizeBytes = imageInfo.Length;
             if (sizeBytes <= 0)
-                return;
+                return false;
             sha256 = ComputeFileSha256(item.ImageFilePath);
         }
         catch
         {
-            return;
+            return false;
         }
 
         if (string.IsNullOrWhiteSpace(sha256))
-            return;
+            return false;
 
         var fileName = Path.GetFileName(item.ImageFilePath);
         if (string.IsNullOrWhiteSpace(fileName))
@@ -355,13 +374,15 @@ INSERT OR REPLACE INTO items(
         {
             cmd.ExecuteNonQuery();
             blobs[sha256] = new SnapshotBlob(sha256, item.ImageFilePath!, sizeBytes);
+            return true;
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
+            return false;
         }
     }
 
-    private static void TryInsertFiles(
+    private static bool TryInsertFiles(
         SqliteConnection conn,
         SqliteTransaction tx,
         ClipboardItem item,
@@ -401,7 +422,7 @@ INSERT OR REPLACE INTO items(
         {
             var paths = item.FilePaths?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
             if (paths is null || paths.Count == 0)
-                return;
+                return false;
 
             for (var i = 0; i < paths.Count; i++)
             {
@@ -415,8 +436,15 @@ INSERT OR REPLACE INTO items(
 
                 cachedFiles.Add((i, name, src));
             }
+
+            if (cachedFiles.Count != paths.Count)
+                return false;
         }
 
+        if (cachedFiles.Count == 0)
+            return false;
+
+        var exportedCount = 0;
         foreach (var f in cachedFiles.OrderBy(x => x.idx))
         {
             ct.ThrowIfCancellationRequested();
@@ -451,11 +479,14 @@ INSERT OR REPLACE INTO items(
             {
                 cmd.ExecuteNonQuery();
                 blobs[sha256] = new SnapshotBlob(sha256, f.path, sizeBytes);
+                exportedCount++;
             }
             catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
             {
             }
         }
+
+        return exportedCount == cachedFiles.Count;
     }
 
     private static async Task<string?> ReadMetaAsync(SqliteConnection conn, string key, CancellationToken ct)
@@ -759,6 +790,14 @@ ORDER BY position ASC;
         dest.ExcludePinnedFromLimits = src.ExcludePinnedFromLimits;
         dest.ShelfEnabled = src.ShelfEnabled;
         dest.ShelfTriggerModifier = src.ShelfTriggerModifier;
+    }
+
+    private static void ApplyHistoryLimits(ClipboardHistoryService history, AppSettings settings)
+    {
+        history.MaxItems = settings.MaxItems;
+        history.MaxBytes = (long)settings.MaxMegabytes * 1024 * 1024;
+        history.MergeDuplicates = settings.MergeDuplicates;
+        history.ExcludePinnedFromLimits = settings.ExcludePinnedFromLimits;
     }
 
     private static AppSettings CloneSettings(AppSettings src)

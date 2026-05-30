@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -8,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using maccy.Models;
 
 namespace maccy.Services;
 
@@ -139,21 +142,7 @@ public sealed class SyncService
             snapshotPath = Path.Combine(dir, "snapshot-" + Guid.NewGuid().ToString("N") + ".sqlite");
 
             reportProgress?.Invoke(new SyncProgress("download_snapshot", "下载快照", 52));
-            try
-            {
-                await client.DownloadSnapshotAsync(token, snapshotPath, ct);
-            }
-            catch (NasAgentApiException ex)
-            {
-                if (IsSubscriptionExpired(ex))
-                    throw new InvalidOperationException(SubscriptionExpiredError);
-                if (!IsAuthError(ex))
-                    throw;
-                if (!await TryRefreshAndPersistAsync(ct))
-                    throw;
-                var token2 = SelectBearerToken(_settings.Current);
-                await client.DownloadSnapshotAsync(token2, snapshotPath, ct);
-            }
+            token = await DownloadSnapshotWithRefreshAsync(client, token, snapshotPath, ct);
             WriteTimingLog("download", "download_snapshot", startedAt.ElapsedMilliseconds, $"{reason};size={TryGetFileSize(snapshotPath)}");
 
             reportProgress?.Invoke(new SyncProgress("import_snapshot", "导入快照", 76));
@@ -173,6 +162,69 @@ public sealed class SyncService
         {
             TryDeleteWithRetry(snapshotPath);
             WriteTimingLog("download", "finished", startedAt.ElapsedMilliseconds, reason);
+            Gate.Release();
+        }
+    }
+
+    public async Task MergeAndApplyAsync(
+        SyncManifestInfo basisManifest,
+        string preMergeLocalFingerprint,
+        CancellationToken ct,
+        Action<SyncProgress>? reportProgress = null,
+        string reason = "auto")
+    {
+        await Gate.WaitAsync(ct);
+        var startedAt = Stopwatch.StartNew();
+        var snapshotPath = string.Empty;
+        try
+        {
+            reportProgress?.Invoke(new SyncProgress("prepare_local", "prepare local", 18));
+            var (baseUrl, token) = await GetConnectionAsync(ct);
+            var client = new NasAgentClient(baseUrl);
+
+            var localItems = _history.Items.ToList();
+            var localSettings = CloneSettings(_settings.Current);
+
+            reportProgress?.Invoke(new SyncProgress("backup_snapshot", "backup local snapshot", 28));
+            var backupPath = CreatePreMergeBackupPath();
+            var backupResult = await _snapshot.ExportAsync(backupPath, localItems, localSettings, ct);
+            await EnsureLocalBackupBlobsAsync(backupResult, ct);
+            WriteTimingLog("merge", "backup_snapshot", startedAt.ElapsedMilliseconds, $"{reason};path={backupPath};items={localItems.Count};size={backupResult.SnapshotSize}");
+
+            var dir = Path.Combine(AppPaths.AppDataRoot, "sync", "tmp");
+            Directory.CreateDirectory(dir);
+            snapshotPath = Path.Combine(dir, "snapshot-" + Guid.NewGuid().ToString("N") + ".sqlite");
+
+            reportProgress?.Invoke(new SyncProgress("download_snapshot", "download remote snapshot", 44));
+            token = await DownloadSnapshotWithRefreshAsync(client, token, snapshotPath, ct);
+            WriteTimingLog("merge", "download_snapshot", startedAt.ElapsedMilliseconds, $"{reason};size={TryGetFileSize(snapshotPath)}");
+
+            reportProgress?.Invoke(new SyncProgress("read_snapshot", "read remote snapshot", 62));
+            var remote = await _snapshot.ReadAsync(
+                snapshotPath,
+                (blobSha256, blobCt) => EnsureBlobDownloadedAsync(client, token, blobSha256, blobCt),
+                ct);
+            WriteTimingLog("merge", "read_snapshot", startedAt.ElapsedMilliseconds, $"{reason};remoteItems={remote.Items.Count};images={remote.ImageCount};files={remote.FileCount}");
+
+            reportProgress?.Invoke(new SyncProgress("merge_snapshot", "merge snapshots", 78));
+            var mergedItems = MergeItems(remote.Items, localItems);
+            var mergedSettings = CloneSettings(remote.Settings ?? localSettings);
+            EnsureSettingsCanHoldItems(mergedSettings, mergedItems);
+
+            _settings.Update(s => CopySettings(s, mergedSettings));
+            ApplyHistoryLimits(_history, _settings.Current);
+            await _history.ReplaceAllAsync(mergedItems, ct);
+            WriteTimingLog("merge", "merge_snapshot", startedAt.ElapsedMilliseconds, $"{reason};localItems={localItems.Count};remoteItems={remote.Items.Count};mergedItems={mergedItems.Count}");
+
+            reportProgress?.Invoke(new SyncProgress("persist_local", "persist local", 90));
+            await _persistence.FlushAsync(ct);
+            PersistPendingMergeUploadState(preMergeLocalFingerprint, basisManifest);
+            WriteTimingLog("merge", "persist_local", startedAt.ElapsedMilliseconds, reason);
+        }
+        finally
+        {
+            TryDeleteWithRetry(snapshotPath);
+            WriteTimingLog("merge", "finished", startedAt.ElapsedMilliseconds, reason);
             Gate.Release();
         }
     }
@@ -239,30 +291,66 @@ public sealed class SyncService
         var lastFp = (current.SyncLastLocalFingerprint ?? string.Empty).Trim();
         var lastVersion = (current.SyncLastRemoteVersion ?? string.Empty).Trim();
         var remoteVersion = (manifest.Version ?? string.Empty).Trim();
+        var lastRemoteSha = (current.SyncLastRemoteSha256 ?? string.Empty).Trim();
+        var remoteSha = (manifest.SnapshotSha256 ?? string.Empty).Trim();
+        var remoteMatched = IsSameRemoteSnapshot(lastVersion, remoteVersion, lastRemoteSha, remoteSha);
 
         if (!string.IsNullOrWhiteSpace(lastFp) && !string.IsNullOrWhiteSpace(lastVersion))
         {
+            if (IsRemoteRollback(current.SyncLastRemoteUpdatedAt, manifest.UpdatedAt))
+            {
+                return new SyncDecision(SyncDirection.Download, localFingerprint, manifest, "remote_rolled_back");
+            }
+
             if (string.Equals(lastFp, localFingerprint, StringComparison.Ordinal)
-                && string.Equals(lastVersion, remoteVersion, StringComparison.Ordinal))
+                && remoteMatched)
             {
                 return new SyncDecision(SyncDirection.None, localFingerprint, manifest, "state_matched");
             }
 
             if (!string.Equals(lastFp, localFingerprint, StringComparison.Ordinal)
-                && string.Equals(lastVersion, remoteVersion, StringComparison.Ordinal))
+                && remoteMatched)
             {
                 return new SyncDecision(SyncDirection.Upload, localFingerprint, manifest, "local_changed_only");
             }
 
             if (string.Equals(lastFp, localFingerprint, StringComparison.Ordinal)
-                && !string.Equals(lastVersion, remoteVersion, StringComparison.Ordinal))
+                && !remoteMatched)
             {
                 return new SyncDecision(SyncDirection.Download, localFingerprint, manifest, "remote_changed_only");
             }
         }
+        else
+        {
+            var direction = localHasItems ? SyncDirection.Merge : SyncDirection.Download;
+            var reason = localHasItems ? "first_sync_merge" : "first_sync_remote_exists";
+            return new SyncDecision(direction, localFingerprint, manifest, reason);
+        }
 
         var fallback = DecideByTimestamp(localLatest, manifest.UpdatedAt);
         return new SyncDecision(fallback, localFingerprint, manifest, "timestamp_fallback");
+    }
+
+    private static bool IsSameRemoteSnapshot(string lastVersion, string remoteVersion, string lastSha, string remoteSha)
+    {
+        if (!string.Equals(lastVersion, remoteVersion, StringComparison.Ordinal))
+            return false;
+
+        if (string.IsNullOrWhiteSpace(lastSha) || string.IsNullOrWhiteSpace(remoteSha))
+            return true;
+
+        return string.Equals(lastSha, remoteSha, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsRemoteRollback(string? lastUpdatedAtText, DateTimeOffset? remoteUpdatedAt)
+    {
+        if (remoteUpdatedAt is null || string.IsNullOrWhiteSpace(lastUpdatedAtText))
+            return false;
+
+        if (!DateTimeOffset.TryParse(lastUpdatedAtText, out var lastUpdatedAt))
+            return false;
+
+        return remoteUpdatedAt.Value.UtcDateTime < lastUpdatedAt.UtcDateTime.AddSeconds(-2);
     }
 
     public void PersistSyncState(string localFingerprint, SyncManifestInfo manifest)
@@ -353,6 +441,195 @@ public sealed class SyncService
         {
             return new SyncManifestInfo(null, null, null, null, manifestJson);
         }
+    }
+
+    private async Task<string> DownloadSnapshotWithRefreshAsync(
+        NasAgentClient client,
+        string accessToken,
+        string snapshotPath,
+        CancellationToken ct)
+    {
+        try
+        {
+            await client.DownloadSnapshotAsync(accessToken, snapshotPath, ct);
+            return accessToken;
+        }
+        catch (NasAgentApiException ex)
+        {
+            if (IsSubscriptionExpired(ex))
+                throw new InvalidOperationException(SubscriptionExpiredError);
+            if (!IsAuthError(ex))
+                throw;
+            if (!await TryRefreshAndPersistAsync(ct))
+                throw;
+
+            var refreshedToken = SelectBearerToken(_settings.Current);
+            await client.DownloadSnapshotAsync(refreshedToken, snapshotPath, ct);
+            return refreshedToken;
+        }
+    }
+
+    private async Task EnsureLocalBackupBlobsAsync(SnapshotSqliteService.SnapshotExportResult exportResult, CancellationToken ct)
+    {
+        foreach (var blob in exportResult.Blobs)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (string.IsNullOrWhiteSpace(blob.SourcePath) || !File.Exists(blob.SourcePath))
+                continue;
+
+            var targetPath = SnapshotSqliteService.GetLocalBlobPath(blob.Sha256);
+            if (File.Exists(targetPath))
+                continue;
+
+            try
+            {
+                if (string.Equals(Path.GetFullPath(blob.SourcePath), Path.GetFullPath(targetPath), StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+                await using var input = new FileStream(blob.SourcePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                await using var output = new FileStream(targetPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                await input.CopyToAsync(output, ct);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    private static string CreatePreMergeBackupPath()
+    {
+        var dir = Path.Combine(AppPaths.AppDataRoot, "sync", "backups");
+        Directory.CreateDirectory(dir);
+        var fileName = "pre-merge-" + DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + ".sqlite";
+        return Path.Combine(dir, fileName);
+    }
+
+    private static List<ClipboardItem> MergeItems(IReadOnlyList<ClipboardItem> remoteItems, IReadOnlyList<ClipboardItem> localItems)
+    {
+        var merged = new Dictionary<string, ClipboardItem>(StringComparer.OrdinalIgnoreCase);
+        var passthrough = new List<ClipboardItem>();
+
+        foreach (var item in remoteItems)
+            AddMergeItem(item, isLocal: false, merged, passthrough);
+
+        foreach (var item in localItems)
+            AddMergeItem(item, isLocal: true, merged, passthrough);
+
+        return merged.Values
+            .Concat(passthrough)
+            .OrderByDescending(x => x.CapturedAt)
+            .ThenBy(x => x.Id)
+            .ToList();
+    }
+
+    private static void AddMergeItem(
+        ClipboardItem item,
+        bool isLocal,
+        Dictionary<string, ClipboardItem> merged,
+        List<ClipboardItem> passthrough)
+    {
+        var key = GetMergeKey(item);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            passthrough.Add(item);
+            return;
+        }
+
+        if (merged.TryGetValue(key, out var existing))
+        {
+            merged[key] = MergeDuplicate(existing, item, isLocal);
+            return;
+        }
+
+        merged[key] = item;
+    }
+
+    private static string? GetMergeKey(ClipboardItem item)
+    {
+        var hash = (item.ContentHash ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(hash))
+            return "hash:" + (int)item.Kind + ":" + hash;
+
+        return item.Id == Guid.Empty ? null : "id:" + item.Id.ToString("D");
+    }
+
+    private static ClipboardItem MergeDuplicate(ClipboardItem existing, ClipboardItem incoming, bool incomingIsLocal)
+    {
+        var latest = incoming.CapturedAt >= existing.CapturedAt ? incoming : existing;
+        var first = MinDate(
+            existing.FirstCapturedAt ?? existing.CapturedAt,
+            incoming.FirstCapturedAt ?? incoming.CapturedAt);
+        var note = SelectMergedNote(existing.Note, incoming.Note, incomingIsLocal);
+        var contentHash = string.IsNullOrWhiteSpace(latest.ContentHash)
+            ? (string.IsNullOrWhiteSpace(existing.ContentHash) ? incoming.ContentHash : existing.ContentHash)
+            : latest.ContentHash;
+
+        return latest with
+        {
+            ApproxBytes = Math.Max(existing.ApproxBytes, incoming.ApproxBytes),
+            Pinned = existing.Pinned || incoming.Pinned,
+            CopyCount = Math.Max(0, existing.CopyCount) + Math.Max(0, incoming.CopyCount),
+            FirstCapturedAt = first,
+            Note = note,
+            ContentHash = contentHash,
+        };
+    }
+
+    private static DateTimeOffset MinDate(DateTimeOffset left, DateTimeOffset right)
+    {
+        return left <= right ? left : right;
+    }
+
+    private static string? SelectMergedNote(string? existingNote, string? incomingNote, bool incomingIsLocal)
+    {
+        if (incomingIsLocal && !string.IsNullOrWhiteSpace(incomingNote))
+            return incomingNote;
+        if (!string.IsNullOrWhiteSpace(existingNote))
+            return existingNote;
+        return string.IsNullOrWhiteSpace(incomingNote) ? null : incomingNote;
+    }
+
+    private static void EnsureSettingsCanHoldItems(AppSettings settings, IReadOnlyList<ClipboardItem> items)
+    {
+        if (settings.MaxItems < items.Count)
+            settings.MaxItems = items.Count;
+
+        long totalBytes = 0;
+        foreach (var item in items)
+        {
+            if (item.ApproxBytes <= 0)
+                continue;
+
+            if (long.MaxValue - totalBytes < item.ApproxBytes)
+            {
+                totalBytes = long.MaxValue;
+                break;
+            }
+
+            totalBytes += item.ApproxBytes;
+        }
+
+        var neededMegabytes = totalBytes <= 0
+            ? 1
+            : (int)Math.Min(int.MaxValue, Math.Max(1, (totalBytes + 1024L * 1024L - 1) / (1024L * 1024L)));
+        if (settings.MaxMegabytes < neededMegabytes)
+            settings.MaxMegabytes = neededMegabytes;
+    }
+
+    private void PersistPendingMergeUploadState(string preMergeLocalFingerprint, SyncManifestInfo basisManifest)
+    {
+        _settings.Update(s =>
+        {
+            s.SyncLastLocalFingerprint = string.IsNullOrWhiteSpace(preMergeLocalFingerprint) ? "pre-merge" : preMergeLocalFingerprint;
+            s.SyncLastRemoteVersion = string.IsNullOrWhiteSpace(basisManifest.Version) ? null : basisManifest.Version;
+            s.SyncLastRemoteUpdatedAt = basisManifest.UpdatedAt?.ToString("O");
+            s.SyncLastRemoteSha256 = string.IsNullOrWhiteSpace(basisManifest.SnapshotSha256) ? null : basisManifest.SnapshotSha256;
+        });
     }
 
     private async Task<string> UploadMissingBlobsWithRefreshAsync(
@@ -614,22 +891,34 @@ public sealed class SyncService
 
     private static AppSettings CloneSettings(AppSettings src)
     {
-        return new AppSettings
-        {
-            Theme = src.Theme,
-            StartWithWindows = src.StartWithWindows,
-            MaxItems = src.MaxItems,
-            MaxMegabytes = src.MaxMegabytes,
-            CaptureText = src.CaptureText,
-            CaptureImages = src.CaptureImages,
-            CaptureFiles = src.CaptureFiles,
-            CaptureFileExtensions = src.CaptureFileExtensions,
-            CaptureFileMaxMegabytes = src.CaptureFileMaxMegabytes,
-            MergeDuplicates = src.MergeDuplicates,
-            ExcludePinnedFromLimits = src.ExcludePinnedFromLimits,
-            ShelfEnabled = src.ShelfEnabled,
-            ShelfTriggerModifier = src.ShelfTriggerModifier,
-        };
+        var clone = new AppSettings();
+        CopySettings(clone, src);
+        return clone;
+    }
+
+    private static void CopySettings(AppSettings dest, AppSettings src)
+    {
+        dest.Theme = src.Theme;
+        dest.StartWithWindows = src.StartWithWindows;
+        dest.MaxItems = src.MaxItems;
+        dest.MaxMegabytes = src.MaxMegabytes;
+        dest.CaptureText = src.CaptureText;
+        dest.CaptureImages = src.CaptureImages;
+        dest.CaptureFiles = src.CaptureFiles;
+        dest.CaptureFileExtensions = src.CaptureFileExtensions;
+        dest.CaptureFileMaxMegabytes = src.CaptureFileMaxMegabytes;
+        dest.MergeDuplicates = src.MergeDuplicates;
+        dest.ExcludePinnedFromLimits = src.ExcludePinnedFromLimits;
+        dest.ShelfEnabled = src.ShelfEnabled;
+        dest.ShelfTriggerModifier = src.ShelfTriggerModifier;
+    }
+
+    private static void ApplyHistoryLimits(ClipboardHistoryService history, AppSettings settings)
+    {
+        history.MaxItems = settings.MaxItems;
+        history.MaxBytes = (long)settings.MaxMegabytes * 1024 * 1024;
+        history.MergeDuplicates = settings.MergeDuplicates;
+        history.ExcludePinnedFromLimits = settings.ExcludePinnedFromLimits;
     }
 
     private static string? TryReadString(JsonElement element, string name)
@@ -680,5 +969,6 @@ public sealed class SyncService
         None,
         Upload,
         Download,
+        Merge,
     }
 }

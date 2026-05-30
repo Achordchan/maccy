@@ -625,6 +625,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
             ReloadFromSettings();
             ToastService.Instance.Show("登录成功");
+            SetSubscriptionLoadingFields();
             await RefreshSubscriptionAsync(ct);
             _triggerBackgroundSync?.Invoke();
         }
@@ -632,9 +633,10 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         {
             ToastService.Instance.Show("登录已取消");
         }
-        catch
+        catch (Exception ex)
         {
-            ToastService.Instance.Show("登录失败");
+            WriteAuthErrorLog(ex);
+            ToastService.Instance.Show(ExplainAuthException(ex, "登录失败"));
         }
         finally
         {
@@ -680,6 +682,7 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
             ReloadFromSettings();
             ToastService.Instance.Show("注册成功");
+            SetSubscriptionLoadingFields();
             await RefreshSubscriptionAsync(ct);
             _triggerBackgroundSync?.Invoke();
         }
@@ -687,9 +690,10 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         {
             ToastService.Instance.Show("已取消");
         }
-        catch
+        catch (Exception ex)
         {
-            ToastService.Instance.Show("注册失败");
+            WriteAuthErrorLog(ex);
+            ToastService.Instance.Show(ExplainAuthException(ex, "注册失败"));
         }
         finally
         {
@@ -840,6 +844,16 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
                 return;
             }
 
+            if (decision.Direction == SyncService.SyncDirection.Merge)
+            {
+                await _sync.MergeAndApplyAsync(decision.Manifest, decision.LocalFingerprint, ct, reason: "preferences_manual");
+                var mergeUploadResult = await _sync.UploadAsync(ct, reason: "preferences_merge_upload");
+                await PersistSyncStateAfterUploadAsync(mergeUploadResult, decision.Manifest, ct);
+                ReloadFromSettings();
+                ToastService.Instance.Show("同步完成（已合并）");
+                return;
+            }
+
             var uploadResult = await _sync.UploadAsync(ct, reason: "preferences_manual");
             await PersistSyncStateAfterUploadAsync(uploadResult, decision.Manifest, ct);
             ToastService.Instance.Show("同步完成（已上传）");
@@ -908,6 +922,9 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
 
     private async Task RefreshSubscriptionAsync(CancellationToken ct)
     {
+        if (IsLoggedIn)
+            SetSubscriptionLoadingFields();
+
         var baseUrl = EnsureOfficialSyncBaseUrl();
         var token = await EnsureAccessTokenAsync(ct);
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(token))
@@ -1033,12 +1050,19 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         {
         }
 
-        var fallback = fallbackManifest ?? new SyncService.SyncManifestInfo(
-            uploadResult?.Version,
-            DateTimeOffset.UtcNow,
-            uploadResult?.Sha256,
-            uploadResult?.Size,
-            null);
+        var fallback = uploadResult is not null
+            ? new SyncService.SyncManifestInfo(
+                uploadResult.Version,
+                DateTimeOffset.UtcNow,
+                uploadResult.Sha256,
+                uploadResult.Size,
+                null)
+            : fallbackManifest ?? new SyncService.SyncManifestInfo(
+                null,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                null);
         _sync.PersistSyncState(localFingerprint, fallback);
     }
 
@@ -1068,6 +1092,42 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         catch
         {
         }
+    }
+
+    private static void WriteAuthErrorLog(Exception ex)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.AppDataRoot);
+            var path = Path.Combine(AppPaths.AppDataRoot, "auth_last_error.txt");
+            File.WriteAllText(path, ex.ToString());
+        }
+        catch
+        {
+        }
+    }
+
+    private static string ExplainAuthException(Exception ex, string fallback)
+    {
+        if (ex is OperationCanceledException)
+            return "请求超时或已取消，请稍后重试";
+
+        var msg = (ex.Message ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(msg))
+            return fallback;
+
+        if (msg.Contains("invalid email or password", StringComparison.OrdinalIgnoreCase))
+            return "邮箱或密码不正确";
+        if (msg.Contains("invalid request", StringComparison.OrdinalIgnoreCase))
+            return "登录请求格式异常，请重启应用后重试";
+        if (msg.Contains("missing", StringComparison.OrdinalIgnoreCase)
+            && msg.Contains("accessToken", StringComparison.OrdinalIgnoreCase))
+            return "登录响应异常，请稍后重试";
+        if (msg.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+            return "登录请求超时，请检查网络后重试";
+
+        return fallback + "：" + msg;
     }
 
     private static string ExplainSyncException(Exception ex)
@@ -1160,6 +1220,16 @@ public partial class PreferencesWindowViewModel : ViewModelBase, IDisposable
         SubscriptionStorageText = "-";
         SubscriptionRetentionText = "-";
         SubscriptionOverLimitText = "-";
+        SubscriptionOverLimit = false;
+    }
+
+    private void SetSubscriptionLoadingFields()
+    {
+        SubscriptionStatusText = "正在读取中...";
+        SubscriptionTierText = "正在读取中...";
+        SubscriptionStorageText = "正在读取中...";
+        SubscriptionRetentionText = "正在读取中...";
+        SubscriptionOverLimitText = "正在读取中...";
         SubscriptionOverLimit = false;
     }
 

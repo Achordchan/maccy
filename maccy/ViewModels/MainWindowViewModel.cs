@@ -833,6 +833,34 @@ public partial class MainWindowViewModel : ViewModelBase
 
                 _sync.PersistSyncState(_sync.ComputeLocalFingerprint(), decision.Manifest);
             }
+            else if (decision.Direction == SyncService.SyncDirection.Merge)
+            {
+                if (showProgress)
+                    UpdateSyncStatus("准备合并", 30);
+                else
+                    UpdateBackgroundSyncStatus("后台同步：准备合并");
+
+                _suppressAutoSync = true;
+                try
+                {
+                    await _sync.MergeAndApplyAsync(
+                        decision.Manifest,
+                        decision.LocalFingerprint,
+                        CancellationToken.None,
+                        p => ReportSyncProgress(p, showProgress),
+                        reason);
+                }
+                finally
+                {
+                    _suppressAutoSync = false;
+                }
+
+                var uploadResult = await _sync.UploadAsync(
+                    CancellationToken.None,
+                    p => ReportSyncProgress(p, showProgress),
+                    reason + "_merge_upload");
+                await PersistSyncStateAfterUploadAsync(uploadResult, decision.Manifest, CancellationToken.None);
+            }
             else
             {
                 if (showProgress)
@@ -1022,8 +1050,11 @@ public partial class MainWindowViewModel : ViewModelBase
         var stage = progress.Code switch
         {
             "prepare_local" => "准备本地",
+            "backup_snapshot" => "备份本地快照",
             "export_snapshot" => "导出本地快照",
             "upload_blobs" => "上传二进制对象",
+            "read_snapshot" => "读取云端快照",
+            "merge_snapshot" => "合并历史",
             "import_snapshot" => "导入本地快照",
             "upload_snapshot" => "上传快照",
             "download_snapshot" => "下载快照",
@@ -1061,12 +1092,19 @@ public partial class MainWindowViewModel : ViewModelBase
         {
         }
 
-        var fallback = fallbackManifest ?? new SyncService.SyncManifestInfo(
-            uploadResult?.Version,
-            DateTimeOffset.UtcNow,
-            uploadResult?.Sha256,
-            uploadResult?.Size,
-            null);
+        var fallback = uploadResult is not null
+            ? new SyncService.SyncManifestInfo(
+                uploadResult.Version,
+                DateTimeOffset.UtcNow,
+                uploadResult.Sha256,
+                uploadResult.Size,
+                null)
+            : fallbackManifest ?? new SyncService.SyncManifestInfo(
+                null,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                null);
         _sync.PersistSyncState(localFingerprint, fallback);
     }
 
