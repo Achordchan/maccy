@@ -2,13 +2,16 @@ using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Net.Http;
+using System.IO.Compression;
+using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -29,6 +32,25 @@ public sealed class UpdateInfo
     public string InstallerUrl { get; init; } = string.Empty;
     public string InstallerSha256 { get; init; } = string.Empty;
     public long InstallerSize { get; init; }
+    public string PackageKind { get; init; } = string.Empty;
+    public string PackageRuntime { get; init; } = string.Empty;
+    public string PackageUrl { get; init; } = string.Empty;
+    public string PackageSha256 { get; init; } = string.Empty;
+    public long PackageSize { get; init; }
+
+    public bool HasSupportedPackage =>
+        string.Equals(PackageKind, "zip", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(PackageRuntime, UpdateService.CurrentRuntime, StringComparison.OrdinalIgnoreCase)
+        && !string.IsNullOrWhiteSpace(PackageUrl)
+        && !string.IsNullOrWhiteSpace(PackageSha256);
+}
+
+public sealed class PreparedPackageUpdate
+{
+    public string Version { get; init; } = string.Empty;
+    public string PackagePath { get; init; } = string.Empty;
+    public string StagingPath { get; init; } = string.Empty;
+    public string PackageManifestPath { get; init; } = string.Empty;
 }
 
 public sealed class UpdateCheckResult
@@ -44,7 +66,10 @@ public sealed class UpdateCheckResult
 
 public sealed class UpdateService
 {
+    public static string CurrentRuntime { get; } = DetectRuntime();
+
     private static readonly TimeSpan ManifestAttemptTimeout = TimeSpan.FromSeconds(8);
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private static readonly HttpStatusCode[] TransientStatusCodes =
     [
         HttpStatusCode.RequestTimeout,
@@ -53,6 +78,25 @@ public sealed class UpdateService
         HttpStatusCode.BadGateway,
         HttpStatusCode.ServiceUnavailable,
         HttpStatusCode.GatewayTimeout,
+    ];
+
+    private static readonly string[] ProtectedDataRoots =
+    [
+        "images",
+        "files",
+        "blobs",
+        "sync",
+        "updates",
+    ];
+
+    private static readonly string[] ProtectedDataFiles =
+    [
+        "settings.json",
+        "history.json",
+        "preferences_last_error.txt",
+        "sync_last_error.txt",
+        "auth_last_error.txt",
+        "capture_debug.log",
     ];
 
     private readonly HttpClient _http;
@@ -119,7 +163,7 @@ public sealed class UpdateService
                         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, attemptCts.Token);
                         resp.EnsureSuccessStatusCode();
                         await using var stream = await resp.Content.ReadAsStreamAsync(attemptCts.Token);
-                        return await JsonSerializer.DeserializeAsync<UpdateManifest>(stream, cancellationToken: attemptCts.Token);
+                        return await JsonSerializer.DeserializeAsync<UpdateManifest>(stream, JsonOptions, attemptCts.Token);
                     }
                     catch (OperationCanceledException) when (!retryCt.IsCancellationRequested)
                     {
@@ -155,9 +199,10 @@ public sealed class UpdateService
 
         var installerUrl = manifest.Latest.Installer?.Url ?? string.Empty;
         var installerSha256 = (manifest.Latest.Installer?.Sha256 ?? string.Empty).Trim();
+        var package = manifest.Latest.Package;
 
-        if (string.IsNullOrWhiteSpace(installerUrl))
-            return UpdateCheckResult.Error("manifest missing installer url");
+        if (string.IsNullOrWhiteSpace(installerUrl) && string.IsNullOrWhiteSpace(package?.Url))
+            return UpdateCheckResult.Error("manifest missing update url");
 
         var info = new UpdateInfo
         {
@@ -167,6 +212,11 @@ public sealed class UpdateService
             InstallerUrl = installerUrl,
             InstallerSha256 = installerSha256,
             InstallerSize = manifest.Latest.Installer?.Size ?? 0,
+            PackageKind = (package?.Kind ?? string.Empty).Trim(),
+            PackageRuntime = (package?.Runtime ?? string.Empty).Trim(),
+            PackageUrl = (package?.Url ?? string.Empty).Trim(),
+            PackageSha256 = (package?.Sha256 ?? string.Empty).Trim(),
+            PackageSize = package?.Size ?? 0,
         };
 
         return UpdateCheckResult.Available(info);
@@ -176,8 +226,148 @@ public sealed class UpdateService
     {
         Directory.CreateDirectory(downloadFolder);
 
+        if (string.IsNullOrWhiteSpace(update.InstallerUrl))
+            throw new InvalidOperationException("manifest missing installer url");
+
         var fileName = "maccy-" + update.Version + "-setup.exe";
         var target = Path.Combine(downloadFolder, fileName);
+
+        await DownloadAndVerifyFileAsync(
+            update.InstallerUrl,
+            target,
+            update.InstallerSha256,
+            update.InstallerSize,
+            progress,
+            ct);
+
+        return target;
+    }
+
+    public async Task<PreparedPackageUpdate> DownloadPackageAsync(UpdateInfo update, string updateRoot, Action<long, long?>? progress, CancellationToken ct)
+    {
+        if (!update.HasSupportedPackage)
+            throw new InvalidOperationException("manifest package is not supported by this client");
+
+        var packageDir = Path.Combine(updateRoot, "packages");
+        var stagingRoot = Path.Combine(updateRoot, "staging");
+        Directory.CreateDirectory(packageDir);
+        Directory.CreateDirectory(stagingRoot);
+
+        var packagePath = Path.Combine(packageDir, "maccy-" + update.Version + "-" + update.PackageRuntime + ".zip");
+        await DownloadAndVerifyFileAsync(
+            update.PackageUrl,
+            packagePath,
+            update.PackageSha256,
+            update.PackageSize,
+            progress,
+            ct);
+
+        return await PreparePackageAsync(update, packagePath, stagingRoot, ct);
+    }
+
+    private async Task<PreparedPackageUpdate> PreparePackageAsync(UpdateInfo update, string packagePath, string stagingRoot, CancellationToken ct)
+    {
+        var stagingPath = Path.Combine(stagingRoot, update.Version + "-" + Guid.NewGuid().ToString("N"));
+        if (Directory.Exists(stagingPath))
+            Directory.Delete(stagingPath, recursive: true);
+
+        Directory.CreateDirectory(stagingPath);
+        ExtractPackageSafely(packagePath, stagingPath);
+
+        ct.ThrowIfCancellationRequested();
+
+        var manifestPath = Path.Combine(stagingPath, "maccy-package.json");
+        if (!File.Exists(manifestPath))
+            throw new InvalidOperationException("package manifest missing");
+
+        var packageManifest = await ReadPackageManifestAsync(manifestPath, ct);
+        ValidatePackageManifest(update, stagingPath, packageManifest);
+
+        return new PreparedPackageUpdate
+        {
+            Version = update.Version,
+            PackagePath = packagePath,
+            StagingPath = stagingPath,
+            PackageManifestPath = manifestPath,
+        };
+    }
+
+    private static void ExtractPackageSafely(string packagePath, string stagingPath)
+    {
+        using var archive = ZipFile.OpenRead(packagePath);
+        foreach (var entry in archive.Entries)
+        {
+            var relativePath = NormalizePackagePath(entry.FullName);
+            var destination = GetPathInsideRoot(stagingPath, relativePath);
+
+            if (string.IsNullOrEmpty(entry.Name))
+            {
+                Directory.CreateDirectory(destination);
+                continue;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            entry.ExtractToFile(destination, overwrite: false);
+        }
+    }
+
+    private static async Task<UpdatePackageManifest> ReadPackageManifestAsync(string manifestPath, CancellationToken ct)
+    {
+        await using var stream = File.OpenRead(manifestPath);
+        var manifest = await JsonSerializer.DeserializeAsync<UpdatePackageManifest>(stream, JsonOptions, ct);
+        return manifest ?? throw new InvalidOperationException("package manifest invalid");
+    }
+
+    private static void ValidatePackageManifest(UpdateInfo update, string stagingPath, UpdatePackageManifest manifest)
+    {
+        if (!string.Equals(manifest.AppId, "maccy", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("package app id mismatch");
+        if (!string.Equals(NormalizeVersion(manifest.Version), update.Version, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("package version mismatch");
+        if (!string.Equals(manifest.Runtime, update.PackageRuntime, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("package runtime mismatch");
+        if (manifest.Files.Count == 0)
+            throw new InvalidOperationException("package file list is empty");
+
+        var hasExe = false;
+        foreach (var file in manifest.Files)
+        {
+            var relativePath = NormalizePackagePath(file.Path);
+            if (IsProtectedRelativePath(relativePath))
+                throw new InvalidOperationException("package contains protected data path: " + file.Path);
+
+            if (string.Equals(ToManifestPath(relativePath), "maccy.exe", StringComparison.OrdinalIgnoreCase))
+                hasExe = true;
+
+            var absolutePath = GetPathInsideRoot(stagingPath, relativePath);
+            if (!File.Exists(absolutePath))
+                throw new InvalidOperationException("package file missing: " + file.Path);
+
+            var info = new FileInfo(absolutePath);
+            if (file.Size >= 0 && file.Size != info.Length)
+                throw new InvalidOperationException("package file size mismatch: " + file.Path);
+
+            if (string.IsNullOrWhiteSpace(file.Sha256))
+                throw new InvalidOperationException("package file sha256 missing: " + file.Path);
+
+            var actualSha256 = ComputeSha256Hex(absolutePath);
+            if (!string.Equals(actualSha256, file.Sha256.Trim(), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("package file sha256 mismatch: " + file.Path);
+        }
+
+        if (!hasExe)
+            throw new InvalidOperationException("package missing maccy.exe");
+    }
+
+    private async Task DownloadAndVerifyFileAsync(
+        string url,
+        string target,
+        string expectedSha256,
+        long expectedSize,
+        Action<long, long?>? progress,
+        CancellationToken ct)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         var temp = target + ".download";
 
         try
@@ -204,13 +394,13 @@ public sealed class UpdateService
                 }
 
                 long totalRead = 0;
-                long? total = null;
+                long? total = expectedSize > 0 ? expectedSize : null;
 
-                using var req = new HttpRequestMessage(HttpMethod.Get, update.InstallerUrl);
+                using var req = new HttpRequestMessage(HttpMethod.Get, url);
                 using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, retryCt);
                 resp.EnsureSuccessStatusCode();
 
-                total = resp.Content.Headers.ContentLength;
+                total = resp.Content.Headers.ContentLength ?? total;
 
                 await using (var input = await resp.Content.ReadAsStreamAsync(retryCt))
                 await using (var output = File.Create(temp))
@@ -233,18 +423,22 @@ public sealed class UpdateService
             shouldRetry: ShouldRetryDownload,
             ct: ct);
 
-        if (!string.IsNullOrWhiteSpace(update.InstallerSha256))
+        if (expectedSize > 0)
+        {
+            var actualSize = new FileInfo(temp).Length;
+            if (actualSize != expectedSize)
+            {
+                TryDeleteFile(temp);
+                throw new InvalidOperationException("file size mismatch");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(expectedSha256))
         {
             var actual = ComputeSha256Hex(temp);
-            if (!string.Equals(actual, update.InstallerSha256.Trim(), StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(actual, expectedSha256.Trim(), StringComparison.OrdinalIgnoreCase))
             {
-                try
-                {
-                    File.Delete(temp);
-                }
-                catch
-                {
-                }
+                TryDeleteFile(temp);
                 throw new InvalidOperationException("sha256 mismatch");
             }
         }
@@ -259,7 +453,6 @@ public sealed class UpdateService
         }
 
         File.Move(temp, target);
-        return target;
     }
 
     private static string ComputeSha256Hex(string filePath)
@@ -280,11 +473,10 @@ public sealed class UpdateService
 
         v = v.Trim();
         if (v.StartsWith("v", StringComparison.OrdinalIgnoreCase))
-            v = v.Substring(1);
+            v = v[1..];
 
         v = v.Trim();
 
-        // Extract a numeric version token so ProductVersion like "1.0.0+abc" or "1.0.0.0 (dev)" won't break parsing.
         var m = Regex.Match(v, @"\d+(?:\.\d+){0,3}");
         return m.Success ? m.Value : string.Empty;
     }
@@ -329,6 +521,60 @@ public sealed class UpdateService
 
         version = new Version(0, 0, 0);
         return false;
+    }
+
+    private static string NormalizePackagePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new InvalidOperationException("package path is empty");
+
+        var normalized = path.Trim().Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+        if (Path.IsPathRooted(normalized))
+            throw new InvalidOperationException("package path must be relative: " + path);
+
+        normalized = normalized.TrimStart(Path.DirectorySeparatorChar);
+        var parts = normalized.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0 || parts.Any(x => x == "." || x == ".."))
+            throw new InvalidOperationException("package path is unsafe: " + path);
+
+        return Path.Combine(parts);
+    }
+
+    private static string GetPathInsideRoot(string root, string relativePath)
+    {
+        var rootFull = Path.GetFullPath(root);
+        var combined = Path.GetFullPath(Path.Combine(rootFull, relativePath));
+        var prefix = rootFull.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!combined.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("package path escapes root: " + relativePath);
+        return combined;
+    }
+
+    private static bool IsProtectedRelativePath(string relativePath)
+    {
+        var path = ToManifestPath(relativePath).TrimStart('/').ToLowerInvariant();
+        if (ProtectedDataFiles.Contains(path, StringComparer.OrdinalIgnoreCase))
+            return true;
+
+        return ProtectedDataRoots.Any(root =>
+            string.Equals(path, root, StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string ToManifestPath(string relativePath)
+    {
+        return relativePath.Replace('\\', '/');
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch
+        {
+        }
     }
 
     private static async Task<T> ExecuteWithRetryAsync<T>(
@@ -388,5 +634,21 @@ public sealed class UpdateService
         }
 
         return false;
+    }
+
+    private static string DetectRuntime()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return RuntimeInformation.ProcessArchitecture switch
+            {
+                Architecture.X64 => "win-x64",
+                Architecture.Arm64 => "win-arm64",
+                Architecture.X86 => "win-x86",
+                _ => "win",
+            };
+        }
+
+        return RuntimeInformation.RuntimeIdentifier;
     }
 }

@@ -27,10 +27,31 @@ public sealed class UpdateRelease
 
     [JsonPropertyName("installer")]
     public UpdateInstaller Installer { get; set; } = new();
+
+    [JsonPropertyName("package")]
+    public UpdatePackage? Package { get; set; }
 }
 
 public sealed class UpdateInstaller
 {
+    [JsonPropertyName("url")]
+    public string Url { get; set; } = string.Empty;
+
+    [JsonPropertyName("sha256")]
+    public string Sha256 { get; set; } = string.Empty;
+
+    [JsonPropertyName("size")]
+    public long Size { get; set; }
+}
+
+public sealed class UpdatePackage
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = string.Empty;
+
+    [JsonPropertyName("runtime")]
+    public string Runtime { get; set; } = string.Empty;
+
     [JsonPropertyName("url")]
     public string Url { get; set; } = string.Empty;
 

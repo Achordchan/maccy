@@ -29,6 +29,7 @@ public partial class MainWindowViewModel : ViewModelBase
     private int _syncGate;
 
     private int _toastToken;
+    private UpdateInfo? _availableUpdateInfo;
 
     public event System.Action? RequestHide;
 
@@ -38,6 +39,8 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public event System.Action? RequestCheckUpdates;
 
+    public event System.Action? RequestApplyUpdate;
+
     public event System.Action<ClipboardItem>? RequestEditNote;
 
     public Func<string, string, Task<bool>>? ConfirmAsync { get; set; }
@@ -45,6 +48,8 @@ public partial class MainWindowViewModel : ViewModelBase
     public IRelayCommand OpenPreferencesCommand { get; }
 
     public IRelayCommand CheckUpdatesCommand { get; }
+
+    public IRelayCommand ApplyUpdateCommand { get; }
 
     public IRelayCommand AboutCommand { get; }
 
@@ -169,6 +174,18 @@ public partial class MainWindowViewModel : ViewModelBase
     [NotifyPropertyChangedFor(nameof(SyncIconToolTip))]
     private bool _isCloudSyncEnabled;
 
+    [ObservableProperty]
+    private bool _isUpdateAvailable;
+
+    [ObservableProperty]
+    private bool _isApplyingUpdate;
+
+    [ObservableProperty]
+    private string _updateButtonText = "更新";
+
+    [ObservableProperty]
+    private string _updateButtonToolTip = "发现新版本，点击立即更新";
+
     public MainWindowViewModel()
     {
         Items = new ObservableCollection<ClipboardItem>();
@@ -182,6 +199,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
         OpenPreferencesCommand = new RelayCommand(() => RequestOpenPreferences?.Invoke());
         CheckUpdatesCommand = new RelayCommand(() => RequestCheckUpdates?.Invoke());
+        ApplyUpdateCommand = new RelayCommand(() => RequestApplyUpdate?.Invoke(), () => !IsApplyingUpdate);
         AboutCommand = new RelayCommand(() => ShowToast("maccy (Windows)"));
 
         FocusSearchCommand = new RelayCommand(() => RequestFocusSearch?.Invoke());
@@ -250,6 +268,46 @@ public partial class MainWindowViewModel : ViewModelBase
         UpdateSyncIcons();
     }
 
+    public void SetUpdateAvailability(UpdateInfo? update)
+    {
+        _availableUpdateInfo = update;
+        if (update is null)
+        {
+            IsUpdateAvailable = false;
+            UpdateButtonText = "更新";
+            UpdateButtonToolTip = "发现新版本，点击立即更新";
+            return;
+        }
+
+        IsUpdateAvailable = true;
+        if (IsApplyingUpdate)
+        {
+            UpdateButtonText = "更新中...";
+            UpdateButtonToolTip = "正在下载并应用更新，请稍候";
+            return;
+        }
+
+        UpdateButtonText = "更新 " + update.Version;
+        UpdateButtonToolTip = update.HasSupportedPackage
+            ? "发现新版本，点击立即轻量更新"
+            : "发现新版本，点击下载安装包更新";
+    }
+
+    public void SetUpdateApplying(bool applying)
+    {
+        IsApplyingUpdate = applying;
+
+        if (applying)
+        {
+            IsUpdateAvailable = true;
+            UpdateButtonText = "更新中...";
+            UpdateButtonToolTip = "正在下载并应用更新，请稍候";
+            return;
+        }
+
+        SetUpdateAvailability(_availableUpdateInfo);
+    }
+
     public void ReorderItem(Guid movedId, Guid? beforeId)
     {
         if (_history is null)
@@ -280,6 +338,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
         OpenPreferencesCommand = new RelayCommand(() => RequestOpenPreferences?.Invoke());
         CheckUpdatesCommand = new RelayCommand(() => RequestCheckUpdates?.Invoke());
+        ApplyUpdateCommand = new RelayCommand(() => RequestApplyUpdate?.Invoke(), () => !IsApplyingUpdate);
         AboutCommand = new RelayCommand(() => ShowToast("maccy (Windows)"));
 
         FocusSearchCommand = new RelayCommand(() => RequestFocusSearch?.Invoke());
@@ -349,6 +408,11 @@ public partial class MainWindowViewModel : ViewModelBase
     private void UpdateCloudSyncEnabled()
     {
         IsCloudSyncEnabled = CanAutoSync();
+    }
+
+    partial void OnIsApplyingUpdateChanged(bool value)
+    {
+        ApplyUpdateCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnSyncResultChanged(SyncResultKind value)

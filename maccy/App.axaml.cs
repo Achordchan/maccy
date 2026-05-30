@@ -284,6 +284,17 @@ public partial class App : Application
         }
     }
 
+    private void TriggerApplyAvailableUpdate()
+    {
+        try
+        {
+            _ = _updateCoordinator?.ApplyAvailableUpdateAsync();
+        }
+        catch
+        {
+        }
+    }
+
     private void ShutdownForUpdate()
     {
         try
@@ -310,7 +321,7 @@ public partial class App : Application
         {
             try
             {
-                _ = _updateCoordinator?.CheckAndPromptAsync(manual: false);
+                _ = _updateCoordinator?.RefreshAvailabilityAsync();
             }
             catch
             {
@@ -327,7 +338,7 @@ public partial class App : Application
         {
             try
             {
-                _ = _updateCoordinator?.CheckAndPromptAsync(manual: false);
+                _ = _updateCoordinator?.RefreshAvailabilityAsync();
             }
             catch
             {
@@ -534,6 +545,7 @@ public partial class App : Application
             vm.RequestFocusSearch += () => window.FocusSearch();
             vm.RequestOpenPreferences += () => ShowPreferences(window);
             vm.RequestCheckUpdates += () => TriggerManualUpdateCheck();
+            vm.RequestApplyUpdate += () => TriggerApplyAvailableUpdate();
             vm.RequestEditNote += item => window.BeginEditNote(item);
             vm.ConfirmAsync = (title, message) => window.ShowConfirmAsync(title, message);
             window.DataContext = vm;
@@ -550,6 +562,10 @@ public partial class App : Application
                 updateService,
                 () => (_prefsWindow is not null && _prefsWindow.IsVisible) ? _prefsWindow : window,
                 ShutdownForUpdate);
+            _updateCoordinator.AvailabilityChanged += update =>
+                Dispatcher.UIThread.Post(() => vm.SetUpdateAvailability(update));
+            _updateCoordinator.ApplyingChanged += applying =>
+                Dispatcher.UIThread.Post(() => vm.SetUpdateApplying(applying));
             StartUpdateChecks(window);
 
             if (_settings is not null)

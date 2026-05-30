@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 
@@ -382,6 +383,7 @@ def _ensure_worktree_clean_for_release(repo_root: Path) -> None:
 
     allowed = {
         "maccy/maccy.csproj",
+        "installer/maccy.iss",
         "docs/updates/manifest.json",
     }
 
@@ -535,6 +537,7 @@ def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[in
 
     print(f"[1/5] set csproj version -> {version}")
     _set_csproj_version(csproj, version)
+    _set_iss_version(iss, version)
     completed.append("更新版本号（maccy.csproj）")
 
     print(f"[2/5] dotnet publish ({configuration}, {runtime})")
@@ -564,12 +567,19 @@ def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[in
     if not installer_path.exists():
         raise FileNotFoundError(f"installer not found: {installer_path}")
 
-    print("[4/5] compute sha256/size")
+    print("[4/6] build lightweight package")
+    package_path = _create_update_package(publish_dir, installer_dir, version=version, runtime=runtime)
+    completed.append("build lightweight zip package")
+
+    print("[5/6] compute sha256/size")
     sha256 = _sha256_file(installer_path)
     size = installer_path.stat().st_size
+    package_sha256 = _sha256_file(package_path)
+    package_size = package_path.stat().st_size
     completed.append("计算安装包 sha256/size")
 
     published_url = ""
+    published_package_url = ""
     if publish_gitee:
         if tag_exists and force_republish:
             print(f"[pre-clean] delete remote release/tag: {tag}")
@@ -578,7 +588,7 @@ def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[in
             _delete_local_tag(repo, tag)
 
         print("[5/7] publish to gitee")
-        published_url = _publish_to_gitee(
+        published = _publish_to_gitee(
             repo,
             owner=gitee_owner,
             repo_name=gitee_repo,
@@ -586,7 +596,10 @@ def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[in
             version=version,
             notes=notes,
             installer_path=installer_path,
+            package_path=package_path,
         )
+        published_url = published.get("installer", "")
+        published_package_url = published.get("package", "")
         completed.append("发布到 Gitee Release（git push + 上传安装包）")
 
         print("[6/7] update manifest.json")
@@ -599,6 +612,10 @@ def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[in
             sha256=sha256,
             size=size,
             installer_url=published_url,
+            package_sha256=package_sha256,
+            package_size=package_size,
+            package_runtime=runtime,
+            package_url=published_package_url,
         )
         completed.append("更新更新清单（docs/updates/manifest.json）")
 
@@ -608,7 +625,7 @@ def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[in
         except SystemExit:
             pass
 
-        _git(repo, ["push"])
+        _push_current_to_upstream(repo)
         completed.append("推送 manifest 更新（git push）")
     else:
         print("[5/5] update manifest.json")
@@ -620,16 +637,23 @@ def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[in
             base_url=base_url,
             sha256=sha256,
             size=size,
+            package_sha256=package_sha256,
+            package_size=package_size,
+            package_runtime=runtime,
         )
         completed.append("更新更新清单（docs/updates/manifest.json）")
 
     info = {
         "completed": completed,
         "installer": str(installer_path),
+        "package": str(package_path),
         "sha256": sha256,
         "size": int(size),
+        "package_sha256": package_sha256,
+        "package_size": int(package_size),
         "manifest": str(manifest),
         "published_url": published_url,
+        "published_package_url": published_package_url,
         "publish_gitee": bool(publish_gitee),
         "version": version,
         "base_url": base_url,
@@ -705,11 +729,16 @@ def _run_pipeline_gui(repo: Path, cfg: dict) -> int:
                 append("[✓] " + str(item) + "\n")
             append("\n产物信息：\n")
             append("installer: " + str(info.get("installer")) + "\n")
+            append("package: " + str(info.get("package")) + "\n")
             append("sha256: " + str(info.get("sha256")) + "\n")
             append("size: " + str(info.get("size")) + "\n")
+            append("package sha256: " + str(info.get("package_sha256")) + "\n")
+            append("package size: " + str(info.get("package_size")) + "\n")
             append("manifest: " + str(info.get("manifest")) + "\n")
             if info.get("published_url"):
                 append("gitee download: " + str(info.get("published_url")) + "\n")
+            if info.get("published_package_url"):
+                append("gitee package: " + str(info.get("published_package_url")) + "\n")
             messagebox.showinfo("完成", "发布流程已结束。请在窗口中查看详细输出。")
             return
 
@@ -753,6 +782,71 @@ def _set_csproj_version(csproj: Path, version: str) -> None:
     find_or_create(pg, "FileVersion").text = version
 
     tree.write(str(csproj), encoding="utf-8", xml_declaration=True)
+
+
+def _set_iss_version(iss: Path, version: str) -> None:
+    text = iss.read_text(encoding="utf-8")
+    text2 = re.sub(
+        r'(#define\s+MyAppVersionShort\s+")([^"]+)(")',
+        r"\g<1>" + version + r"\3",
+        text,
+        count=1,
+    )
+    if text2 == text:
+        raise RuntimeError("MyAppVersionShort not found in " + str(iss))
+    iss.write_text(text2, encoding="utf-8")
+
+
+def _create_update_package(publish_dir: Path, output_dir: Path, *, version: str, runtime: str) -> Path:
+    if not publish_dir.exists():
+        raise FileNotFoundError(str(publish_dir))
+
+    files: list[dict] = []
+    for path in sorted(publish_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(publish_dir).as_posix()
+        if rel == "maccy-package.json":
+            continue
+        files.append(
+            {
+                "path": rel,
+                "sha256": _sha256_file(path),
+                "size": path.stat().st_size,
+            }
+        )
+
+    if not any(str(x.get("path", "")).lower() == "maccy.exe" for x in files):
+        raise RuntimeError("publish output missing maccy.exe")
+
+    manifest = {
+        "appId": "maccy",
+        "version": version,
+        "runtime": runtime,
+        "files": files,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    package_path = output_dir / f"maccy-{version}-{runtime}.zip"
+    if package_path.exists():
+        package_path.unlink()
+
+    kwargs = {"compression": zipfile.ZIP_DEFLATED}
+    try:
+        kwargs["compresslevel"] = 9
+    except Exception:
+        pass
+
+    with zipfile.ZipFile(package_path, "w", **kwargs) as zf:
+        for item in files:
+            rel = str(item["path"])
+            zf.write(publish_dir / rel, rel)
+        zf.writestr(
+            "maccy-package.json",
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        )
+
+    return package_path
 
 
 def _try_find_iscc() -> Path | None:
@@ -912,10 +1006,34 @@ def _git(repo_root: Path, args: list[str]) -> None:
     _run(["git", *args], cwd=repo_root)
 
 
-def _publish_to_gitee(repo_root: Path, *, owner: str, repo_name: str, token: str, version: str, notes: str, installer_path: Path) -> str:
+def _push_current_to_upstream(repo_root: Path) -> None:
+    try:
+        upstream = _run_text(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=repo_root).strip()
+        if "/" in upstream:
+            remote, branch = upstream.split("/", 1)
+            if remote and branch:
+                _git(repo_root, ["push", remote, "HEAD:" + branch])
+                return
+    except Exception:
+        pass
+
+    _git(repo_root, ["push"])
+
+
+def _publish_to_gitee(
+    repo_root: Path,
+    *,
+    owner: str,
+    repo_name: str,
+    token: str,
+    version: str,
+    notes: str,
+    installer_path: Path,
+    package_path: Path | None = None,
+) -> dict[str, str]:
     tag = "v" + version
 
-    _git(repo_root, ["add", "maccy/maccy.csproj"])
+    _git(repo_root, ["add", "maccy/maccy.csproj", "installer/maccy.iss"])
     try:
         _git(repo_root, ["commit", "-m", "release " + tag])
     except SystemExit:
@@ -925,7 +1043,7 @@ def _publish_to_gitee(repo_root: Path, *, owner: str, repo_name: str, token: str
     if not existing_tags:
         _git(repo_root, ["tag", "-a", tag, "-m", tag])
 
-    _git(repo_root, ["push"])
+    _push_current_to_upstream(repo_root)
     _git(repo_root, ["push", "origin", tag])
 
     api = "https://gitee.com/api/v5"
@@ -978,12 +1096,35 @@ def _publish_to_gitee(repo_root: Path, *, owner: str, repo_name: str, token: str
     if not release_id:
         raise RuntimeError("create release failed")
 
+    urls = {
+        "installer": _upload_gitee_release_asset(
+            owner=owner,
+            repo_name=repo_name,
+            token=token,
+            release_id=release_id,
+            file_path=installer_path,
+        )
+    }
+    if package_path is not None:
+        urls["package"] = _upload_gitee_release_asset(
+            owner=owner,
+            repo_name=repo_name,
+            token=token,
+            release_id=release_id,
+            file_path=package_path,
+        )
+
+    return urls
+
+
+def _upload_gitee_release_asset(*, owner: str, repo_name: str, token: str, release_id: str, file_path: Path) -> str:
+    api = "https://gitee.com/api/v5"
     attach_list_url = f"{api}/repos/{owner}/{repo_name}/releases/{release_id}/attach_files?access_token={urllib.parse.quote(token)}"
     try:
         existing = _http_json("GET", attach_list_url)
         if isinstance(existing, list):
             for it in existing:
-                if isinstance(it, dict) and (it.get("name") == installer_path.name) and it.get("id"):
+                if isinstance(it, dict) and (it.get("name") == file_path.name) and it.get("id"):
                     attach_id = str(it.get("id"))
                     del_url = f"{api}/repos/{owner}/{repo_name}/releases/{release_id}/attach_files/{attach_id}?access_token={urllib.parse.quote(token)}"
                     try:
@@ -1000,7 +1141,7 @@ def _publish_to_gitee(repo_root: Path, *, owner: str, repo_name: str, token: str
             "access_token": token,
         },
         file_field="file",
-        file_path=installer_path,
+        file_path=file_path,
     )
 
     download_url = str(attach.get("browser_download_url") or "").strip()
@@ -1020,6 +1161,10 @@ def _update_manifest(
     sha256: str,
     size: int,
     installer_url: str | None = None,
+    package_sha256: str = "",
+    package_size: int = 0,
+    package_runtime: str = "win-x64",
+    package_url: str | None = None,
 ) -> None:
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     latest = data.get("latest") or {}
@@ -1038,6 +1183,20 @@ def _update_manifest(
     installer["sha256"] = sha256
     installer["size"] = int(size)
     latest["installer"] = installer
+
+    if package_sha256 or package_url:
+        package = latest.get("package") or {}
+        package["kind"] = "zip"
+        package["runtime"] = package_runtime
+        if package_url and package_url.strip():
+            package["url"] = package_url.strip()
+        else:
+            package["url"] = base_url.rstrip("/") + f"/v{version}/maccy-{version}-{package_runtime}.zip"
+        package["sha256"] = package_sha256
+        package["size"] = int(package_size)
+        latest["package"] = package
+    else:
+        latest.pop("package", None)
 
     data["latest"] = latest
     manifest_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1167,6 +1326,7 @@ def main() -> int:
 
     print(f"[1/5] set csproj version -> {version}")
     _set_csproj_version(csproj, version)
+    _set_iss_version(iss, version)
     completed.append("更新版本号（maccy.csproj）")
 
     publish_dir = repo / "artifacts" / "publish" / runtime
@@ -1199,15 +1359,22 @@ def main() -> int:
     if not installer_path.exists():
         raise FileNotFoundError(f"installer not found: {installer_path}")
 
-    print("[4/5] compute sha256/size")
+    print("[4/6] build lightweight package")
+    package_path = _create_update_package(publish_dir, installer_dir, version=version, runtime=runtime)
+    completed.append("build lightweight zip package")
+
+    print("[5/6] compute sha256/size")
     sha256 = _sha256_file(installer_path)
     size = installer_path.stat().st_size
+    package_sha256 = _sha256_file(package_path)
+    package_size = package_path.stat().st_size
     completed.append("计算安装包 sha256/size")
 
     published_url = ""
+    published_package_url = ""
     if publish_gitee:
         print("[5/7] publish to gitee")
-        published_url = _publish_to_gitee(
+        published = _publish_to_gitee(
             repo,
             owner=gitee_owner,
             repo_name=gitee_repo,
@@ -1215,7 +1382,10 @@ def main() -> int:
             version=version,
             notes=notes,
             installer_path=installer_path,
+            package_path=package_path,
         )
+        published_url = published.get("installer", "")
+        published_package_url = published.get("package", "")
         completed.append("发布到 Gitee Release（git push + 上传安装包）")
 
         print("[6/7] update manifest.json")
@@ -1228,6 +1398,10 @@ def main() -> int:
             sha256=sha256,
             size=size,
             installer_url=published_url,
+            package_sha256=package_sha256,
+            package_size=package_size,
+            package_runtime=runtime,
+            package_url=published_package_url,
         )
         completed.append("更新更新清单（docs/updates/manifest.json）")
 
@@ -1237,7 +1411,7 @@ def main() -> int:
         except SystemExit:
             pass
 
-        _git(repo, ["push"])
+        _push_current_to_upstream(repo)
         completed.append("推送 manifest 更新（git push）")
     else:
         print("[5/5] update manifest.json")
@@ -1249,6 +1423,9 @@ def main() -> int:
             base_url=base_url,
             sha256=sha256,
             size=size,
+            package_sha256=package_sha256,
+            package_size=package_size,
+            package_runtime=runtime,
         )
         completed.append("更新更新清单（docs/updates/manifest.json）")
 
@@ -1258,12 +1435,17 @@ def main() -> int:
 
     print("\n产物信息：")
     print(f"installer: {installer_path}")
+    print(f"package: {package_path}")
     print(f"sha256: {sha256}")
     print(f"size: {size}")
+    print(f"package sha256: {package_sha256}")
+    print(f"package size: {package_size}")
     print(f"manifest: {manifest}")
 
     if published_url:
         print(f"gitee download: {published_url}")
+    if published_package_url:
+        print(f"gitee package: {published_package_url}")
 
     print("\n接下来你还需要做：")
     if publish_gitee:
@@ -1271,7 +1453,7 @@ def main() -> int:
     else:
         print("[ ] git add/commit 并 push 到 gitee（脚本不会自动推送）")
         print("    git status")
-        print("    git add maccy/maccy.csproj docs/updates/manifest.json")
+        print("    git add maccy/maccy.csproj installer/maccy.iss docs/updates/manifest.json")
         print("    git commit -m \"release v" + version + "\"")
         print("    git push")
         print("[ ] 在 Gitee Releases 创建 tag/release: v" + version + "，上传安装包：" + installer_path.name)
