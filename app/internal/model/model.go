@@ -126,3 +126,17 @@ func Str(p *string) string {
 
 // Ptr returns a pointer to s.
 func Ptr(s string) *string { return &s }
+
+// UTF16Len is the length of s in UTF-16 units, which is what C#'s
+// string.Length counts: the sizes in the history are twice that.
+func UTF16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		if r >= 0x10000 {
+			n += 2
+		} else {
+			n++
+		}
+	}
+	return n
+}

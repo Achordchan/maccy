@@ -93,7 +93,7 @@ func Normalize(l paths.Layout, it model.Item) (model.Item, bool) {
 			return it, false
 		}
 		// The C# code counts UTF-16 units times two.
-		it.ApproxBytes = int64(utf16Len(t)) * 2
+		it.ApproxBytes = int64(model.UTF16Len(t)) * 2
 		return it, true
 
 	case model.KindFileList:
@@ -137,18 +137,6 @@ func Normalize(l paths.Layout, it model.Item) (model.Item, bool) {
 		return it, true
 	}
 	return it, true
-}
-
-func utf16Len(s string) int {
-	n := 0
-	for _, r := range s {
-		if r >= 0x10000 {
-			n += 2
-		} else {
-			n++
-		}
-	}
-	return n
 }
 
 func isFile(p string) bool {

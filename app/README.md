@@ -9,6 +9,8 @@
 | `internal/settings` | `settings.json` 读写；不认识的字段原样保留；旧同步地址迁移；先写临时文件再替换 |
 | `internal/history` | `history.json` 读写；启动时按 `Normalize` 丢弃内容已不存在的条目、校正大小 |
 | `internal/snapshot` | 同步快照（SQLite，schema 2，兼容读 schema 1）的导出与导入 |
+| `internal/history`（服务） | 剪贴板历史列表（C# `ClipboardHistoryService` + `ClipboardPersistenceService`）：去重合并、置顶、备注、拖动排序、按条数/体积清理、被移出的条目的图片和文件缓存一起删除、`ReplaceAll`、防抖保存 `history.json` |
+| `internal/capture` | 把剪贴板内容变成历史条目（`ClipboardCaptureService`）和把条目写回剪贴板（`ClipboardApplyService`）；剪贴板本身在接口后面，平台适配（MyGo）以后接 |
 | `internal/syncer` | 同步编排（C# `SyncService` 加上调用它的主窗口/偏好设置里的流程）：何时上传、本地与远端谁新、合并、冲突、`SyncLast*` 字段维护、指纹、错误文案、后台同步的触发时机 |
 | `internal/syncclient` | 同步服务器（nas-agent-py）的客户端：账号（登录/注册/刷新/改密码）、订阅状态与卡密、manifest、快照与 blob 的 gzip 上传下载、SSE 事件流，以及保存登录态并自动续期的 `Session`、断线重连的 `Watch` |
 
@@ -111,3 +113,20 @@ KLIP_NAS_PYTHON=/tmp/nasvenv/bin/python go test ./...   # 加上对真实 nas-ag
 - 真正的 `ClipboardHistoryService` / `ClipboardPersistenceService` 的 Go 版（测试里用的是内存里的假历史）：条目的去重、置顶、容量清理、`ReplaceAll` 时删除不再用的图片和文件目录。下一阶段。
 - 界面状态（正在同步、进度条、Toast）、“只有开启云同步才在本地改动后上传”的开关；`UploadAfterLocalMutation` 已提供，是否调用由界面决定。
 - 把 `syncclient.Watch` 的 `onUpdated` 接到 `Auto.OnRemoteUpdated`：只是一行连接，等有应用外壳时做。
+
+## 历史服务与捕获（internal/history、internal/capture）
+
+照 `ClipboardHistoryService`、`ClipboardPersistenceService`、`ClipboardCaptureService`、`ClipboardApplyService`：
+
+- **去重**：开启合并时，同种类、内容哈希相同（不分大小写）的条目不新增，而是把旧条目移到最前，时间、大小、文本换成新的，复制次数加一，置顶和备注保留；新捕获多出来的图片文件和文件缓存目录被删除。
+- **限额**：条数和体积（`MaxItems`、`MaxMegabytes`）；默认置顶的不计入限额；不排除置顶时，置顶的仍计数，但从不被删，所以列表可以超过限额。
+- **文件跟着条目走**：条目被删、被挤出、或被 `ReplaceAll` 换掉时，它的图片文件和 `files/<id>/` 缓存目录一起删除；`ReplaceAll` 只删新列表里用不到的（图片按路径比较，不分大小写；文件目录按 id）。
+- **保存**：变化后 350 毫秒保存一次 `history.json`（期间的更多变化并进同一次保存，不会推迟），`Close` 时再存一次；启动时 `Load` 用 `Normalize` 丢掉内容已不存在的条目。
+- **捕获的顺序**：文本，然后文件，然后图片，取第一个有内容的。文本空白就往下走；开启合并且最上面一条文本相同就什么也不做；应用自己写入剪贴板后 250 毫秒内不捕获。
+- **哈希与大小**：`text:`、`files:`、`img:` 加上大写十六进制 SHA-256（与 C# 一致，所以和 1.0.10 的历史互相去重）；文本的体积是 UTF-16 长度乘 2；文件列表的体积先看缓存副本，再看原文件，最后按路径长度算。
+- **文件过滤**：目录、危险类型（`.exe`、`.dll`、`.ps1`、`.lnk` 等，和 C# 的列表逐项对照）、不在允许扩展名里的、超过大小上限的都不收；允许列表为空表示不限（危险类型除外）；大小上限取“文件上限”和“历史体积上限”中较小的。
+- **单个图片文件**当作图片收（转成 PNG 保存）；读不出来就当普通文件。
+
+与 C# 的差别：C# 里每次删除都发一次“已变化”通知，Go 里一次操作只发一次；Windows 的 DIB 手工转 BMP 没有移植（MyGo 的 `ReadImage` 已经处理）；“其他格式里找图片”的兜底只在剪贴板里没有文本和文件时才试，避免每次变化都多读一遍。
+
+测试里直接读 C# 源码核对：历史的默认限额、危险扩展名列表、哈希前缀、尝试的顺序、250 毫秒、`NNNN_名字` 的缓存命名。

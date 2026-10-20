@@ -82,7 +82,7 @@ func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {
 func (a *Auto) Startup(ctx context.Context) { a.Trigger(ctx, "startup", false) }
 
 // OnRemoteUpdated is for the event stream: another device uploaded.
-func (a *Auto) OnRemoteUpdated(ctx context.Context) { a.Trigger(ctx, "remote_event", false) }
+func (a *Auto) OnRemoteUpdated(ctx context.Context) { a.Trigger(ctx, "sse", false) }
 
 // OnHistoryChanged is for each change of the history. A sync follows after
 // the pause, unless another change comes first.
