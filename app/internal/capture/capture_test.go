@@ -831,3 +831,26 @@ func TestOldCheckDoesNotEndNewerOwnership(t *testing.T) {
 		t.Fatal("the ownership of the newer Apply was ended by the older check")
 	}
 }
+
+func TestEachChangeGetsItsOwnRetryBudget(t *testing.T) {
+	r := newRig(t)
+	var seq atomic.Int64
+	seq.Store(1)
+	r.s.Seq = seq.Load
+	var n atomic.Int32
+	r.s.Retry = func() { n.Add(1) }
+	r.clip.formats = nil
+	for i := 0; i < 8; i++ {
+		r.s.Capture(context.Background()) // one change, looked at again and again
+	}
+	time.Sleep(500 * time.Millisecond)
+	if n.Load() != 5 {
+		t.Fatalf("%d retries for the first change, want 5", n.Load())
+	}
+	seq.Store(2) // a new change, also busy at first
+	r.s.Capture(context.Background())
+	time.Sleep(500 * time.Millisecond)
+	if n.Load() != 6 {
+		t.Fatalf("%d retries in all, the second change must get its own", n.Load())
+	}
+}

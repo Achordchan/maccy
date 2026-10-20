@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -95,6 +96,7 @@ type Service struct {
 	ownGen      atomic.Int64                // moves with every change of it
 	setMu       sync.RWMutex                // guards the capture settings below
 	capMu       sync.Mutex                  // one Capture at a time (the watcher and Retry)
+	triesFor    atomic.Value                // the change the budget is for
 	tries       atomic.Int32                // retries of an unreadable clipboard in a row
 	skipped     atomic.Bool                 // a Capture gave way to an Apply
 	writeGen    atomic.Int64                // moves at the start and the end of every Apply
@@ -197,15 +199,14 @@ func (s *Service) markWritten(verify func() bool) {
 // checkOwn asks the verifier. Once it says the clipboard holds something
 // else, the ownership is over: a later copy of the same text is a new copy.
 func (s *Service) checkOwn(check *func() bool) bool {
-	gen := s.ownGen.Load()
 	if (*check)() {
 		return true
 	}
-	// Only the ownership this check was about may be ended: an Apply that
-	// recorded a newer one meanwhile keeps it.
+	// Only the ownership this very verifier belongs to may be ended: an Apply
+	// that recorded a newer one meanwhile keeps it.
 	s.ownMu.Lock()
 	defer s.ownMu.Unlock()
-	if s.ownGen.Load() == gen {
+	if s.ownCheck.Load() == check {
 		s.ownGen.Add(1)
 		s.lastOwnWrit.Store(0)
 		s.ownSeq.Store(0)
@@ -313,10 +314,11 @@ func (s *Service) Capture(ctx context.Context) error {
 	// When the clipboard could not be read (it was busy), the watcher has
 	// already moved on, so look again a little later: up to five times in a
 	// row, the count starting over with the next clipboard that reads well.
+	key := s.changeKey() // taken before any read: it is the change being looked at
 	wantRetry := false
 	defer func() {
 		if wantRetry {
-			s.retryLater()
+			s.retryLater(key)
 		} else {
 			s.tries.Store(0)
 		}
@@ -753,32 +755,40 @@ func absDiff(a, b uint32) uint64 {
 
 // retryLater asks for another look at the clipboard in 300 ms (the budget of
 // five is kept in tries).
-func (s *Service) retryLater() {
-	if s.Retry == nil || s.tries.Add(1) > 5 {
+func (s *Service) retryLater(key string) {
+	if s.Retry == nil {
 		return
 	}
-	// Which change this is a retry of: the counter, or without one the
-	// content token.
-	moved := func() func() bool {
-		if s.Seq != nil {
-			if at := s.Seq(); at >= 0 {
-				return func() bool { return s.Seq() != at }
-			}
-		}
-		if s.Token != nil {
-			at := s.Token()
-			return func() bool { return s.Token() != at }
-		}
-		return func() bool { return false }
-	}()
+	// The budget is for one change: a new one starts with five again.
+	if prev, _ := s.triesFor.Load().(string); prev != key {
+		s.triesFor.Store(key)
+		s.tries.Store(0)
+	}
+	if s.tries.Add(1) > 5 {
+		return
+	}
 	time.AfterFunc(300*time.Millisecond, func() {
 		// A newer change is the watcher's to take; looking at it here too
 		// would capture it twice.
-		if moved() {
+		if key != "" && s.changeKey() != key {
 			return
 		}
 		s.Retry()
 	})
+}
+
+// changeKey names the clipboard change that is current: the counter, or
+// without one the content token ("" when there is neither).
+func (s *Service) changeKey() string {
+	if s.Seq != nil {
+		if n := s.Seq(); n >= 0 {
+			return "seq:" + strconv.FormatInt(n, 10)
+		}
+	}
+	if s.Token != nil {
+		return "tok:" + s.Token()
+	}
+	return ""
 }
 
 // noteSkipped registers a capture that gave way to an Apply. The Apply may
