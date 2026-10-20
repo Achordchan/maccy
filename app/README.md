@@ -11,6 +11,9 @@
 | `internal/snapshot` | 同步快照（SQLite，schema 2，兼容读 schema 1）的导出与导入 |
 | `internal/history`（服务） | 剪贴板历史列表（C# `ClipboardHistoryService` + `ClipboardPersistenceService`）：去重合并、置顶、备注、拖动排序、按条数/体积清理、被移出的条目的图片和文件缓存一起删除、`ReplaceAll`、防抖保存 `history.json` |
 | `internal/platform` | 系统相关的部分：MyGo 剪贴板接到 `capture.Clipboard`、剪贴板变化轮询（`Watcher`）、变化计数器、前台应用识别 |
+| `internal/panel` | 主面板的界面（MyGo 原生 UI）：搜索、列表、置顶、备注、删除、点击应用；对着 `history.Service`，不依赖窗口，用 `ui.NewTester` 测 |
+| `internal/app` | 把各部分接成一个不带窗口的程序：设置、历史及其文件、捕获、同步（启动时、服务器事件、历史变化后）、状态文字 |
+| `cmd/klip` | 程序入口：托盘、全局快捷键 `Ctrl+Alt+2`、面板窗口 |
 | `internal/capture` | 把剪贴板内容变成历史条目（`ClipboardCaptureService`）和把条目写回剪贴板（`ClipboardApplyService`）；剪贴板本身在接口后面，平台适配（MyGo）以后接 |
 | `internal/syncer` | 同步编排（C# `SyncService` 加上调用它的主窗口/偏好设置里的流程）：何时上传、本地与远端谁新、合并、冲突、`SyncLast*` 字段维护、指纹、错误文案、后台同步的触发时机 |
 | `internal/syncclient` | 同步服务器（nas-agent-py）的客户端：账号（登录/注册/刷新/改密码）、订阅状态与卡密、manifest、快照与 blob 的 gzip 上传下载、SSE 事件流，以及保存登录态并自动续期的 `Session`、断线重连的 `Watch` |
@@ -154,3 +157,32 @@ cd app && KLIP_REAL_CLIPBOARD=1 go test -count=1 -race ./internal/platform/
 - Windows 和 Linux 只验证了能编译（`GOOS=windows|linux go vet`）：`GetClipboardSequenceNumber`、`QueryFullProcessImageNameW`、Windows 上 MyGo 的文件和图片格式都没在真机上跑过。
 - macOS 上用 `osascript` 复制文件得到的格式里没有文本，所以先看文本的顺序没问题；**Finder 里真正按 Cmd+C 复制文件**会不会同时带文件名文本没有验证。如果带，会被当成文本收下，需要在 macOS 上把“文件优先”做成平台规则。
 - 前台应用是在复制发生之后才问的，所以复制后马上切换窗口会记成新窗口（C# 同样）。
+
+## 主面板与装配（internal/panel、internal/app、cmd/klip）
+
+**运行**：`cd app && go run ./cmd/klip`（或 `go tool mygo dev`）。没有 Dock 图标，托盘里有“显示 Klip / 立即同步 / 退出”，`Ctrl+Alt+2` 呼出面板（被占用时退到 `CmdOrCtrl+Alt+Shift+2`），失焦自动隐藏，再启动一次会呼出已运行的那个。数据目录：Windows `%LOCALAPPDATA%\maccy`、macOS `~/Library/Application Support/Klip`、Linux `$XDG_DATA_HOME/klip`。
+
+**面板**
+- 列表：置顶的在前，其余按历史顺序；搜索（不分大小写）匹配文本、备注、图片路径、文件路径，与 C# `Matches` 相同；一行预览（文本折成一行并截断、文件名、图片），第二行是时间、来源应用、复制次数、大小；图片有缩略图（最多缓存 64 张）。
+- 点击一行或回车：写回剪贴板，条目移到最前（`Touch`，复制次数加一，与 C# 一致），面板隐藏。
+- 右键菜单：粘贴、置顶（打勾）、备注…、删除；快捷键 `Cmd/Ctrl+P` 置顶、`Cmd/Ctrl+E` 备注、`Cmd/Ctrl+D` 删除、`Esc`（先清搜索，再隐藏）、`↑ ↓`、`Cmd/Ctrl+Q` 退出。搜索框有焦点时回车和方向键由 `OnTextKey` 接管，所以不用先把焦点移到列表。
+- 备注：搜索框下面出现一行输入框，回车或“保存”；留空清除；“取消”不改。
+- 页脚：条数、同步状态（“同步中…”、“已同步 15:04”、“请先登录”、失败原因）、“同步”按钮。
+
+**装配（app.App）**：读设置和历史（读不了就用默认值，文件原样留着，与 C# 一致）；设置变化立即作用到捕获选项和历史限额（历史按新限额清理发生在下一次变化时，与 C# 一致）；剪贴板轮询 → 捕获 → 历史 → 防抖保存；启动时同步一次，服务器说别的设备上传了就同步，历史变了 1.2 秒后同步；一次只同步一个。1.0.10 升上来的用户已有登录状态，所以同步原样继续。
+
+**与 C# 的差别**
+- 置顶的在列表最前，没有 C# 的“收藏夹”视图切换。
+- 删除没有确认，也没有撤销。
+- 没有偏好设置窗口、登录/注册窗口、更新窗口、图片预览窗口、Shelf（鼠标晃动呼出），也没有开机自启的接线：这些是后面的阶段。登录状态只能沿用 1.0.10 留下的；新用户暂时登不了。
+- 面板只在“来源应用”和备注上和 C# 有同样的数据，没有 C# 面板里的文件图标。
+
+**测试**
+- `internal/panel`：匹配和排序、预览和详情文字、空状态、搜索、点击/键盘/右键菜单、备注编辑和取消、新历史自动出现、重置后选第一行、搜索框焦点下的回车和方向键、键盘置顶和删除；变异检查（置顶顺序、备注保存、删除变成置顶、点击不应用）都能抓到。`KLIP_SHOT=out.png go test -run TestShot ./internal/panel`（加 `KLIP_DARK=1` 为深色）把面板渲染成图片，用来目视检查。
+- `internal/app`：捕获 → 重启后还在；启动前剪贴板里的不收；应用条目后到最前、自己写的不被再收；设置变化作用到限额和捕获；没登录时“立即同步”说“请先登录”；坏文件给默认值且不被覆盖；**两台设备经真实 nas-agent-py**：A 复制 → 同步 → B 启动后下载到；B 复制 → A 通过事件流收到。
+- `internal/settings`：`Manager`（更新即保存、保留未知字段、并发）。
+
+**没有验证的**
+- 真实窗口只做了冒烟：编译出的程序启动、捕获了两次 `pbcopy`（含中文，来源应用识别为 Google Chrome）、历史写进磁盘；因为本机没有屏幕录制权限，**没有看到真实窗口、托盘图标、全局快捷键呼出**，需要人工在本机按 `Ctrl+Alt+2` 目视确认。面板画面用无窗口渲染看过（浅色和深色）。
+- Windows 和 Linux 只验证了能编译。
+- 启动时间和内存没有重测（阶段 1 的数字是 spike 的）。
