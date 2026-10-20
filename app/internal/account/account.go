@@ -479,7 +479,19 @@ func (s *Service) afterPasswordUpdated(email string, epoch int64) {
 	s.epoch.Add(1)
 	s.beforeChange()
 	defer s.afterChange()
+	who := strings.TrimSpace(email)
 	_ = s.Store.Update(func(m *model.Settings) {
+		// The address is remembered for the next sign-in, but the checkpoints are
+		// somebody's: if they are another account's, the address taking their
+		// place must not make them look like its own.
+		owner := strings.TrimSpace(model.Str(m.AuthUserEmail))
+		if owner == "" {
+			owner = s.syncAccount()
+		}
+		if owner != "" && !strings.EqualFold(owner, who) {
+			m.SyncLastLocalFingerprint, m.SyncLastRemoteVersion = nil, nil
+			m.SyncLastRemoteUpdatedAt, m.SyncLastRemoteSha256 = nil, nil
+		}
 		m.AuthUserEmail = &email
 		syncclient.ClearAuthSession(m, false)
 	})

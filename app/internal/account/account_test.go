@@ -475,3 +475,15 @@ func TestOwnershipFollowsThePersistedLoginAfterARecovery(t *testing.T) {
 		t.Fatal("A inherited the checkpoints B made")
 	}
 }
+
+func TestPasswordResetOfAnotherAccountDoesNotAdoptTheCheckpoints(t *testing.T) {
+	s, m := newService(t, "http://127.0.0.1:1")
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a", RefreshToken: "ra", Email: "a@example.com"}, "a@example.com")
+	_ = m.Update(func(st *model.Settings) { st.SyncLastRemoteVersion = model.Ptr("a-state") })
+	s.SignOut()
+	s.afterPasswordUpdated("b@example.com", s.epoch.Load()) // B's password is reset while nobody is signed in
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "b", RefreshToken: "rb", Email: "b@example.com"}, "b@example.com")
+	if m.Get().SyncLastRemoteVersion != nil {
+		t.Fatal("B started with the checkpoints of A")
+	}
+}
