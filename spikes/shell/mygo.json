@@ -1,0 +1,6 @@
+{
+  "name": "KlipSpike",
+  "identifier": "com.example.klipspike",
+  "version": "0.1.0",
+  "out": "build"
+}
