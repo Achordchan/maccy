@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -730,5 +731,32 @@ func TestCheckResultDoesNotReplaceAnInstallation(t *testing.T) {
 	r.c.setChecking(func(s *State) { *s = State{Phase: Available} })
 	if r.c.State().Phase != Downloading {
 		t.Fatalf("a check result replaced the download: %+v", r.c.State())
+	}
+}
+
+func TestUnwritableInstallFolderGoesToTheInstaller(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("modes mean something else here")
+	}
+	r := newCoord(t, "1.0.10")
+	z := zipOf(t, "1.0.11", "win-x64", map[string]string{"maccy.exe": "NEW EXE"}, nil)
+	r.publish(t, "1.0.11", z, true)
+	r.c.Check(context.Background())
+	dir := filepath.Dir(r.exe)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skip("cannot make the folder read-only")
+	}
+	defer os.Chmod(dir, 0o755)
+	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
+		f.Close()
+		t.Skip("writable anyway (root?)")
+	}
+	r.c.Apply(context.Background())
+	if len(r.spawn) != 1 {
+		t.Fatalf("the helper was started %d times", len(r.spawn))
+	}
+	plan, _ := os.ReadFile(r.spawn[0][1])
+	if !strings.Contains(string(plan), "setup.exe") && !strings.Contains(string(plan), "installer") {
+		t.Fatalf("the plan should be the installer's, not the helper's file replacing: %s", plan)
 	}
 }

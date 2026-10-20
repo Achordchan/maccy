@@ -459,7 +459,11 @@ func None(status string) Subscription {
 func (s *Service) Subscription(ctx context.Context) Subscription {
 	ctx, cancel := context.WithTimeout(ctx, passwordTimeout)
 	defer cancel()
+	epoch := s.epoch.Load()
 	token, err := s.EnsureAccessToken(ctx)
+	if err == nil && s.epoch.Load() != epoch {
+		return None("未登录") // the login changed while the token was got: it is not this screen's
+	}
 	if err != nil {
 		return None("查询失败") // no answer: the login is still there
 	}
@@ -518,9 +522,13 @@ func (s *Service) Redeem(ctx context.Context, code string) Result {
 	}
 	ctx, cancel := context.WithTimeout(ctx, passwordTimeout)
 	defer cancel()
+	epoch := s.epoch.Load() // the login the card is redeemed for
 	token, err := s.EnsureAccessToken(ctx)
 	if err != nil {
 		return fail("暂时无法连接服务器，请稍后再试")
+	}
+	if s.epoch.Load() != epoch {
+		return fail("账号在兑换期间发生了变化，请重试")
 	}
 	if token == "" {
 		return fail("请先登录")

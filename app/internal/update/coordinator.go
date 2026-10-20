@@ -257,7 +257,17 @@ func (c *Coordinator) Apply(ctx context.Context) {
 	defer c.fsMu.Unlock()
 
 	notice := ""
-	if info.HasSupportedPackage(c.Client.runtime()) {
+	canWrite := c.installDirWritable()
+	if info.HasSupportedPackage(c.Client.runtime()) && !canWrite {
+		if strings.TrimSpace(info.InstallerURL) == "" {
+			fail("安装目录需要管理员权限，轻量更新无法写入，且这个版本没有提供安装程序。")
+			return
+		}
+		// The helper runs with our rights and could not replace the files; the
+		// installer asks for what it needs.
+		notice = "安装目录需要管理员权限，将改用完整安装包更新。"
+	}
+	if info.HasSupportedPackage(c.Client.runtime()) && canWrite {
 		prep, err := c.Client.DownloadPackage(ctx, *info, c.Root, progress)
 		if err == nil {
 			err = c.startPackage(prep)
@@ -293,6 +303,22 @@ func (c *Coordinator) Apply(ctx context.Context) {
 		return
 	}
 	c.done()
+}
+
+// installDirWritable says whether the folder of the program can be written by
+// this process, which is what the helper will have.
+func (c *Coordinator) installDirWritable() bool {
+	if strings.TrimSpace(c.Exe) == "" {
+		return true
+	}
+	f, err := os.CreateTemp(filepath.Dir(c.Exe), ".klip-write-test-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	_ = os.Remove(name)
+	return true
 }
 
 func firstNonEmpty(v ...string) string {
