@@ -74,6 +74,9 @@ type Service struct {
 	// none); may be nil. With it, the change made by Apply is recognised by
 	// its number, however long the poll takes to notice it.
 	Seq func() int64
+	// Retry is called when a change was not looked at because an Apply was
+	// running; it should capture again (may be nil).
+	Retry func()
 	// OwnWindow is how long after Apply a change is taken for our own when
 	// there is no counter: the poll interval plus the C# 250 ms. Zero is 250 ms.
 	OwnWindow time.Duration
@@ -82,6 +85,7 @@ type Service struct {
 	lastOwnWrit atomic.Int64
 	ownSeq      atomic.Int64 // counter after our last write, plus 2; 0 is none
 	applying    atomic.Int32 // Apply calls in progress
+	skipped     atomic.Bool  // a Capture gave way to an Apply
 	writeGen    atomic.Int64 // moves at the start and the end of every Apply
 }
 
@@ -218,7 +222,11 @@ func has(set map[string]bool, names []string) bool {
 // is the item.
 func (s *Service) Capture(ctx context.Context) error {
 	gen := s.writeGen.Load()
-	if s.applying.Load() > 0 || s.isOwnChange() {
+	if s.applying.Load() > 0 {
+		s.skipped.Store(true)
+		return nil
+	}
+	if s.isOwnChange() {
 		return nil
 	}
 	formats := s.Clipboard.Formats()
@@ -232,6 +240,7 @@ func (s *Service) Capture(ctx context.Context) error {
 	}
 	add := func(it model.Item) {
 		if s.interfered(gen) {
+			s.skipped.Store(true)
 			// An Apply wrote while we read: this is our own content. The files
 			// made for it belong to no item, so they go too.
 			if p := model.Str(it.ImageFilePath); p != "" {
@@ -515,19 +524,24 @@ func newGUID() string {
 func (s *Service) Apply(it model.Item) error {
 	s.applying.Add(1)
 	s.writeGen.Add(1)
-	defer func() { s.writeGen.Add(1); s.applying.Add(-1) }()
+	defer func() {
+		s.writeGen.Add(1)
+		if s.applying.Add(-1) == 0 && s.skipped.Swap(false) && s.Retry != nil {
+			go s.Retry() // a change came during the write and was not looked at
+		}
+	}()
 	s.MarkWriteByUs()
-	wrote, err := s.write(it)
+	wrote, files, err := s.write(it)
 	if wrote && err == nil {
-		s.markWritten(s.verifier(it)) // only a write that happened can be recognised as ours
+		s.markWritten(s.verifier(it, files)) // only a write that happened can be recognised as ours
 	}
 	return err
 }
 
 // verifier reads the clipboard back to see that it still holds what Apply
-// wrote: the text itself, the same number of files with the same names, or a
-// picture of the same size.
-func (s *Service) verifier(it model.Item) func() bool {
+// wrote: the text itself, the files that were written (by name), or a picture
+// with the same pixels.
+func (s *Service) verifier(it model.Item, files []string) func() bool {
 	switch it.Kind {
 	case model.KindText:
 		want := model.Str(it.Text)
@@ -536,17 +550,11 @@ func (s *Service) verifier(it model.Item) func() bool {
 		return func() bool {
 			got, _ := s.Clipboard.ReadFiles()
 			got = nonBlank(got)
-			var want []string
-			for _, p := range it.FilePaths {
-				if strings.TrimSpace(p) != "" && strings.TrimSpace(baseName(p)) != "" {
-					want = append(want, baseName(p))
-				}
-			}
-			if len(got) == 0 || len(got) > len(want) {
+			if len(got) != len(files) {
 				return false
 			}
 			for i, g := range got {
-				if !strings.HasSuffix(baseName(g), baseName(it.FilePaths[i])) { // cached copies are NNNN_name
+				if baseName(g) != baseName(files[i]) {
 					return false
 				}
 			}
@@ -558,13 +566,39 @@ func (s *Service) verifier(it model.Item) func() bool {
 			if err != nil {
 				return true
 			}
-			a, errA := png.DecodeConfig(bytes.NewReader(want))
-			got := s.Clipboard.ReadImage()
-			b, _, errB := image.DecodeConfig(bytes.NewReader(got))
-			return errA == nil && errB == nil && a.Width == b.Width && a.Height == b.Height
+			return samePicture(want, s.Clipboard.ReadImage())
 		}
 	}
 	return nil
+}
+
+// samePicture says whether two encoded pictures show the same pixels, give or
+// take the rounding a trip through the clipboard may do (alpha is ignored when
+// the clipboard side has none).
+func samePicture(a, b []byte) bool {
+	ia, _, errA := image.Decode(bytes.NewReader(a))
+	ib, _, errB := image.Decode(bytes.NewReader(b))
+	if errA != nil || errB != nil || ia.Bounds().Dx() != ib.Bounds().Dx() || ia.Bounds().Dy() != ib.Bounds().Dy() {
+		return false
+	}
+	var sum, n uint64
+	ba, bb := ia.Bounds(), ib.Bounds()
+	for y := 0; y < ba.Dy(); y++ {
+		for x := 0; x < ba.Dx(); x++ {
+			r1, g1, b1, _ := ia.At(ba.Min.X+x, ba.Min.Y+y).RGBA()
+			r2, g2, b2, _ := ib.At(bb.Min.X+x, bb.Min.Y+y).RGBA()
+			sum += absDiff(r1, r2) + absDiff(g1, g2) + absDiff(b1, b2)
+			n += 3
+		}
+	}
+	return n == 0 || sum/n <= 2*257 // a mean difference of two levels of 255
+}
+
+func absDiff(a, b uint32) uint64 {
+	if a > b {
+		return uint64(a - b)
+	}
+	return uint64(b - a)
 }
 
 // interfered says whether an Apply ran, or is running, since gen was read.
@@ -573,10 +607,10 @@ func (s *Service) interfered(gen int64) bool {
 }
 
 // write puts the item on the clipboard and says whether it wrote anything.
-func (s *Service) write(it model.Item) (bool, error) {
+func (s *Service) write(it model.Item) (bool, []string, error) {
 	switch it.Kind {
 	case model.KindText:
-		return true, s.Clipboard.WriteText(model.Str(it.Text))
+		return true, nil, s.Clipboard.WriteText(model.Str(it.Text))
 
 	case model.KindFileList:
 		var resolved []string
@@ -597,20 +631,20 @@ func (s *Service) write(it model.Item) (bool, error) {
 			}
 		}
 		if len(resolved) == 0 {
-			return false, nil
+			return false, nil, nil
 		}
-		return true, s.Clipboard.WriteFiles(resolved)
+		return true, resolved, s.Clipboard.WriteFiles(resolved)
 
 	case model.KindImage:
 		p := model.Str(it.ImageFilePath)
 		if strings.TrimSpace(p) == "" || !isFile(p) {
-			return false, nil
+			return false, nil, nil
 		}
 		data, err := os.ReadFile(p)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
-		return true, s.Clipboard.WriteImage(data, p)
+		return true, nil, s.Clipboard.WriteImage(data, p)
 	}
-	return false, errors.New("capture: unknown item kind")
+	return false, nil, errors.New("capture: unknown item kind")
 }

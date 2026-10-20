@@ -563,3 +563,41 @@ func TestApplyThatLostTheClipboardIsNotOurs(t *testing.T) {
 		t.Fatal("a copy that replaced our write must be captured, window or not")
 	}
 }
+
+func TestSamePicture(t *testing.T) {
+	a := tinyPNG(t)
+	if !samePicture(a, a) {
+		t.Error("the same picture")
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for x := 0; x < 4; x++ {
+		img.Set(3-x, x, color.RGBA{10, 10, 200, 255})
+	}
+	var b bytes.Buffer
+	_ = png.Encode(&b, img)
+	if samePicture(a, b.Bytes()) {
+		t.Error("another picture of the same size is not the same")
+	}
+}
+
+func TestChangeDuringApplyIsRetried(t *testing.T) {
+	r := newRig(t)
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "from elsewhere"
+	retried := make(chan struct{}, 1)
+	r.s.Retry = func() { retried <- struct{}{} }
+	r.clip.onRead = func() {} // Apply is in progress when the watcher looks
+	r.s.applying.Add(1)
+	r.s.Capture(context.Background())
+	r.s.applying.Add(-1)
+	if r.h.Len() != 0 {
+		t.Fatal("nothing is read during an Apply")
+	}
+	text := "x"
+	r.clip.text = "x"
+	_ = r.s.Apply(model.Item{Kind: model.KindText, Text: &text})
+	select {
+	case <-retried:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the change that was skipped must be looked at again when Apply is done")
+	}
+}
