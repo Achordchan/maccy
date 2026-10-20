@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"klip/internal/model"
 	"klip/internal/paths"
@@ -187,4 +188,29 @@ func TestHistoryIsPrivate(t *testing.T) {
 	}
 	checkMode(l.Root, 0o700)
 	checkMode(l.History(), 0o600)
+}
+
+// A file list whose files are all empty is still content.
+func TestEmptyFileListSurvivesSaveAndLoad(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	id := "16fd2706-8baf-433b-82eb-8c7fada847da"
+	dir := filepath.Join(l.Files(), strings.ReplaceAll(id, "-", ""))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(dir, "0000_empty.txt")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items := []model.Item{{
+		ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()},
+		FilePaths: []string{empty}, CopyCount: 1,
+	}}
+	if err := Save(l, items); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(l)
+	if err != nil || len(got) != 1 || got[0].ID != id {
+		t.Errorf("empty file list: %v %+v", err, got)
+	}
 }

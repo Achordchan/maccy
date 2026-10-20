@@ -1981,3 +1981,54 @@ func TestDownloadMergeKeepsCountsWithOneMissingHash(t *testing.T) {
 		}
 	}
 }
+
+// A first-sync merge records the pending upload before it is attempted.
+func TestMergeRecordsThePendingUpload(t *testing.T) {
+	remote := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "remote")
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{remote}))
+	defer srv.Close()
+	h := &mergeHistory{local: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	if err := syn.MergeAndApply(context.Background(), ManifestInfo{Version: "v1"}, "pre-merge", nil, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := model.Str(s.SyncLastLocalFingerprint); got != "pre-merge" {
+		t.Errorf("fingerprint %q: the pending upload was not recorded", got)
+	}
+}
+
+// The merge joins an id group and a hash group that the same item connects.
+func TestMergeItemsUnifiesIDAndHashGroups(t *testing.T) {
+	const (
+		a = "0f8fad5b-d9cb-469f-a165-70867728950e"
+		b = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	)
+	hash := "H"
+	remote := []model.Item{
+		{ID: a, Kind: model.KindText, Text: model.Ptr("a"), CopyCount: 1, CapturedAt: model.Time{Time: time.Now().Add(-3 * time.Second)}},
+		{ID: b, Kind: model.KindText, Text: model.Ptr("b"), CopyCount: 1, ContentHash: &hash, CapturedAt: model.Time{Time: time.Now().Add(-2 * time.Second)}},
+	}
+	local := []model.Item{{
+		ID: a, Kind: model.KindText, Text: model.Ptr("a2"), CopyCount: 2, ContentHash: &hash,
+		CapturedAt: model.Time{Time: time.Now()},
+	}}
+	out := MergeItems(remote, local)
+	if len(out) != 1 {
+		t.Fatalf("merged %+v: the id and hash groups stayed apart", out)
+	}
+}
+
+// The copy-count reconciliation also covers hash-matched items with
+// different ids.
+func TestDownloadMergeCountsAcrossIDsByHash(t *testing.T) {
+	hash := "H"
+	remote := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "same")
+	remote.ContentHash, remote.CopyCount = &hash, 1
+	local := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "same")
+	local.ContentHash, local.CopyCount = &hash, 7
+	out := MergeForDownload([]model.Item{remote}, []model.Item{local})
+	if len(out) != 1 || out[0].CopyCount != 7 {
+		t.Errorf("merged %+v: the local count was lost", out)
+	}
+}

@@ -151,15 +151,13 @@ func Normalize(l paths.Layout, it model.Item) (model.Item, bool) {
 			for _, p := range cached {
 				size += fileSize(p)
 			}
-		}
-		if size <= 0 {
+		} else {
 			for _, p := range paths {
 				size += fileSize(p)
 			}
 		}
-		if size <= 0 {
-			return it, false
-		}
+		// Existence, not size, is what keeps the item: a file list of empty
+		// files is still content.
 		it.ApproxBytes = size
 		it.FilePaths = paths
 		return it, true

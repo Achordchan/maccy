@@ -743,6 +743,14 @@ func payloadEntryCommitted(items []model.Item, e payloadJournalEntry) bool {
 			break
 		}
 	}
+	// The installed files must be there: without them the replacement never
+	// finished, whatever the history says.
+	for name, want := range e.Files {
+		sum, err := fileSHA256(filepath.Join(e.Target, name))
+		if err != nil || !strings.EqualFold(sum, want) {
+			return false
+		}
+	}
 	if owner == nil {
 		return true // the item is gone: nothing refers to the folder
 	}

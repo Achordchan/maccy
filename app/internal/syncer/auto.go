@@ -22,6 +22,9 @@ type Auto struct {
 	Run func(ctx context.Context, reason string, manual bool) error
 	// Done is called after each sync, with its error (nil on success).
 	Done func(reason string, manual bool, err error)
+	// Context, when set, is the application's lifetime context for a follow-up
+	// run: the trigger that queued it may have been cancelled by then.
+	Context context.Context
 
 	busy        atomic.Bool
 	suppressed  atomic.Bool
@@ -109,7 +112,7 @@ func (a *Auto) finish(ctx context.Context) {
 	if a.pending.Swap(false) && !a.suppressed.Load() && a.CanSync() {
 		a.busy.Store(true)
 		a.startMu.Unlock()
-		go a.perform(ctx, "auto", false)
+		go a.perform(a.baseContext(), "auto", false)
 		return
 	}
 	a.startMu.Unlock()
@@ -122,6 +125,14 @@ func (a *Auto) Startup(ctx context.Context) { a.Trigger(ctx, "startup", false) }
 // that arrives while a sync runs is kept (Trigger records it) and synced after
 // it: the running sync may have read an older manifest.
 func (a *Auto) OnRemoteUpdated(ctx context.Context) { a.Trigger(ctx, "remote_event", false) }
+
+// baseContext is the application's lifetime context, or Background.
+func (a *Auto) baseContext() context.Context {
+	if a.Context != nil {
+		return a.Context
+	}
+	return context.Background()
+}
 
 // OnHistoryChanged is for each change of the history. A sync follows after
 // the pause, unless another change comes first. A change that arrives while

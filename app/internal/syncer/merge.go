@@ -22,6 +22,30 @@ func MergeItems(remote, local []model.Item) []model.Item {
 	// it). The snapshot export keeps one row per id, so the merged history
 	// must too.
 	byID := map[string]string{}
+	// fold joins another group into into: the two are the same item (an id
+	// group and a hash group can meet through an item that has both).
+	fold := func(into, other string, isLocal bool) {
+		if other == "" || other == into {
+			return
+		}
+		value, ok := merged[other]
+		if !ok {
+			return
+		}
+		merged[into] = mergeDuplicate(merged[into], value, isLocal)
+		delete(merged, other)
+		for i, k := range order {
+			if k == other {
+				order = append(order[:i], order[i+1:]...)
+				break
+			}
+		}
+		for alias, k := range byID {
+			if k == other {
+				byID[alias] = into
+			}
+		}
+	}
 	add := func(it model.Item, isLocal bool) {
 		key := mergeKey(it)
 		if strings.TrimSpace(key) == "" {
@@ -33,14 +57,24 @@ func MergeItems(remote, local []model.Item) []model.Item {
 		if id != "" && id != emptyGUID {
 			if existingKey, ok := byID[id]; ok && existingKey != key && merged[existingKey].Kind == it.Kind {
 				merged[existingKey] = mergeDuplicate(merged[existingKey], it, isLocal)
+				fold(existingKey, key, isLocal)
+				byID[id] = existingKey
 				return
 			}
 		}
 		if existing, ok := merged[key]; ok {
 			merged[key] = mergeDuplicate(existing, it, isLocal)
-			mergedID := strings.ToLower(strings.TrimSpace(merged[key].ID))
-			if mergedID != "" && mergedID != emptyGUID {
+			if mergedID := strings.ToLower(strings.TrimSpace(merged[key].ID)); mergedID != "" && mergedID != emptyGUID {
+				if other, ok := byID[mergedID]; ok && other != key {
+					fold(key, other, isLocal)
+				}
 				byID[mergedID] = key
+			}
+			if id != "" && id != emptyGUID {
+				if other, ok := byID[id]; ok && other != key {
+					fold(key, other, isLocal)
+				}
+				byID[id] = key
 			}
 			return
 		}

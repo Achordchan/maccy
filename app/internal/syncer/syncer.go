@@ -962,6 +962,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		}
 		return ErrSessionChanged
 	}
+	// The merged history is on disk: record the pending upload before the
+	// payload cleanup and the upload that follows.
+	s.persistPendingMerge(preMergeFingerprint, basis)
 	if moves != nil {
 		moves.Commit()
 	}
@@ -1184,14 +1187,20 @@ func (s *Syncer) ownPayload(p string) bool {
 	return false
 }
 
-// downloadCountKey is the identity MergeItems reconciled an item to: the id
-// when it has one (an older item may have no content hash), else the hash.
-func downloadCountKey(it model.Item) string {
-	id := strings.ToLower(strings.TrimSpace(it.ID))
-	if id != "" && id != emptyGUID {
-		return "id:" + itoa(int(it.Kind)) + ":" + id
+// sameMergeIdentity says two items became one in MergeItems: same kind and
+// the same id, or the same content hash (an older item may have no hash).
+func sameMergeIdentity(a, b model.Item) bool {
+	if a.Kind != b.Kind {
+		return false
 	}
-	return strings.ToLower(mergeKey(it))
+	ha := strings.TrimSpace(model.Str(a.ContentHash))
+	hb := strings.TrimSpace(model.Str(b.ContentHash))
+	if ha != "" && hb != "" && strings.EqualFold(ha, hb) {
+		return true
+	}
+	ia := strings.ToLower(strings.TrimSpace(a.ID))
+	ib := strings.ToLower(strings.TrimSpace(b.ID))
+	return ia != "" && ia != emptyGUID && ia == ib
 }
 
 // MergeForDownload merges a downloaded history with the local one when a
@@ -1200,28 +1209,20 @@ func downloadCountKey(it model.Item) string {
 // is the larger one, not the sum.
 func MergeForDownload(remote, local []model.Item) []model.Item {
 	merged := MergeItems(remote, local)
-	remoteCount := make(map[string]int32, len(remote))
-	localCount := make(map[string]int32, len(local))
-	for _, it := range remote {
-		remoteCount[downloadCountKey(it)] = it.CopyCount
-	}
-	for _, it := range local {
-		localCount[downloadCountKey(it)] = it.CopyCount
-	}
 	for i := range merged {
-		k := downloadCountKey(merged[i])
-		if k == "" {
-			continue
+		best, found := int32(0), false
+		for _, it := range remote {
+			if sameMergeIdentity(merged[i], it) {
+				best, found = max(best, it.CopyCount), true
+			}
 		}
-		r, rok := remoteCount[k]
-		l, lok := localCount[k]
-		switch {
-		case rok && lok:
-			merged[i].CopyCount = max(r, l)
-		case rok:
-			merged[i].CopyCount = r
-		case lok:
-			merged[i].CopyCount = l
+		for _, it := range local {
+			if sameMergeIdentity(merged[i], it) {
+				best, found = max(best, it.CopyCount), true
+			}
+		}
+		if found {
+			merged[i].CopyCount = best
 		}
 	}
 	return merged

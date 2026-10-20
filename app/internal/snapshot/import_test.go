@@ -491,3 +491,37 @@ func TestJournalFromApplyPayloadsMatchesTheResult(t *testing.T) {
 		}
 	}
 }
+
+// A migrated item whose FilePaths are the original documents still needs the
+// installed cache files for the replacement to count as committed.
+func TestRecoverPayloadsRequiresTheInstalledFiles(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	target := filepath.Join(l.Files(), "16fd27068baf433b82eb8c7fada847da")
+	backup := target + ".old-deadbeef"
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "0000_old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The history only names the user's document, not the cache.
+	items := []model.Item{{
+		ID: "16fd2706-8baf-433b-82eb-8c7fada847da", Kind: model.KindFileList,
+		FilePaths: []string{filepath.Join(t.TempDir(), "document.pdf")}, CopyCount: 1,
+	}}
+	entry := payloadJournalEntry{
+		Target: target, Backup: backup,
+		Files: map[string]string{"0000_new.txt": strings.Repeat("a", 64)},
+	}
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{entry}); err != nil {
+		t.Fatal(err)
+	}
+	RecoverPayloads(l, items)
+
+	if b, err := os.ReadFile(filepath.Join(target, "0000_old.txt")); err != nil || string(b) != "old" {
+		t.Errorf("the backup was not restored: %q %v", b, err)
+	}
+}
