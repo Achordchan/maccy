@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"runtime"
 	"unsafe"
 
 	"klip/internal/capture"
@@ -16,7 +17,10 @@ func ForegroundApp() *capture.AppIdentity {
 		return nil
 	}
 	// The objects below are autoreleased; this may run on a goroutine that
-	// has no pool, so make one.
+	// has no pool, so make one. A pool belongs to the thread that made it,
+	// so the goroutine stays on its thread until the pool is drained.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	pool := msgSend(msgSend(getClass("NSAutoreleasePool"), selReg("alloc")), selReg("init"))
 	defer msgSend(pool, selReg("drain"))
 

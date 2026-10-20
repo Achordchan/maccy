@@ -62,7 +62,8 @@ func (p *Persister) save() error {
 }
 
 // onChanged schedules one save: changes during the wait are in that save,
-// they do not start another (and do not push it back).
+// they do not start another (and do not push it back). A change after the
+// snapshot is taken starts the next one.
 func (p *Persister) onChanged() {
 	if !p.scheduled.CompareAndSwap(false, true) {
 		return
@@ -78,7 +79,9 @@ func (p *Persister) onChanged() {
 		d = 350 * time.Millisecond
 	}
 	p.timer = time.AfterFunc(d, func() {
-		defer p.scheduled.Store(false)
+		// Clear the flag before the snapshot: a change that comes while the
+		// disk is written then schedules the next save instead of being lost.
+		p.scheduled.Store(false)
 		_ = p.save()
 	})
 }

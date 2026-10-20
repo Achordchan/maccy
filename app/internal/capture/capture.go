@@ -70,8 +70,17 @@ type Service struct {
 	Now   func() time.Time
 	NewID func() string
 
+	// Seq is the clipboard change counter (negative when the platform has
+	// none); may be nil. With it, the change made by Apply is recognised by
+	// its number, however long the poll takes to notice it.
+	Seq func() int64
+	// OwnWindow is how long after Apply a change is taken for our own when
+	// there is no counter: the poll interval plus the C# 250 ms. Zero is 250 ms.
+	OwnWindow time.Duration
+
 	allowed     map[string]bool
 	lastOwnWrit atomic.Int64
+	ownSeq      atomic.Int64 // counter after our last write, plus 2; 0 is none
 }
 
 // New returns a Service with the defaults of ClipboardCaptureService: all
@@ -99,7 +108,38 @@ func (s *Service) SetFileExtensions(list string) { s.allowed = parseExtensions(l
 
 // MarkWriteByUs says that the app has just written to the clipboard, so that
 // the change that follows is not captured again.
-func (s *Service) MarkWriteByUs() { s.lastOwnWrit.Store(s.Now().UnixNano()) }
+func (s *Service) MarkWriteByUs() {
+	s.lastOwnWrit.Store(s.Now().UnixNano())
+	s.ownSeq.Store(0)
+}
+
+// markWritten is called when the write is done: the counter then stands where
+// our own change left it.
+func (s *Service) markWritten() {
+	s.lastOwnWrit.Store(s.Now().UnixNano())
+	if s.Seq != nil {
+		if n := s.Seq(); n >= 0 {
+			s.ownSeq.Store(n + 2)
+		}
+	}
+}
+
+// isOwnChange says whether the clipboard is as our last write left it, or the
+// write is too recent to tell.
+func (s *Service) isOwnChange() bool {
+	if s.Seq != nil {
+		if own := s.ownSeq.Load(); own != 0 {
+			if n := s.Seq(); n >= 0 && n == own-2 {
+				return true
+			}
+		}
+	}
+	w := s.OwnWindow
+	if w <= 0 {
+		w = 250 * time.Millisecond
+	}
+	return s.Now().UnixNano()-s.lastOwnWrit.Load() < int64(w)
+}
 
 // dangerousExtensions are never captured, whatever the list says.
 var dangerousExtensions = map[string]bool{
@@ -146,11 +186,12 @@ func has(set map[string]bool, names []string) bool {
 }
 
 // Capture reads the clipboard once and adds what it finds to the history.
-// It does nothing for the 250 ms after the app wrote to the clipboard itself.
+// It does nothing for the change the app made itself with Apply: found by the
+// change counter when there is one, else by the 250 ms (OwnWindow) after it.
 // Text comes first, then files, then images; the first that yields something
 // is the item.
 func (s *Service) Capture(ctx context.Context) error {
-	if s.Now().UnixNano()-s.lastOwnWrit.Load() < int64(250*time.Millisecond) {
+	if s.isOwnChange() {
 		return nil
 	}
 	formats := s.Clipboard.Formats()
@@ -423,6 +464,7 @@ func newGUID() string {
 // that is gone is not an error: nothing is written.
 func (s *Service) Apply(it model.Item) error {
 	s.MarkWriteByUs()
+	defer s.markWritten()
 	switch it.Kind {
 	case model.KindText:
 		return s.Clipboard.WriteText(model.Str(it.Text))

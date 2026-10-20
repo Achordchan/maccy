@@ -1,6 +1,8 @@
 package platform
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/url"
 	"os"
@@ -70,4 +72,28 @@ func (Clipboard) WriteImage(png []byte, filePath string) error {
 		}
 	}
 	return mygo.Clipboard.WriteImage(png)
+}
+
+// ContentFingerprint is a hash of what is on the clipboard (its formats, the
+// text, the file list and the picture), for the platforms that have no change
+// counter: the Watcher asks for a change only when it differs.
+func ContentFingerprint() string {
+	c := Clipboard{}
+	formats := c.Formats()
+	h := sha256.New()
+	h.Write([]byte(strings.Join(formats, "\x00")))
+	h.Write([]byte{1})
+	h.Write([]byte(c.ReadText()))
+	h.Write([]byte{1})
+	if files, err := c.ReadFiles(); err == nil {
+		h.Write([]byte(strings.Join(files, "\x00")))
+	}
+	h.Write([]byte{1})
+	for _, f := range formats {
+		if strings.Contains(strings.ToLower(f), "image") || strings.Contains(strings.ToLower(f), "png") {
+			h.Write(c.ReadImage())
+			break
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

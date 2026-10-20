@@ -183,6 +183,28 @@ func TestOwnWritesAreNotCaptured(t *testing.T) {
 	}
 }
 
+func TestOwnWriteIsFoundByCounter(t *testing.T) {
+	r := newRig(t)
+	seq := int64(10)
+	r.s.Seq = func() int64 { return seq }
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "from us"
+	if err := r.s.Apply(model.Item{Kind: model.KindText, Text: model.Ptr("from us")}); err != nil {
+		t.Fatal(err)
+	}
+	seq = 11 // our write moved the counter
+	r.s.ownSeq.Store(seq + 2)
+	r.now = r.now.Add(time.Second) // a slow poll: far past the 250 ms
+	r.s.Capture(context.Background())
+	if r.h.Len() != 0 {
+		t.Fatal("our own change, seen late, must not be captured")
+	}
+	seq = 12 // somebody else copied
+	r.s.Capture(context.Background())
+	if r.h.Len() != 1 {
+		t.Fatal("a later change counts")
+	}
+}
+
 func TestImageCapture(t *testing.T) {
 	r := newRig(t)
 	data := tinyPNG(t)

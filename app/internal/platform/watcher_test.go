@@ -83,3 +83,16 @@ func TestWatcherRun(t *testing.T) {
 		t.Fatal("Run did not return after cancel")
 	}
 }
+
+func TestWatcherContentFallback(t *testing.T) {
+	w := &Watcher{}
+	steps := []struct {
+		fp   string
+		want bool
+	}{{"a", false}, {"a", false}, {"b", true}, {"b", false}, {"a", true}}
+	for _, s := range steps {
+		if got := w.contentMoved(s.fp); got != s.want {
+			t.Fatalf("contentMoved(%q) = %v, want %v", s.fp, got, s.want)
+		}
+	}
+}
