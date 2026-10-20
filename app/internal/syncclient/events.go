@@ -145,16 +145,11 @@ func (c *Client) Watch(ctx context.Context, ts TokenSource, opts WatchOptions, o
 		}()
 	}
 
-	// An upload made while the stream was down is never announced on the new
-	// one: when it is open again after having been open, the other devices'
-	// changes are asked for as if an event had come.
-	opened := false
-	onOpen := func() {
-		if opened {
-			dispatch(Event{Name: "sync-updated"})
-		}
-		opened = true
-	}
+	// What another device uploaded while there was no stream is never announced
+	// on it: each time it is open, changes are asked for as if an event had come
+	// (the first time too: the startup sync may have been made before the
+	// stream was there to hear an upload that came after it).
+	onOpen := func() { dispatch(Event{Name: "sync-updated"}) }
 
 	delay := opts.InitialDelay
 	wait := func(d time.Duration) bool {

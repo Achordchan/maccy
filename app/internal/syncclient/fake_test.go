@@ -448,7 +448,7 @@ func TestGetRetriesOnceThenReportsTimeout(t *testing.T) {
 	}
 }
 
-func TestWatchAsksForTheMissedChangesWhenTheStreamComesBack(t *testing.T) {
+func TestWatchAsksForChangesEachTimeTheStreamOpens(t *testing.T) {
 	var connects atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := connects.Add(1)
@@ -456,6 +456,7 @@ func TestWatchAsksForTheMissedChangesWhenTheStreamComesBack(t *testing.T) {
 		io.WriteString(w, "event: connected\ndata: {}\n\n")
 		w.(http.Flusher).Flush()
 		if n == 1 {
+			time.Sleep(100 * time.Millisecond)
 			return // the connection drops; nothing is announced for what happens next
 		}
 		<-r.Context().Done()
@@ -467,18 +468,18 @@ func TestWatchAsksForTheMissedChangesWhenTheStreamComesBack(t *testing.T) {
 	var updates atomic.Int32
 	done := make(chan struct{})
 	go func() {
-		c.Watch(ctx, ts, WatchOptions{InitialDelay: 10 * time.Millisecond, MaxDelay: 40 * time.Millisecond, Debounce: 20 * time.Millisecond},
+		c.Watch(ctx, ts, WatchOptions{InitialDelay: 150 * time.Millisecond, MaxDelay: 300 * time.Millisecond, Debounce: 20 * time.Millisecond},
 			func() { updates.Add(1) })
 		close(done)
 	}()
 	deadline := time.Now().Add(3 * time.Second)
-	for updates.Load() < 1 && time.Now().Before(deadline) {
+	for updates.Load() < 2 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 	<-done
-	if connects.Load() != 2 || updates.Load() != 1 {
-		t.Fatalf("%d connections, %d reconciliations: the first connection is covered by the initial sync, the second by one", connects.Load(), updates.Load())
+	if connects.Load() != 2 || updates.Load() != 2 {
+		t.Fatalf("%d connections, %d reconciliations: every opening of the stream asks once", connects.Load(), updates.Load())
 	}
 }
