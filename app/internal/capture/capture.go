@@ -97,6 +97,7 @@ type Service struct {
 	ownGen      atomic.Int64                // moves with every change of it
 	setMu       sync.RWMutex                // guards the capture settings below
 	capMu       sync.Mutex                  // one Capture at a time (the watcher and Retry)
+	lastDone    atomic.Value                // the change key of the last capture that was kept
 	triesFor    atomic.Value                // the change the budget is for
 	tries       atomic.Int32                // retries of an unreadable clipboard in a row
 	skipped     atomic.Bool                 // a Capture gave way to an Apply
@@ -319,6 +320,9 @@ func (s *Service) Capture(ctx context.Context) error {
 	// already moved on, so look again a little later: up to five times in a
 	// row, the count starting over with the next clipboard that reads well.
 	key := s.changeKey() // taken before any read: it is the change being looked at
+	if key != "" && s.lastDone.Load() == any(key) {
+		return nil // this change was taken already (the watcher saw it late)
+	}
 	wantRetry := false
 	defer func() {
 		if wantRetry {
@@ -342,21 +346,19 @@ func (s *Service) Capture(ctx context.Context) error {
 	add := func(it model.Item) {
 		if s.interfered(gen) {
 			s.noteSkipped()
-			// An Apply wrote while we read: this is our own content. The files
-			// made for it belong to no item, so they go too.
-			if p := model.Str(it.ImageFilePath); p != "" {
-				_ = os.Remove(p)
-			}
-			if it.Kind == model.KindFileList {
-				_ = os.RemoveAll(filepath.Join(s.Layout.Files(), strings.ReplaceAll(strings.ToLower(it.ID), "-", "")))
-			}
+			// An Apply wrote while we read: this is our own content.
+			s.discard(it)
 			return
 		}
 		if key != "" && s.changeKey() != key {
 			// The clipboard changed while we read it: what was read may be the
 			// newer content, which the watcher takes at its next look. Taking
 			// it here too would capture it twice.
+			s.discard(it)
 			return
+		}
+		if key != "" {
+			s.lastDone.Store(key) // the next look at this same change is a repeat
 		}
 		wantRetry = false // something was captured: nothing to look at again
 		now := model.Time{Time: s.Now()}
@@ -767,6 +769,17 @@ func absDiff(a, b uint32) uint64 {
 		return uint64(a - b)
 	}
 	return uint64(b - a)
+}
+
+// discard throws away an item that was made but not kept: the files made for
+// it belong to no item, so they go too.
+func (s *Service) discard(it model.Item) {
+	if p := model.Str(it.ImageFilePath); p != "" {
+		_ = os.Remove(p)
+	}
+	if it.Kind == model.KindFileList {
+		_ = os.RemoveAll(filepath.Join(s.Layout.Files(), strings.ReplaceAll(strings.ToLower(it.ID), "-", "")))
+	}
 }
 
 // retryLater asks for another look at the clipboard in 300 ms (the budget of

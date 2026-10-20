@@ -882,3 +882,39 @@ func TestChangeWhileReadingIsLeftToTheWatcher(t *testing.T) {
 		t.Fatal("content read across a change is the watcher's to take at its next look")
 	}
 }
+
+func TestSameChangeIsNotTakenTwice(t *testing.T) {
+	r := newRig(t)
+	var seq atomic.Int64
+	seq.Store(2)
+	r.s.Seq = seq.Load
+	r.clip.formats, r.clip.image = []string{"image/png"}, tinyPNG(t)
+	r.s.Capture(context.Background()) // captured under the key of change 2
+	r.s.Capture(context.Background()) // the watcher, which still holds change 1, comes for it again
+	items := r.h.Items()
+	if len(items) != 1 || items[0].CopyCount != 1 {
+		t.Fatalf("%d items, copy count %d: one change, one capture", len(items), items[0].CopyCount)
+	}
+}
+
+func TestDiscardedCaptureLeavesNoFiles(t *testing.T) {
+	r := newRig(t)
+	var seq atomic.Int64
+	seq.Store(1)
+	r.s.Seq = seq.Load
+	r.clip.formats, r.clip.image = []string{"image/png"}, tinyPNG(t)
+	r.clip.onRead = func() {}
+	// The counter moves while the picture is read and saved.
+	r.s.Clipboard = &moveOnImage{fakeClip: r.clip, move: func() { seq.Store(2) }}
+	r.s.Capture(context.Background())
+	if entries, _ := os.ReadDir(r.l.Images()); len(entries) != 0 {
+		t.Fatalf("%d files left from a capture that was dropped", len(entries))
+	}
+}
+
+type moveOnImage struct {
+	*fakeClip
+	move func()
+}
+
+func (m *moveOnImage) ReadImage() []byte { m.move(); return m.fakeClip.ReadImage() }
