@@ -575,3 +575,25 @@ func TestManualSyncThatFindsItselfSignedOutIsCounted(t *testing.T) {
 	waitFor(t, "the sync is over", func() bool { return a.SyncStatus() == "请先登录" })
 	waitFor(t, "counted out", func() bool { return a.syncing.Load() == 0 && !a.runActive.Load() })
 }
+
+// A deletion that could not be uploaded is sent before the next sync reconciles
+// anything, or the server's older copy could win the merge.
+func TestPendingDeletionUploadGoesBeforeTheNextSync(t *testing.T) {
+	srv := nastest.Start(t)
+	ctx := context.Background()
+	tok := srv.Subscribe(ctx, "owner@example.com", "password1")
+	root := t.TempDir()
+	st := model.DefaultSettings()
+	st.AuthAccessToken, st.AuthRefreshToken = &tok.AccessToken, &tok.RefreshToken
+	st.AuthExpiresAtUnixMs = tok.ExpiresAt.UnixMilli()
+	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp(t, root, &fakeClip{}, srv.URL)
+	a.Start()
+	defer a.Stop()
+	waitFor(t, "first sync", func() bool { return strings.HasPrefix(a.SyncStatus(), "已同步") })
+	a.mutationPending.Store(true)
+	a.SyncNow()
+	waitFor(t, "the pending upload was made", func() bool { return !a.mutationPending.Load() })
+}

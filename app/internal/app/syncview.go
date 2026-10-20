@@ -152,6 +152,9 @@ func (a *App) syncBegin(reason string, manual bool) {
 	a.mu.Unlock()
 	a.update(func(v *SyncView) {
 		v.Syncing = true
+		// Whatever the one before left on the bar (it stays up a moment after a
+		// manual sync) is not this sync's.
+		v.Progress, v.Text, v.Percent = false, "", 0
 		if manual {
 			v.Progress = true
 			v.Text, v.Percent = "准备中", 5
@@ -192,18 +195,20 @@ func (a *App) finishView(reason string, manual bool, err error) {
 	// closeBar ends the display of the sync, unless another has begun since.
 	closeBar := func(after time.Duration) {
 		end := func() {
+			// The check and the change are one step: a sync that began in
+			// between must not find its bar taken down.
 			a.mu.Lock()
 			same := a.viewSeq == seq
-			a.mu.Unlock()
-			if !same {
-				return
-			}
-			a.update(func(v *SyncView) {
-				v.Syncing = false
-				if v.Progress {
-					v.Progress, v.Text, v.Percent = false, "", 0
+			if same {
+				a.view.Syncing = false
+				if a.view.Progress {
+					a.view.Progress, a.view.Text, a.view.Percent = false, "", 0
 				}
-			})
+			}
+			a.mu.Unlock()
+			if same {
+				a.changed()
+			}
 		}
 		if after <= 0 {
 			end()
@@ -289,6 +294,15 @@ func (a *App) afterMutation(mutate func()) {
 			a.mutateQuietly(mutate)
 			if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil && ctx.Err() == nil {
 				a.cfg.Logf("upload after change: %v", err)
+				// The change is only local: whatever sync comes next sends it
+				// first, or the server's older copy could win the merge and
+				// bring the item back.
+				a.mutationPending.Store(true)
+				time.AfterFunc(30*time.Second, func() {
+					if c := a.acct(); c.Err() == nil {
+						a.Auto.Trigger(c, "auto", false)
+					}
+				})
 			}
 		})
 		if !ran {

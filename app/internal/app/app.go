@@ -103,6 +103,7 @@ type App struct {
 	loginWanted       atomic.Bool        // a sync for a new sign-in is owed (one was running when it was asked for)
 	initialOK         atomic.Bool        // a background sync has gone through
 	runEntered        atomic.Bool        // the sync that syncDone is told about did start (Run was entered)
+	mutationPending   atomic.Bool        // a change of the history was not uploaded yet (this run only)
 	failStreak        atomic.Int32       // background syncs that failed in a row since the initial one
 	stopWatch         context.CancelFunc // ends the event stream of the current account
 }
@@ -195,6 +196,13 @@ func New(cfg Config) (*App, error) {
 		a.runActive.Store(true)
 		a.runEntered.Store(true)
 		a.runGen.Store(a.acctGen.Load()) // which account this sync is for
+		if a.mutationPending.Load() {
+			// What the user deleted is sent before anything is reconciled.
+			if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil {
+				return err
+			}
+			a.mutationPending.Store(false)
+		}
 		return run(ctx, reason, manual)
 	}
 
@@ -484,6 +492,7 @@ func (a *App) SyncNow() {
 // still manages to finish is known to be of the old account.
 func (a *App) endAccountWork() {
 	a.acctGen.Add(1)
+	a.mutationPending.Store(false) // it was the old account's
 	a.mu.Lock()
 	if a.started {
 		a.acctCancel()

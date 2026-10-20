@@ -50,8 +50,9 @@ func (mg *Manager) Show(it model.Item, anchor Rect) {
 	if it.Kind != model.KindImage {
 		mg.mu.Lock()
 		mg.seq++ // a picture that is still being made is not wanted
+		seq := mg.seq
 		mg.mu.Unlock()
-		mg.present(it, nil, 0, 0, anchor)
+		mg.present(it, nil, 0, 0, anchor, seq)
 		return
 	}
 	mg.mu.Lock()
@@ -71,15 +72,20 @@ func (mg *Manager) Show(it model.Item, anchor Rect) {
 			mg.Hide() // the file is gone, or too big to show: nothing to show
 			return
 		}
-		mg.present(it, bm, pw, ph, anchor)
+		mg.present(it, bm, pw, ph, anchor, seq)
 	}()
 }
 
-// present puts the window up for an item whose content is ready.
-func (mg *Manager) present(it model.Item, bm *ui.Bitmap, pw, ph int, anchor Rect) {
+// present puts the window up for an item whose content is ready, if seq is
+// still the latest request when the UI thread gets to it (a Hide or another
+// Show in between voids it).
+func (mg *Manager) present(it model.Item, bm *ui.Bitmap, pw, ph int, anchor Rect, seq int) {
 	mygo.RunOnMain(func() {
 		mg.mu.Lock()
 		defer mg.mu.Unlock()
+		if mg.seq != seq {
+			return
+		}
 		if mg.model == nil {
 			mg.model = &Model{IconOf: mg.IconOf, Left: mg.Left, Open: func(p string) { _ = mygo.Shell.OpenPath(p) }}
 		}

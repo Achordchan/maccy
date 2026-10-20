@@ -300,6 +300,11 @@ func (m *Model) cloud(c *ui.Context, p Palette) {
 				if panel.Button(c, p, "立即同步", 6, 12, 14).Label("立即同步").Clicked() {
 					m.Host.SyncNow()
 				}
+				// How it went: the toast is in the main window, which is hidden
+				// while this one is open.
+				if m.SyncStatus != nil {
+					ui.Text(c, m.SyncStatus()).TextColor(p.Muted).FontSize(12).Wrap()
+				}
 			})
 		})
 

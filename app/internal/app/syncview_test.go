@@ -125,3 +125,17 @@ func TestSyncFailureToasts(t *testing.T) {
 		t.Fatalf("not logged in: %v %q", *toasts, a.SyncStatus())
 	}
 }
+
+func TestOldBarDoesNotOutliveItsSyncOrHideTheNext(t *testing.T) {
+	a, _ := newBare(t)
+	a.syncBegin("manual", true)
+	a.syncDone("manual", true, nil) // the bar stays up for a moment
+	a.syncBegin("auto", false)      // a background sync begins inside that moment
+	if v := a.copyView(); v.Progress || v.Text != "" || v.Percent != 0 || !v.Syncing {
+		t.Fatalf("the background sync inherited the bar: %+v", v)
+	}
+	time.Sleep(450 * time.Millisecond) // the timer of the first one goes off
+	if v := a.copyView(); !v.Syncing {
+		t.Fatalf("the old timer took down the view of the sync that is running: %+v", v)
+	}
+}
