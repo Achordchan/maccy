@@ -20,7 +20,8 @@
 | `internal/version` | 当前版本，构建时用 `-ldflags -X` 写入 |
 | `internal/shelf` | 货架的触发：晃动检测、手势（按住触发键 + 左键拖动 + 晃动）、Windows 低级鼠标钩子 |
 | `internal/shelfwin` | 货架窗口：放入文件、列表/网格、拖出、系统图标 |
-| `internal/panel` | 主面板的界面（MyGo 原生 UI）：搜索、列表、置顶、备注、删除、点击应用；对着 `history.Service`，不依赖窗口，用 `ui.NewTester` 测 |
+| `internal/panel` | 主面板（照老项目 `MainWindow.axaml`）：360×620、自己的亮/暗色板、About 与搜索、“常用剪贴”子页、行样式、右键菜单、拖动排序、悬停预览、Toast、备注/清除对话框、云图标与同步进度；对着 `history.Service`，不依赖窗口，用 `ui.NewTester` 测 |
+| `internal/previewwin`、`internal/aboutwin` | 悬停预览窗口（`ImagePreviewWindow`）和“关于”窗口（`AuthorInfoWindow`） |
 | `internal/app` | 把各部分接成一个不带窗口的程序：设置、历史及其文件、捕获、同步（启动时、服务器事件、历史变化后）、状态文字 |
 | `cmd/klip` | 程序入口：托盘、全局快捷键 `Ctrl+Alt+2`、面板窗口 |
 | `internal/capture` | 把剪贴板内容变成历史条目（`ClipboardCaptureService`）和把条目写回剪贴板（`ClipboardApplyService`）；剪贴板本身在接口后面，平台适配（MyGo）以后接 |
@@ -258,3 +259,15 @@ cd app && KLIP_REAL_CLIPBOARD=1 go test -count=1 -race ./internal/platform/
 **测试**：晃动检测对着一份**独立的 Python 参考实现**（`internal/shelf/testdata/gen_shake_vectors.py`，逐行照 C# 写）生成的 65 条轨迹逐点比较；手势的每个条件（修饰键、启用、8 像素、110 毫秒、一次一个、设置中途改变）各有用例，变异检查都能抓到；与 C# 源码的常量对照；`shelf.Service` 用假钩子驱动整条链；窗口模型与视图（放入、去重、自动展开、折叠、选择、拖出的路径、`FormatBytes` 与 C# 的 `{0:0.#}` 一致）用无窗口渲染测。`KLIP_SHOT=目录 go test -run TestShots ./internal/shelfwin` 出图。
 
 **没有验证的**：整个 Windows 部分——钩子在真机上的行为（`SetWindowsHookEx` 的线程与消息循环、拖拽进行中是否照常收到移动事件）、OLE 放入与拖出、系统图标的取得与转换、多显示器和缩放下的位置。清单见 [`docs/windows-checklist.md`](../docs/windows-checklist.md)。
+
+## 界面对照老项目（1.0.11 重做）
+
+第一版面板是我按功能清单自己设计的，没有对照老项目的界面，与 1.0.10 的样子差得很远。现在主面板、悬停预览和“关于”窗口照着 `klip/Views/*.axaml` 和代码逐项还原；偏好设置、货架、更新窗口还没有对照过。
+
+- **窗口**：360×620，圆角 14，1 像素分割线边框，实色背景；色板就是 `App.axaml` 的两套（`panel.PaletteFor`）。Avalonia 的 `#AARRGGBB` 与 MyGo 的 `#RRGGBBAA` 相反，半透明色要转过来（有测试）。
+- **顶栏**：左边 About 小按钮，右边“搜索”框（高 30）。底栏：版本、橙色“更新”按钮（有新版本时，更新中显示“更新中...”）、手动同步时的进度条、**云图标四态**（空闲、同步中橙、成功绿、失败红，提示文字与 C# 一致）、“设置”、“清除”。没有“立即同步”按钮（C# 里同步在偏好设置里手动触发）。
+- **列表**：历史顺序，**置顶不上浮**；收藏条目有金色 ★，并出现在“常用剪贴 ›”子页里（带“返回”）。行是单行省略，奇偶行文字深浅交替，右边是扩展名标签 / IMG，图片行是 36 像素缩略图加“IMG · 宽×高 · KB”，文件行是“名字 (+n)”。
+- **交互**：点击行写回并隐藏，Toast“已写回剪贴板”900 毫秒；右键“加入收藏/取消收藏、添加备注、删除”；拖动行排序（`MoveBefore`）；悬停 350 毫秒出预览窗（旁边，右侧放不下放左侧，离开后 220 毫秒宽限）；快捷键 `Esc / Enter / Delete / Ctrl+P / Ctrl+F / Ctrl+Backspace`，**macOS 也是 Ctrl**，搜索框里也生效（文本框原来把 Ctrl+P 当“上一行”）。
+- **云同步的删除**：有账号时，删除和清除先确认“此操作将同时删除云端备份”，然后立刻上传（`UploadAfterLocalMutation`，不先看服务器，否则合并会把刚删的找回来）。
+- **打开位置**：快捷键呼出在光标右下 12 像素（夹在工作区内）；托盘“打开”和双击托盘图标居中。托盘菜单与老项目一致：打开 / 设置... / 检测更新... / 退出。
+- **有意不同**：About 里“项目主页”按钮左边的橙色竖条没有照搬（全局偏好不用左侧彩色竖条）；对话框是面板内的浮层而不是另开窗口（另开窗口会让主面板失焦而自动隐藏）；拖动时跟手的是整行的副本，不是老项目那个小文字气泡。

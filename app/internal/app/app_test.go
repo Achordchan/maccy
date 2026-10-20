@@ -546,10 +546,10 @@ func TestManualSyncTurnedAwayDoesNotLeaveTheFooterSyncing(t *testing.T) {
 		<-release
 		return nil
 	}
-	a.setStatus("已同步 10:00")
 	a.Auto.Trigger(context.Background(), "auto", false) // one is still running
 	<-started
-	a.SyncNow() // turned away: nothing will ever follow it
+	a.setStatus("已同步 10:00") // it has published its result and is still unwinding
+	a.SyncNow()              // turned away: nothing will ever follow it
 	if got := a.SyncStatus(); got != "已同步 10:00" {
 		t.Fatalf("footer %q: a request that was refused must not show syncing", got)
 	}

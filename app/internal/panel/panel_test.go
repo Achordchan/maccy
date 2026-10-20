@@ -13,6 +13,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"klip/internal/app"
 	"klip/internal/history"
 	"klip/internal/model"
 	"klip/internal/paths"
@@ -38,7 +39,9 @@ func TestMatch(t *testing.T) {
 	}
 }
 
-func TestRowsOrderAndQuery(t *testing.T) {
+// The main list keeps the order of the history: favourites are not moved
+// to the top (they are in their own folder, 常用剪贴).
+func TestFilterKeepsHistoryOrder(t *testing.T) {
 	a, b, c, d := ti("a", "alpha"), ti("b", "beta"), ti("c", "gamma alpha"), ti("d", "delta")
 	b.Pinned, d.Pinned = true, true
 	ids := func(in []model.Item) string {
@@ -49,76 +52,144 @@ func TestRowsOrderAndQuery(t *testing.T) {
 		return s
 	}
 	items := []model.Item{a, b, c, d}
-	if got := ids(Rows(items, "")); got != "bdac" {
-		t.Fatalf("pinned first, each in history order: %q", got)
+	if got := ids(Filter(items, "")); got != "abcd" {
+		t.Fatalf("history order: %q", got)
 	}
-	if got := ids(Rows(items, "  alpha ")); got != "ac" {
+	if got := ids(Filter(items, "  alpha ")); got != "ac" {
 		t.Fatalf("query is trimmed: %q", got)
 	}
-	if got := ids(Rows(items, "   ")); got != "bdac" {
+	if got := ids(Filter(items, "   ")); got != "abcd" {
 		t.Fatalf("blank query matches all: %q", got)
+	}
+	if got := ids(Pinned(Filter(items, ""))); got != "bd" {
+		t.Fatalf("favourites: %q", got)
 	}
 }
 
-func TestPreviewAndDetail(t *testing.T) {
+func TestRowTexts(t *testing.T) {
+	if got := SingleLine("  line one\r\n\n   line   two\t"); got != "line one    line   two" {
+		t.Fatalf("SingleLine = %q", got)
+	}
+	if got := SingleLine("   "); got != "   " {
+		t.Fatalf("blank is kept: %q", got)
+	}
+	for in, want := range map[string]string{
+		`C:\a\b.txt`: "b.txt", "/x/y/c.pdf": "c.pdf",
+	} {
+		if got := FileSummary([]string{in}); got != want {
+			t.Errorf("FileSummary(%q) = %q", in, got)
+		}
+	}
+	if got := FileSummary([]string{`C:\a\b.txt`, "/x/y/c.pdf", "  "}); got != "b.txt (+1)" {
+		t.Fatalf("two files = %q", got)
+	}
+	if FileSummary(nil) != "" || FileSummary([]string{" "}) != "" {
+		t.Fatal("no files")
+	}
+	for paths, want := range map[string]string{"/a/b.tar.gz": "GZ", `C:\x\Report.PDF`: "PDF", "/a/README": "FILE", "/a/.bashrc": "BASHRC"} {
+		if got := ExtensionTag([]string{paths}); got != want {
+			t.Errorf("ExtensionTag(%q) = %q, want %q", paths, got, want)
+		}
+	}
+	if Tag(model.Item{Kind: model.KindImage}) != "IMG" || Tag(ti("1", "x")) != "" {
+		t.Fatal("tags")
+	}
+	if got := DragText(model.Item{Kind: model.KindFileList, FilePaths: []string{"a", "b"}}); got != "2 个文件" {
+		t.Fatalf("drag files = %q", got)
+	}
+	if DragText(model.Item{Kind: model.KindFileList}) != "文件" || DragText(model.Item{Kind: model.KindImage}) != "图片" ||
+		DragText(ti("1", "  \n ")) != "文本" {
+		t.Fatal("drag text")
+	}
 	long := ""
-	for i := 0; i < 300; i++ {
+	for i := 0; i < 60; i++ {
 		long += "字"
 	}
-	it := ti("1", "  line one\n\n   line   two\t")
-	if got := Preview(it); got != "line one line two" {
-		t.Fatalf("Preview = %q", got)
+	if got := []rune(DragText(ti("1", long))); len(got) != 43 || got[42] != '…' {
+		t.Fatalf("drag text cut to %d runes", len(got))
 	}
-	if got := []rune(Preview(ti("2", long))); len(got) != 141 || got[140] != '…' {
-		t.Fatalf("long text cut to %d runes", len(got))
-	}
-	f := model.Item{Kind: model.KindFileList, FilePaths: []string{`C:\a\b.txt`, "/x/y/c.pdf"}}
-	if got := Preview(f); got != "b.txt、c.pdf" {
-		t.Fatalf("files = %q", got)
-	}
-	if Preview(model.Item{Kind: model.KindImage}) != "图片" {
-		t.Fatal("image preview")
-	}
+}
 
-	now := time.Date(2026, 5, 30, 18, 0, 0, 0, time.UTC)
-	d := ti("3", "x")
-	d.SourceAppName = model.Ptr("Notes")
-	d.CopyCount = 3
-	if got := Detail(d, now); got != "12:00 · Notes · 复制 3 次" {
-		t.Fatalf("Detail today = %q", got)
+func TestImageInfo(t *testing.T) {
+	dir := t.TempDir()
+	png := filepath.Join(dir, "a.png")
+	// a 1x1 PNG
+	data := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02\xfe\xa7\x9a\xa0\xa0\x00\x00\x00\x00IEND\xaeB`\x82")
+	if err := os.WriteFile(png, data, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	d.CapturedAt = model.Time{Time: time.Date(2026, 5, 2, 9, 5, 0, 0, time.UTC)}
-	if got := Detail(d, now); got != "05-02 09:05 · Notes · 复制 3 次" {
-		t.Fatalf("Detail this year = %q", got)
+	if got := ImageInfo(png); got != "IMG · 1×1 · 1 KB" {
+		t.Fatalf("ImageInfo = %q", got)
 	}
-	d.CapturedAt = model.Time{Time: time.Date(2025, 5, 2, 9, 5, 0, 0, time.UTC)}
-	d.SourceAppName, d.CopyCount = nil, 1
-	if got := Detail(d, now); got != "2025-05-02 09:05" {
-		t.Fatalf("Detail other year = %q", got)
+	bad := filepath.Join(dir, "b.png")
+	_ = os.WriteFile(bad, []byte("not an image"), 0o644)
+	if got := ImageInfo(bad); got != "IMG" {
+		t.Fatalf("unreadable image = %q", got)
 	}
-	img := model.Item{Kind: model.KindImage, CapturedAt: d.CapturedAt, ApproxBytes: 1536}
-	if got := Detail(img, now); got != "2025-05-02 09:05 · 2 KB" {
-		t.Fatalf("Detail image = %q", got)
+	if ImageInfo(filepath.Join(dir, "gone.png")) != "" || ImageInfo("") != "" {
+		t.Fatal("a file that is gone has no info")
+	}
+}
+
+func TestPalettes(t *testing.T) {
+	d, l := PaletteFor(true), PaletteFor(false)
+	if d.Background != ui.Hex("#1E1E1E") || l.Background != ui.Hex("#F6F6F6") || d.Panel != ui.Hex("#171717") {
+		t.Fatalf("backgrounds: %+v %+v", d.Background, l.Background)
+	}
+	// App.axaml writes #EE111111: alpha first.
+	if d.PreviewBg.A != 0xEE || d.PreviewBg.R != 0x11 || d.ToastBg.A != 0xCC || d.ToastBg.R != 0x33 {
+		t.Fatalf("translucent colours: %+v %+v", d.PreviewBg, d.ToastBg)
+	}
+	if l.ToastBg.A != 0xCC || l.ToastBg.R != 0x11 || l.Text != ui.Hex("#1A1A1A") {
+		t.Fatalf("light: %+v", l)
 	}
 }
 
 type fakeHost struct {
 	applied []string
 	hidden  int
-	synced  int
+	deleted []string
+	cleared int
+	moved   [][2]string
 	prefs   int
+	about   int
 	quit    int
 	update  string
+	applyng bool
 	updates int
+	sync    app.SyncView
+
+	previewed []string
+	hid       int
+	shownID   string
+	over      bool
 }
 
-func (h *fakeHost) Apply(it model.Item)     { h.applied = append(h.applied, model.Str(it.Text)) }
-func (h *fakeHost) Hide()                   { h.hidden++ }
-func (h *fakeHost) SyncNow()                { h.synced++ }
-func (h *fakeHost) ShowPrefs()              { h.prefs++ }
+func (h *fakeHost) Apply(it model.Item) { h.applied = append(h.applied, model.Str(it.Text)) }
+func (h *fakeHost) Hide()               { h.hidden++ }
+func (h *fakeHost) Delete(id string)    { h.deleted = append(h.deleted, id) }
+func (h *fakeHost) ClearAll()           { h.cleared++ }
+func (h *fakeHost) Reorder(id string, before *string) {
+	b := ""
+	if before != nil {
+		b = *before
+	}
+	h.moved = append(h.moved, [2]string{id, b})
+}
+func (h *fakeHost) Sync() app.SyncView      { return h.sync }
+func (h *fakeHost) Version() string         { return "v1.0.11" }
 func (h *fakeHost) UpdateAvailable() string { return h.update }
+func (h *fakeHost) UpdateApplying() bool    { return h.applyng }
 func (h *fakeHost) ShowUpdate()             { h.updates++ }
+func (h *fakeHost) ShowPrefs()              { h.prefs++ }
+func (h *fakeHost) ShowAbout(ui.Rect)       { h.about++ }
 func (h *fakeHost) Quit()                   { h.quit++ }
+func (h *fakeHost) ShowPreview(it model.Item, _ ui.Rect) {
+	h.previewed = append(h.previewed, model.Str(it.Text))
+	h.shownID = it.ID
+}
+func (h *fakeHost) HidePreview()            { h.hid++; h.shownID = "" }
+func (h *fakeHost) Preview() (string, bool) { return h.shownID, h.over }
 
 type rig struct {
 	t  *testing.T
@@ -128,6 +199,8 @@ type rig struct {
 	ho *fakeHost
 }
 
+const w, hgt = 360, 620
+
 func newRig(t *testing.T, texts ...string) *rig {
 	h := history.NewService(paths.Layout{Root: t.TempDir()})
 	for i := len(texts) - 1; i >= 0; i-- {
@@ -136,7 +209,7 @@ func newRig(t *testing.T, texts ...string) *rig {
 	ho := &fakeHost{}
 	m := New(h, ho)
 	m.Now = func() time.Time { return time.Date(2026, 5, 30, 18, 0, 0, 0, time.UTC) }
-	tt := ui.NewTester(m.View, 560, 520)
+	tt := ui.NewTester(m.View, w, hgt)
 	return &rig{t: t, h: h, m: m, tt: tt, ho: ho}
 }
 
@@ -148,16 +221,20 @@ func (r *rig) texts() []string {
 	return out
 }
 
-func TestViewShowsItemsAndEmptyState(t *testing.T) {
+func TestViewLayoutFollowsTheOldWindow(t *testing.T) {
 	r := newRig(t, "first", "second")
-	for _, s := range []string{"first", "second", "2 条"} {
+	for _, s := range []string{"About", "常用剪贴", "first", "second", "设置", "清除", "v1.0.11"} {
 		if !r.tt.HasText(s) {
 			t.Fatalf("missing %q in %q", s, r.tt.Texts())
 		}
 	}
+	if r.tt.HasText("立即同步") {
+		t.Fatalf("the old bar has no sync button: %q", r.tt.Texts())
+	}
+	// No hint in an empty list, as in the old window.
 	e := newRig(t)
-	if !e.tt.HasText("复制点什么，它会出现在这里") {
-		t.Fatalf("empty state: %q", e.tt.Texts())
+	if e.tt.HasText("复制点什么，它会出现在这里") {
+		t.Fatalf("empty list: %q", e.tt.Texts())
 	}
 }
 
@@ -169,17 +246,13 @@ func TestViewSearch(t *testing.T) {
 	if r.tt.HasText("banana") || !r.tt.HasText("apple pie") || !r.tt.HasText("apple tart") {
 		t.Fatalf("after searching: %q", r.tt.Texts())
 	}
-	r.tt.Type("zzz")
-	if !r.tt.HasText("没有匹配的记录") {
-		t.Fatalf("no-match state: %q", r.tt.Texts())
+	r.tt.Key(ui.Ctrl, ui.KeyBackspace) // clears the whole query
+	if r.m.query != "" || !r.tt.HasText("banana") {
+		t.Fatalf("Ctrl+Backspace: query=%q texts=%q", r.m.query, r.tt.Texts())
 	}
-	r.tt.Key(0, ui.KeyEscape) // clears the query, does not hide
-	if r.ho.hidden != 0 || !r.tt.HasText("banana") {
-		t.Fatalf("escape with a query: hidden=%d texts=%q", r.ho.hidden, r.tt.Texts())
-	}
-	r.tt.Key(0, ui.KeyEscape) // now hides
+	r.tt.Key(0, ui.KeyEscape)
 	if r.ho.hidden != 1 {
-		t.Fatalf("escape without a query: hidden=%d", r.ho.hidden)
+		t.Fatalf("escape hides: hidden=%d", r.ho.hidden)
 	}
 }
 
@@ -190,6 +263,9 @@ func TestViewClickApplies(t *testing.T) {
 	}
 	if len(r.ho.applied) != 1 || r.ho.applied[0] != "two" || r.ho.hidden != 1 {
 		t.Fatalf("applied=%v hidden=%d", r.ho.applied, r.ho.hidden)
+	}
+	if r.m.toast != "已写回剪贴板" {
+		t.Fatalf("toast = %q", r.m.toast)
 	}
 }
 
@@ -206,13 +282,13 @@ func TestViewKeyboard(t *testing.T) {
 	}
 }
 
-func TestViewContextMenu(t *testing.T) {
+func TestPinnedStayInPlaceAndShowInFolder(t *testing.T) {
 	r := newRig(t, "one", "two", "three")
 	if err := r.tt.RightClick("two"); err != nil {
 		t.Fatal(err)
 	}
 	menu := r.tt.Menu()
-	for _, want := range []string{"粘贴", "置顶", "备注…", "删除"} {
+	for _, want := range []string{"加入收藏/取消收藏", "添加备注", "删除"} {
 		found := false
 		for _, m := range menu {
 			if m == want {
@@ -223,35 +299,102 @@ func TestViewContextMenu(t *testing.T) {
 			t.Fatalf("menu %q lacks %q", menu, want)
 		}
 	}
-	if err := r.tt.ChooseMenuItem("置顶"); err != nil {
+	if err := r.tt.ChooseMenuItem("加入收藏/取消收藏"); err != nil {
 		t.Fatal(err)
 	}
-	items := r.h.Items()
-	if !items[1].Pinned || model.Str(items[1].Text) != "two" {
+	if items := r.h.Items(); !items[1].Pinned || model.Str(items[1].Text) != "two" {
 		t.Fatalf("not pinned: %+v", items)
 	}
 	r.tt.Frame()
-	if !r.tt.HasText("置顶") {
-		t.Fatalf("no pin badge: %q", r.tt.Texts())
+	if !r.tt.HasText("★") {
+		t.Fatalf("no star: %q", r.tt.Texts())
 	}
-	// pinned rows come first on screen: the first text row is "two"
-	if rows := r.m.rows; model.Str(rows[0].Text) != "two" {
-		t.Fatalf("pinned not first: %v", rows)
+	// Still second in the list.
+	if rows := r.m.rows(); model.Str(rows[0].Text) != "one" || model.Str(rows[1].Text) != "two" {
+		t.Fatalf("pinned moved: %v", rows)
 	}
+	// The folder holds only the favourites, and has a way back.
+	if err := r.tt.Click("常用剪贴"); err != nil {
+		t.Fatal(err)
+	}
+	r.tt.Frame()
+	if r.m.sec != sectionFavorites || r.tt.HasText("one") || !r.tt.HasText("two") || !r.tt.HasText("返回") {
+		t.Fatalf("folder: sec=%v texts=%q", r.m.sec, r.tt.Texts())
+	}
+	if err := r.tt.Click("返回"); err != nil {
+		t.Fatal(err)
+	}
+	r.tt.Frame()
+	if r.m.sec != sectionAll || !r.tt.HasText("one") {
+		t.Fatalf("back: %v %q", r.m.sec, r.tt.Texts())
+	}
+}
 
+func TestDeleteLocalAndWithCloud(t *testing.T) {
+	r := newRig(t, "one", "two")
 	if err := r.tt.RightClick("one"); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.tt.ChooseMenuItem("删除"); err != nil {
 		t.Fatal(err)
 	}
-	if got := r.texts(); len(got) != 2 || got[0] != "two" && got[0] != "one" {
-		t.Fatalf("after delete: %v", got)
+	if len(r.ho.deleted) != 1 || r.m.dlg != nil {
+		t.Fatalf("no account: deleted=%v dlg=%v", r.ho.deleted, r.m.dlg)
 	}
-	for _, s := range r.texts() {
-		if s == "one" {
-			t.Fatalf("not deleted: %v", r.texts())
-		}
+
+	// With an account the cloud copy goes too: ask first.
+	r.ho.sync.Cloud = true
+	r.ho.deleted = nil
+	r.tt.Frame()
+	if err := r.tt.RightClick("two"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.tt.ChooseMenuItem("删除"); err != nil {
+		t.Fatal(err)
+	}
+	r.tt.Frame()
+	if len(r.ho.deleted) != 0 || !r.tt.HasText("删除记录") || !r.tt.HasText("此操作将同时删除云端备份，且不可撤销。\n\n是否继续？") && !r.tt.HasText("是否继续？") {
+		t.Fatalf("dialog: deleted=%v texts=%q", r.ho.deleted, r.tt.Texts())
+	}
+	if err := r.tt.Click("取消"); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.ho.deleted) != 0 || r.m.dlg != nil {
+		t.Fatal("cancel deleted")
+	}
+	if err := r.tt.RightClick("two"); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.tt.ChooseMenuItem("删除")
+	r.tt.Frame()
+	if err := r.tt.Click("确定"); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.ho.deleted) != 1 {
+		t.Fatalf("deleted = %v", r.ho.deleted)
+	}
+}
+
+func TestClearAsksFirst(t *testing.T) {
+	r := newRig(t, "one")
+	if err := r.tt.Click("清除"); err != nil {
+		t.Fatal(err)
+	}
+	r.tt.Frame()
+	if !r.tt.HasText("清除全部记录") || r.ho.cleared != 0 {
+		t.Fatalf("dialog: %q cleared=%d", r.tt.Texts(), r.ho.cleared)
+	}
+	r.tt.Key(0, ui.KeyEscape)
+	r.tt.Frame()
+	if r.m.dlg != nil || r.ho.cleared != 0 || r.ho.hidden != 0 {
+		t.Fatalf("escape closes the box only: dlg=%v cleared=%d hidden=%d", r.m.dlg, r.ho.cleared, r.ho.hidden)
+	}
+	_ = r.tt.Click("清除")
+	r.tt.Frame()
+	// the button of the box is also called 清除: the second one
+	r.m.finish(r.m.dlg)
+	if r.ho.cleared != 1 {
+		t.Fatalf("cleared = %d", r.ho.cleared)
 	}
 }
 
@@ -260,12 +403,12 @@ func TestViewNoteEditing(t *testing.T) {
 	if err := r.tt.RightClick("one"); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.tt.ChooseMenuItem("备注…"); err != nil {
+	if err := r.tt.ChooseMenuItem("添加备注"); err != nil {
 		t.Fatal(err)
 	}
 	r.tt.Frame()
-	if !r.tt.HasText("保存") {
-		t.Fatalf("no note bar: %q", r.tt.Texts())
+	if !r.tt.HasText("保存") || !r.tt.HasText("请输入备注（可用于搜索）：") {
+		t.Fatalf("no note box: %q", r.tt.Texts())
 	}
 	r.tt.Type("买菜")
 	if err := r.tt.Click("保存"); err != nil {
@@ -281,10 +424,9 @@ func TestViewNoteEditing(t *testing.T) {
 		t.Fatalf("note = %q", note)
 	}
 	r.tt.Frame()
-	if r.tt.HasText("保存") || !r.tt.HasText("备注：买菜") {
-		t.Fatalf("after saving: %q", r.tt.Texts())
+	if r.tt.HasText("保存") {
+		t.Fatalf("box still open: %q", r.tt.Texts())
 	}
-
 	// A note is found by search.
 	r.m.query = "买菜"
 	r.tt.Frame()
@@ -293,14 +435,12 @@ func TestViewNoteEditing(t *testing.T) {
 	}
 }
 
-func TestViewNoteCancelAndClear(t *testing.T) {
+func TestViewNoteCancel(t *testing.T) {
 	r := newRig(t, "one")
 	r.h.UpdateNote(r.h.Items()[0].ID, "old")
 	r.tt.Frame()
-	if err := r.tt.RightClick("one"); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.tt.ChooseMenuItem("备注…"); err != nil {
+	_ = r.tt.RightClick("one")
+	if err := r.tt.ChooseMenuItem("添加备注"); err != nil {
 		t.Fatal(err)
 	}
 	r.tt.Frame()
@@ -329,42 +469,40 @@ func TestViewFollowsHistoryChanges(t *testing.T) {
 
 func TestViewButtons(t *testing.T) {
 	r := newRig(t, "one")
-	if err := r.tt.Click("同步"); err != nil {
+	if err := r.tt.Click("About"); err != nil {
 		t.Fatal(err)
 	}
-	if r.ho.synced != 1 {
-		t.Fatal("sync button")
-	}
-	r.tt.Key(ui.Cmd, ui.KeyQ)
-	if r.ho.quit != 1 {
-		t.Fatal("quit shortcut")
+	if r.ho.about != 1 {
+		t.Fatal("About")
 	}
 	if err := r.tt.Click("设置"); err != nil {
 		t.Fatal(err)
 	}
-	r.tt.Key(ui.Cmd, ui.KeyComma)
-	if r.ho.prefs != 2 {
-		t.Fatalf("preferences opened %d times, want 2 (button and Cmd+,)", r.ho.prefs)
+	if r.ho.prefs != 1 {
+		t.Fatal("preferences")
 	}
 }
 
-func TestResetChoosesFirstRow(t *testing.T) {
+func TestResetChoosesFirstRowOfAll(t *testing.T) {
 	r := newRig(t, "one", "two", "three")
-	r.h.TogglePinned(r.h.Items()[2].ID) // "three" is pinned: first on screen
 	r.tt.Frame()
 	r.tt.Key(0, ui.KeyDown)
 	r.tt.Key(0, ui.KeyDown)
+	r.m.sec = sectionFavorites
 	r.m.Reset()
 	r.tt.Frame()
+	if r.m.sec != sectionAll {
+		t.Fatal("Reset keeps the folder")
+	}
 	r.tt.Key(0, ui.KeyEnter)
-	if len(r.ho.applied) != 1 || r.ho.applied[0] != "three" {
-		t.Fatalf("applied %v after Reset, want the first row (three)", r.ho.applied)
+	if len(r.ho.applied) != 1 || r.ho.applied[0] != "one" {
+		t.Fatalf("applied %v after Reset, want the first row", r.ho.applied)
 	}
 }
 
 func TestSearchBoxKeepsFocusAndDrivesList(t *testing.T) {
 	r := newRig(t, "one", "two", "three")
-	r.m.Reset() // focuses the search box, as showing the panel does
+	r.m.Reset()
 	r.tt.Frame()
 	r.tt.Key(0, ui.KeyDown)
 	r.tt.Key(0, ui.KeyDown)
@@ -373,12 +511,11 @@ func TestSearchBoxKeepsFocusAndDrivesList(t *testing.T) {
 	if len(r.ho.applied) != 1 || r.ho.applied[0] != "two" {
 		t.Fatalf("arrows and Enter in the search box: applied %v", r.ho.applied)
 	}
-	// Typing still goes to the box.
 	r.m.Reset()
 	r.tt.Frame()
 	r.tt.Type("thr")
-	if r.m.query != "thr" || len(r.m.rows) != 1 {
-		t.Fatalf("query=%q rows=%d", r.m.query, len(r.m.rows))
+	if r.m.query != "thr" || len(r.m.rows()) != 1 {
+		t.Fatalf("query=%q rows=%d", r.m.query, len(r.m.rows()))
 	}
 }
 
@@ -387,35 +524,151 @@ func TestKeyboardPinAndDelete(t *testing.T) {
 	r.m.Reset()
 	r.tt.Frame()
 	r.tt.Key(0, ui.KeyDown) // "two"
-	r.tt.Key(ui.Cmd, ui.KeyP)
+	r.tt.Key(ui.Ctrl, ui.KeyP)
 	if it := r.h.Items()[1]; model.Str(it.Text) != "two" || !it.Pinned {
-		t.Fatalf("Cmd+P: %+v", r.h.Items())
+		t.Fatalf("Ctrl+P: %+v", r.h.Items())
 	}
 	r.tt.Frame()
-	// "two" is pinned and first on screen, and still the chosen row.
-	r.tt.Key(ui.Cmd, ui.KeyD)
-	for _, s := range r.texts() {
-		if s == "two" {
-			t.Fatalf("Cmd+D did not delete: %v", r.texts())
-		}
+	r.tt.Key(0, ui.KeyDelete)
+	if len(r.ho.deleted) != 1 || r.ho.deleted[0] != r.h.Items()[1].ID {
+		t.Fatalf("Delete: %v", r.ho.deleted)
 	}
-	if len(r.texts()) != 2 {
-		t.Fatalf("texts = %v", r.texts())
+	// With a query the Delete key belongs to the search box.
+	r.ho.deleted = nil
+	r.m.query = "t"
+	r.tt.Frame()
+	r.tt.Key(0, ui.KeyDelete)
+	if len(r.ho.deleted) != 0 {
+		t.Fatalf("Delete with a query deleted %v", r.ho.deleted)
 	}
 }
 
-func TestUpdateButtonShowsOnlyWhenThereIsAnUpdate(t *testing.T) {
+func TestCtrlFFocusesSearch(t *testing.T) {
 	r := newRig(t, "one")
-	if r.tt.HasText("新版本 1.0.12") {
+	r.tt.Frame()
+	r.tt.Key(ui.Ctrl, ui.KeyF)
+	r.tt.Frame()
+	r.tt.Type("on")
+	if r.m.query != "on" {
+		t.Fatalf("query = %q", r.m.query)
+	}
+}
+
+func TestUpdateButton(t *testing.T) {
+	r := newRig(t, "one")
+	if r.tt.HasText("更新") {
 		t.Fatal("a button without an update")
 	}
 	r.ho.update = "1.0.12"
 	r.tt.Frame()
-	if err := r.tt.Click("新版本 1.0.12"); err != nil {
+	if err := r.tt.Click("更新"); err != nil {
 		t.Fatalf("%v (%q)", err, r.tt.Texts())
 	}
 	if r.ho.updates != 1 {
 		t.Fatal("not opened")
+	}
+	r.ho.applyng = true
+	r.tt.Frame()
+	if !r.tt.HasText("更新中...") {
+		t.Fatalf("while applying: %q", r.tt.Texts())
+	}
+}
+
+func TestSyncBar(t *testing.T) {
+	r := newRig(t, "one")
+	r.ho.sync = app.SyncView{Cloud: true, Syncing: true, Progress: true, Text: "上传快照", Percent: 84}
+	r.tt.Frame()
+	if !r.tt.HasText("上传快照 84%") {
+		t.Fatalf("progress: %q", r.tt.Texts())
+	}
+	r.ho.sync = app.SyncView{Cloud: true}
+	r.tt.Frame()
+	if r.tt.HasText("上传快照 84%") {
+		t.Fatal("progress stays")
+	}
+}
+
+func TestToastFades(t *testing.T) {
+	r := newRig(t, "one")
+	r.m.ShowToast("请先登录")
+	r.tt.Frame()
+	if !r.tt.HasText("请先登录") {
+		t.Fatalf("toast: %q", r.tt.Texts())
+	}
+	now := r.m.Now()
+	r.m.Now = func() time.Time { return now.Add(time.Second) }
+	r.tt.Frame()
+	if r.tt.HasText("请先登录") {
+		t.Fatal("toast stays")
+	}
+}
+
+func TestHoverPreviewDelayAndGrace(t *testing.T) {
+	r := newRig(t, "one", "two")
+	now := time.Date(2026, 5, 30, 18, 0, 0, 0, time.UTC)
+	r.m.Now = func() time.Time { return now }
+	rect := ui.Rect{X: 0, Y: 100, W: 360, H: 30}
+	it := r.h.Items()[0]
+	r.m.hovering(&it, rect)
+	if len(r.ho.previewed) != 0 {
+		t.Fatal("shown at once")
+	}
+	now = now.Add(300 * time.Millisecond)
+	r.m.hovering(&it, rect)
+	if len(r.ho.previewed) != 0 {
+		t.Fatal("shown before the delay")
+	}
+	now = now.Add(60 * time.Millisecond)
+	r.m.hovering(&it, rect)
+	if len(r.ho.previewed) != 1 || r.ho.previewed[0] != "one" {
+		t.Fatalf("not shown after the delay: %v", r.ho.previewed)
+	}
+	r.m.hovering(&it, rect)
+	if len(r.ho.previewed) != 1 {
+		t.Fatal("shown again while shown")
+	}
+	// The pointer leaves: it stays for the grace, then goes...
+	r.m.hovering(nil, rect)
+	hid := r.ho.hid
+	now = now.Add(100 * time.Millisecond)
+	r.m.hovering(nil, rect)
+	if r.ho.hid != hid {
+		t.Fatal("closed inside the grace")
+	}
+	now = now.Add(150 * time.Millisecond)
+	r.m.hovering(nil, rect)
+	if r.ho.hid != hid+1 {
+		t.Fatal("not closed after the grace")
+	}
+	// ...unless it went over to the preview.
+	r.ho.shownID, r.ho.over = it.ID, true
+	r.m.hovering(&it, rect)
+	r.m.hovering(nil, rect)
+	now = now.Add(time.Second)
+	r.m.hovering(nil, rect)
+	if r.ho.shownID == "" {
+		t.Fatal("closed with the pointer on it")
+	}
+}
+
+func TestDragReorder(t *testing.T) {
+	r := newRig(t, "one", "two", "three")
+	r.tt.Frame()
+	from, ok1 := r.tt.Find("three")
+	to, ok2 := r.tt.Find("one")
+	if !ok1 || !ok2 {
+		t.Fatalf("rows not found: %q", r.tt.Texts())
+	}
+	r.tt.Press(from.X+from.W/2, from.Y+from.H/2)
+	r.tt.Move(from.X+from.W/2, from.Y+from.H/2-20)
+	r.tt.Move(to.X+to.W/2, to.Y+to.H/2)
+	r.tt.Release(to.X+to.W/2, to.Y+to.H/2)
+	r.tt.Frame()
+	if len(r.ho.moved) != 1 || r.ho.moved[0][0] != "00000000-0000-0000-0000-000000000003" || r.ho.moved[0][1] != "00000000-0000-0000-0000-000000000001" {
+		t.Fatalf("moved = %v", r.ho.moved)
+	}
+	if len(r.ho.applied) != 0 {
+		t.Fatal("a drag is no click")
 	}
 }
 
@@ -449,40 +702,6 @@ func TestThumbnailsAreSmallAndMadeInTheBackground(t *testing.T) {
 	}
 }
 
-func TestViewNoteSavesWithEnter(t *testing.T) {
-	r := newRig(t, "one")
-	if err := r.tt.RightClick("one"); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.tt.ChooseMenuItem("备注…"); err != nil {
-		t.Fatal(err)
-	}
-	r.tt.Frame()
-	r.tt.Type("买菜")
-	r.tt.Key(0, ui.KeyEnter)
-	r.tt.Frame()
-	if got := model.Str(r.h.Items()[0].Note); got != "买菜" {
-		t.Fatalf("Enter in the note box did not save: %q", got)
-	}
-}
-
-func TestPreviewLineMatchesTheOldRuleAndStopsEarly(t *testing.T) {
-	for _, in := range []string{"", "  ", "one", "  one   two\n\tthree ", strings.Repeat("字", 140), strings.Repeat("字", 141), strings.Repeat("ab ", 100)} {
-		want := cut(oneLine(in), 140)
-		if got := previewLine(in, 140); got != want {
-			t.Errorf("previewLine(%q) = %q, want %q", in, got, want)
-		}
-	}
-	big := strings.Repeat("word ", 5_000_000) // 25 MB
-	start := time.Now()
-	if got := previewLine(big, 140); len([]rune(got)) != 141 {
-		t.Fatalf("%d runes", len([]rune(got)))
-	}
-	if time.Since(start) > 500*time.Millisecond {
-		t.Fatalf("a long text took %v to preview", time.Since(start))
-	}
-}
-
 func TestSmallBitmapDoesNotReadHugeFiles(t *testing.T) {
 	dir := t.TempDir()
 	// A file of a format nobody can tell the size of beforehand: too big to be
@@ -512,5 +731,20 @@ func TestSmallBitmapDoesNotReadHugeFiles(t *testing.T) {
 	_ = os.WriteFile(huge, hdr, 0o644)
 	if smallBitmap(huge) != nil {
 		t.Fatal("a picture over the pixel limit was decoded")
+	}
+}
+
+func TestRowTextOfAHugeTextIsCheap(t *testing.T) {
+	big := strings.Repeat("word ", 5_000_000) // 25 MB
+	start := time.Now()
+	got := RowText(model.Item{Kind: model.KindText, Text: model.Ptr(big)})
+	if !strings.HasPrefix(got, "word word") || len([]rune(got)) > rowTextRunes {
+		t.Fatalf("%.40q (%d runes)", got, len([]rune(got)))
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("a long text took %v for its row", time.Since(start))
+	}
+	if headRunes("字字字", 2) != "字字" || headRunes("ab", 5) != "ab" || headRunes("", 0) != "" {
+		t.Fatal("headRunes")
 	}
 }

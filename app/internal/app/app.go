@@ -58,7 +58,9 @@ type Config struct {
 	// Changed is called, from any goroutine, when something the windows show
 	// changed (the sync status; history changes are seen through the history).
 	Changed func()
-	Logf    func(format string, args ...any)
+	// Toast shows a short message in the main window (may be nil).
+	Toast func(msg string)
+	Logf  func(format string, args ...any)
 }
 
 // UpdateManifestURL is where the update manifest is published: the address
@@ -83,6 +85,7 @@ type App struct {
 	syncMu            sync.Mutex // the end of a sync and the notes of changes that came during it
 	syncOver          bool       // under syncMu: the running sync has taken its notes and is ending
 	status            string
+	view              SyncView
 	cancel            context.CancelFunc
 	done              sync.WaitGroup
 	started           bool
@@ -180,6 +183,8 @@ func New(cfg Config) (*App, error) {
 	a.Auto = syncer.NewAuto(a.Syncer, a.syncDone)
 	// Every sync is counted while it runs, so that Stop can wait for them (they
 	// start their own goroutines inside Auto).
+	a.Auto.Begin = a.syncBegin
+	a.Auto.Progress = a.syncProgress
 	run := a.Auto.Run
 	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
 		a.syncMu.Lock()
@@ -467,25 +472,9 @@ func (a *App) Apply(it model.Item) {
 
 // SyncNow is the user asking for a sync.
 func (a *App) SyncNow() {
-	prev := a.SyncStatus()
-	a.setStatus("同步中…")
-	// Only the syncs started in the background count towards "the first sync
-	// is done" (MainWindowViewModel does the same: !manual); a manual one
-	// that succeeds leaves history-triggered syncing to the next background one.
-	if !a.Auto.Trigger(a.acct(), "manual", true) {
-		// Turned away because one is still unwinding: no result will follow this
-		// request, so the footer goes back to what it said (unless that sync has
-		// published something newer in the meantime).
-		a.mu.Lock()
-		restore := a.status == "同步中…"
-		if restore {
-			a.status = prev
-		}
-		a.mu.Unlock()
-		if restore {
-			a.changed()
-		}
-	}
+	// The status and the bar are set when the run starts (Auto.Begin): a request
+	// that is turned away because one is still unwinding changes nothing.
+	a.Auto.Trigger(a.acct(), "manual", true)
 }
 
 // endAccountWork is called by the account service just before it replaces or
@@ -634,17 +623,5 @@ func (a *App) syncDone(reason string, manual bool, err error) {
 			}
 		})
 	}
-	switch {
-	case err == nil:
-		a.setStatus("已同步 " + time.Now().Format("15:04"))
-	case manual && errors.Is(err, syncer.ErrNotLoggedIn):
-		a.setStatus("请先登录")
-	case manual:
-		a.setStatus(syncer.Explain(err, syncer.InMainWindow))
-	default:
-		// A background failure is not shown as a message in the C# client
-		// either; it is kept for the log and the footer.
-		a.cfg.Logf("sync (%s): %v", reason, err)
-		a.setStatus("同步失败")
-	}
+	a.finishView(reason, manual, err)
 }

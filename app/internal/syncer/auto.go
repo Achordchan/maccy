@@ -22,6 +22,11 @@ type Auto struct {
 	Run func(ctx context.Context, reason string, manual bool) error
 	// Done is called after each sync, with its error (nil on success).
 	Done func(reason string, manual bool, err error)
+	// Begin is called when a sync starts, Progress as it goes (both may be
+	// nil). They are how the main window shows the cloud icon at work and,
+	// for a sync the user asked for, the progress bar.
+	Begin    func(reason string, manual bool)
+	Progress func(p Progress, reason string, manual bool)
 
 	busy        atomic.Bool
 	suppressed  atomic.Bool
@@ -33,14 +38,16 @@ type Auto struct {
 
 // NewAuto returns an Auto that runs s.
 func NewAuto(s *Syncer, done func(reason string, manual bool, err error)) *Auto {
-	return &Auto{
-		CanSync: s.CanAutoSync,
-		Run: func(ctx context.Context, reason string, manual bool) error {
-			_, err := s.Run(ctx, nil, reason)
-			return err
-		},
-		Done: done,
+	a := &Auto{CanSync: s.CanAutoSync, Done: done}
+	a.Run = func(ctx context.Context, reason string, manual bool) error {
+		var progress func(Progress)
+		if a.Progress != nil {
+			progress = func(p Progress) { a.Progress(p, reason, manual) }
+		}
+		_, err := s.Run(ctx, progress, reason)
+		return err
 	}
+	return a
 }
 
 func (a *Auto) debounce() time.Duration {
@@ -71,6 +78,9 @@ func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) bool {
 				a.Done(reason, manual, ErrNotLoggedIn)
 			}
 			return
+		}
+		if a.Begin != nil {
+			a.Begin(reason, manual)
 		}
 		err := a.Run(ctx, reason, manual)
 		if err == nil && !manual {

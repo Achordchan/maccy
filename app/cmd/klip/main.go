@@ -9,20 +9,24 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"klip/internal/aboutwin"
 	"klip/internal/app"
 	"klip/internal/model"
 	"klip/internal/panel"
 	"klip/internal/paths"
 	"klip/internal/platform"
 	"klip/internal/prefswin"
+	"klip/internal/previewwin"
 	"klip/internal/shelf"
 	"klip/internal/shelfwin"
 	"klip/internal/update"
 	"klip/internal/updatewin"
+	"klip/internal/version"
 )
 
 //go:embed icon.png
@@ -49,6 +53,9 @@ type program struct {
 	upd      *updatewin.Model
 	updWin   *mygo.Window
 
+	about   *aboutwin.Manager
+	preview *previewwin.Manager
+
 	shelves *shelfwin.Manager
 	shelf   *shelf.Service
 	layout  paths.Layout
@@ -57,6 +64,7 @@ type program struct {
 	followShelf    func()      // starts or stops the shelf as the settings say
 	mandatoryShown atomic.Bool // the window for a mandatory update was put up
 	quitting       atomic.Bool // set when the program is quitting, see OnBeforeQuit
+	lastTrayClick  time.Time
 }
 
 func main() {
@@ -79,7 +87,11 @@ func main() {
 	mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
 	mygo.App.OnWindowAllClosed(func() {})
 	p := &program{}
-	mygo.App.OnSecondInstance(func([]string, string) { p.show() })
+	mygo.App.OnSecondInstance(func([]string, string) {
+		if p.win != nil {
+			p.show()
+		}
+	})
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { p.quitting.Store(true) })
 	mygo.App.WhenReady(p.ready)
 	if err := mygo.App.Run(); err != nil {
@@ -103,6 +115,11 @@ func (p *program) ready() {
 			p.redraw()
 			p.gateMandatory()
 		},
+		Toast: func(msg string) {
+			if p.model != nil {
+				p.model.ShowToast(msg)
+			}
+		},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -114,18 +131,19 @@ func (p *program) ready() {
 		p.redraw() // a window shows the settings (the login among them)
 	})
 	p.model = panel.New(p.app.History, host{p})
-	p.model.Status = p.app.SyncStatus
 	p.model.Redraw = p.redraw
+	p.about = &aboutwin.Manager{Version: host{p}.Version()}
+	p.preview = &previewwin.Manager{IconOf: shelfwin.SystemIcon, Left: p.model.PreviewLeft}
 
+	// The window of the .NET client: 360x620, a bare rounded box.
 	p.win = mygo.NewWindow(mygo.WindowOptions{
 		Title:         "Klip",
 		Panel:         true,
 		Hidden:        true,
 		Frameless:     true,
 		Transparent:   true,
-		Vibrancy:      mygo.VibrancyPopover,
-		Width:         560,
-		Height:        520,
+		Width:         360,
+		Height:        620,
 		DisableResize: true,
 		Content:       ui.View(p.model.View),
 	})
@@ -134,9 +152,9 @@ func (p *program) ready() {
 			return // Quit closes every window; one that refuses stops it
 		}
 		e.PreventDefault()
-		p.win.Hide()
+		p.hide()
 	})
-	p.win.OnBlur(p.win.Hide)
+	p.win.OnBlur(p.hide)
 
 	registered := ""
 	for _, s := range shortcuts {
@@ -148,10 +166,7 @@ func (p *program) ready() {
 		}
 	}
 
-	tip := "Klip"
-	if registered != "" {
-		tip += " (" + registered + ")"
-	}
+	_ = registered
 	icon, template := trayIcon, false
 	if runtime.GOOS == "darwin" {
 		icon, template = trayTemplate, true
@@ -159,21 +174,33 @@ func (p *program) ready() {
 	p.tray, err = mygo.NewTray(mygo.TrayOptions{
 		Icon:           icon,
 		IconIsTemplate: template,
-		ToolTip:        tip,
+		ToolTip:        "Klip剪贴板工具",
 		Menu: mygo.NewMenu([]*mygo.MenuItem{
-			{Label: "显示 Klip", Click: func(*mygo.MenuItem, *mygo.Window) { p.show() }},
-			{Label: "立即同步", Click: func(*mygo.MenuItem, *mygo.Window) { p.app.SyncNow() }},
-			{Label: "偏好设置…", Click: func(*mygo.MenuItem, *mygo.Window) { p.showPrefs() }},
-			{Label: "检查更新…", Click: func(*mygo.MenuItem, *mygo.Window) { p.checkUpdates() }},
+			{Label: "打开", Click: func(*mygo.MenuItem, *mygo.Window) { p.showCentered() }},
+			{Label: "设置...", Click: func(*mygo.MenuItem, *mygo.Window) { p.showPrefs() }},
+			{Label: "检测更新...", Click: func(*mygo.MenuItem, *mygo.Window) { p.checkUpdates() }},
 			mygo.Separator(),
-			{Role: mygo.RoleQuit},
+			{Label: "退出", Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
 		}),
 	})
 	if err != nil {
 		log.Println("tray:", err)
+	} else {
+		// A double click on the icon opens the window, as in the .NET client
+		// (two clicks within 380 ms).
+		p.tray.OnClick(func() {
+			now := time.Now()
+			if now.Sub(p.lastTrayClick) <= 380*time.Millisecond {
+				p.lastTrayClick = time.Time{}
+				p.showCentered()
+				return
+			}
+			p.lastTrayClick = now
+		})
 	}
 
 	p.startShelf()
+	mygo.App.OnQuit(func() { p.preview.Close(); p.about.Destroy() })
 	mygo.App.OnQuit(p.stopShelf)
 	mygo.App.OnQuit(p.app.Stop)
 	p.app.Start()
@@ -238,6 +265,14 @@ func (p *program) redraw() {
 			p.updWin.Update(func() {})
 		}
 	})
+}
+
+// hide hides the main window, and the windows that belong to it.
+func (p *program) hide() {
+	p.win.Hide()
+	p.model.PreviewLeft()
+	p.preview.Hide()
+	p.about.Close()
 }
 
 // applyTheme sets the look of the windows from the setting: "System",
@@ -321,7 +356,7 @@ func (p *program) showUpdate() {
 			p.updWin.Hide()
 		})
 	}
-	p.win.Hide()
+	p.hide()
 	p.updWin.Show()
 	p.updWin.Focus()
 }
@@ -357,26 +392,44 @@ func (p *program) showPrefs() {
 			p.prefsWin.Hide()
 		})
 	}
-	p.win.Hide()
+	p.hide()
 	p.prefs.Open()
 	p.prefsWin.Show()
 	p.prefsWin.Focus()
 }
 
+// show opens the window near the cursor (the shortcut), a little below and
+// to the right of it, kept inside the work area of its display.
 func (p *program) show() {
 	if p.mandatoryPending() {
 		return // the update window is up: nothing else until it is dealt with
 	}
-	d := mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint())
+	cur := mygo.Screen.CursorScreenPoint()
+	wa := mygo.Screen.DisplayNearestPoint(cur).WorkArea
 	w, h := p.win.Size()
-	p.win.SetPosition(d.WorkArea.X+(d.WorkArea.Width-w)/2, d.WorkArea.Y+(d.WorkArea.Height-h)/3)
+	x := max(wa.X, min(cur.X+12, wa.X+wa.Width-w))
+	y := max(wa.Y, min(cur.Y+12, wa.Y+wa.Height-h))
+	p.open(x, y)
+}
+
+// showCentered opens the window in the middle of the display the cursor is on
+// (the tray).
+func (p *program) showCentered() {
+	wa := mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint()).WorkArea
+	w, h := p.win.Size()
+	p.open(wa.X+(wa.Width-w)/2, wa.Y+(wa.Height-h)/2)
+}
+
+func (p *program) open(x, y int) {
+	p.win.SetPosition(x, y)
 	p.model.Reset()
 	p.win.Show()
+	p.win.Focus()
 }
 
 func (p *program) toggle() {
 	if p.win.IsVisible() {
-		p.win.Hide()
+		p.hide()
 	} else {
 		p.show()
 	}
@@ -385,18 +438,48 @@ func (p *program) toggle() {
 // host is what the panel asks of the program.
 type host struct{ p *program }
 
-func (h host) Apply(it model.Item) { h.p.app.Apply(it) }
-func (h host) Hide()               { h.p.win.Hide() }
-func (h host) SyncNow()            { h.p.app.SyncNow() }
-func (h host) ShowPrefs()          { h.p.showPrefs() }
-func (h host) ShowUpdate()         { h.p.showUpdate() }
+func (h host) Apply(it model.Item)               { h.p.app.Apply(it) }
+func (h host) Hide()                             { h.p.hide() }
+func (h host) Delete(id string)                  { h.p.app.Delete(id) }
+func (h host) ClearAll()                         { h.p.app.ClearAll() }
+func (h host) Reorder(id string, before *string) { h.p.app.Reorder(id, before) }
+func (h host) Sync() app.SyncView                { return h.p.app.Sync() }
+func (h host) Version() string                   { return "v" + version.Version }
+func (h host) ShowPrefs()                        { h.p.showPrefs() }
+func (h host) ShowUpdate()                       { h.p.showUpdate() }
+func (h host) Quit()                             { mygo.App.Quit() }
+
 func (h host) UpdateAvailable() string {
-	if i := h.p.app.Updates.Available(); i != nil {
-		return i.Version
+	st := h.p.app.Updates.State()
+	if st.Info != nil && (st.Phase == update.Available || st.Phase == update.Downloading || st.Phase == update.Applying) {
+		return st.Info.Version
 	}
 	return ""
 }
-func (h host) Quit() { mygo.App.Quit() }
+
+func (h host) UpdateApplying() bool {
+	st := h.p.app.Updates.State()
+	return st.Phase == update.Downloading || st.Phase == update.Applying
+}
+
+// screen turns a rectangle of the main window into one of the screen.
+func (h host) screen(r ui.Rect) (x, y, w, hh int) {
+	wx, wy := h.p.win.Position()
+	return wx + int(r.X), wy + int(r.Y), int(r.W), int(r.H)
+}
+
+func (h host) ShowAbout(anchor ui.Rect) {
+	x, y, w, hh := h.screen(anchor)
+	h.p.about.Toggle(x+w/2, y+hh)
+}
+
+func (h host) ShowPreview(it model.Item, anchor ui.Rect) {
+	x, y, w, hh := h.screen(anchor)
+	h.p.preview.Show(it, previewwin.Rect{X: x, Y: y, W: w, H: hh})
+}
+
+func (h host) HidePreview()            { h.p.preview.Hide() }
+func (h host) Preview() (string, bool) { return h.p.preview.Preview() }
 
 // prefsHost is what the preferences window asks of the program.
 type prefsHost struct{ p *program }

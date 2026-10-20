@@ -19,53 +19,117 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"klip/internal/app"
 	"klip/internal/history"
 	"klip/internal/model"
 )
 
 // Host is what the panel asks of the program around it.
 type Host interface {
-	// Apply puts the item on the clipboard; the panel hides itself after.
+	// Apply puts the item on the clipboard.
 	Apply(it model.Item)
 	// Hide hides the panel.
 	Hide()
-	// SyncNow starts a sync the user asked for.
-	SyncNow()
-	// ShowPrefs opens the preferences window.
-	ShowPrefs()
+	// Delete removes an item, ClearAll empties the history (both also from
+	// the cloud when there is an account), Reorder moves an item before
+	// another one (nil: to the end).
+	Delete(id string)
+	ClearAll()
+	Reorder(id string, before *string)
+	// Sync is how the sync is doing.
+	Sync() app.SyncView
+	// Version is the version for the bar, as "v1.0.11".
+	Version() string
 	// UpdateAvailable is the version of a newer release that is known, or "".
+	// UpdateApplying says that it is being installed.
 	UpdateAvailable() string
-	// ShowUpdate opens the update window.
+	UpdateApplying() bool
+	// ShowUpdate opens the update window, ShowPrefs the preferences, ShowAbout
+	// the window about the author, which goes under anchor (the About chip,
+	// in the window's coordinates).
 	ShowUpdate()
+	ShowPrefs()
+	ShowAbout(anchor ui.Rect)
 	// Quit ends the program.
 	Quit()
+	// ShowPreview opens the window beside a row that the pointer rests on,
+	// where anchor is the row in the window's coordinates; HidePreview closes
+	// it. Preview says which item it shows ("" for none) and whether the
+	// pointer is over it.
+	ShowPreview(it model.Item, anchor ui.Rect)
+	HidePreview()
+	Preview() (id string, hovered bool)
 }
 
-// Model is the state of the panel. History is the list it shows and edits;
-// Status says how the sync is doing (may be nil).
+// Timings of the hover preview (MainWindow): it opens a moment after the
+// pointer rests on a row, and stays a moment after it left, so that the
+// pointer can cross to it.
+const (
+	previewShowDelay   = 350 * time.Millisecond
+	previewAnchorGrace = 220 * time.Millisecond
+	toastFor           = 900 * time.Millisecond
+	dropFlash          = 180 * time.Millisecond
+)
+
+// section is what the list shows: all the items, or the favourites only.
+type section int
+
+const (
+	sectionAll section = iota
+	sectionFavorites
+)
+
+// dragRow is the value a row carries while it is dragged to a new place.
+type dragRow struct{ ID string }
+
+// dialog is the box over the window: a note being written, or a question.
+type dialog struct {
+	kind   string // note, confirm
+	title  string
+	hint   string
+	text   string
+	ok     string
+	danger bool
+	item   model.Item
+	onOK   func()
+	focus  bool
+}
+
+// Model is the state of the panel. History is the list it shows and edits.
 type Model struct {
 	History *history.Service
 	Host    Host
-	Status  func() string
 	// Redraw asks for a new frame from any goroutine (Window.Update).
 	Redraw func()
 	// Now is time.Now unless a test sets it.
 	Now func() time.Time
 
 	query  string
-	rows   []model.Item
+	all    []model.Item
+	fav    []model.Item
+	sec    section
 	chosen int
 	list   ui.ListState
 	input  ui.Handle
 	dirty  atomic.Bool
-	last   string // query rows were built for
+	last   string // query the rows were built for
 
-	editID   string // item whose note is being edited
-	noteBuf  string
+	dlg      *dialog
 	noteHand ui.Handle
-	focusNew bool
+
+	toast      string
+	toastUntil time.Time
+
+	// hover preview
+	hoverID    string
+	hoverSince time.Time
+	hoverLeft  time.Time
+
+	flashID    string
+	flashUntil time.Time
 
 	thumbs thumbCache
+	infos  infoCache
 }
 
 // New returns a Model and hooks it to the history.
@@ -74,20 +138,48 @@ func New(h *history.Service, host Host) *Model {
 	m.dirty.Store(true)
 	h.OnChanged(func() {
 		m.dirty.Store(true)
-		if m.Redraw != nil {
-			m.Redraw()
-		}
+		m.redraw()
 	})
 	return m
 }
 
-// Reset is for each time the panel is shown: no query, the first row chosen,
-// the search box focused. Call it on the UI thread.
+func (m *Model) redraw() {
+	if m.Redraw != nil {
+		m.Redraw()
+	}
+}
+
+// after asks for a frame d from now, for what the frame has to do then.
+func (m *Model) after(d time.Duration) {
+	time.AfterFunc(d, m.redraw)
+}
+
+// PreviewLeft is for the preview window: the pointer went from it to
+// nowhere, so it can close without waiting.
+func (m *Model) PreviewLeft() {
+	if m.hoverID == "" {
+		m.hoverLeft = m.Now().Add(-previewAnchorGrace)
+		m.redraw()
+	}
+}
+
+// ShowToast shows a short message at the bottom of the window.
+func (m *Model) ShowToast(msg string) {
+	m.toast = msg
+	m.toastUntil = m.Now().Add(toastFor)
+	m.after(toastFor + 20*time.Millisecond)
+	m.redraw()
+}
+
+// Reset is for each time the panel is shown: no query, the list of all the
+// items, the first row chosen, the search box focused. Call it on the UI
+// thread.
 func (m *Model) Reset() {
-	m.query, m.editID = "", ""
+	m.query, m.dlg, m.sec = "", nil, sectionAll
 	m.dirty.Store(true)
-	m.rows, m.chosen = nil, 0 // the first row, not the one that was chosen before
-	m.list.ScrollIntoView(0)  // and the list shows it, whatever it was scrolled to
+	m.all, m.fav, m.chosen = nil, nil, 0
+	m.dropHover()
+	m.list.ScrollIntoView(0) // and the list shows it, whatever it was scrolled to
 	m.input.Focus()
 }
 
@@ -98,14 +190,15 @@ func (m *Model) refresh() {
 		return
 	}
 	var keep string
-	if m.chosen >= 0 && m.chosen < len(m.rows) && m.last == m.query {
-		keep = m.rows[m.chosen].ID
+	if cur := m.rows(); m.chosen >= 0 && m.chosen < len(cur) && m.last == m.query {
+		keep = cur[m.chosen].ID
 	}
-	m.rows = Rows(m.History.Items(), m.query)
+	m.all = Filter(m.History.Items(), m.query)
+	m.fav = Pinned(m.all)
 	m.last = m.query
 	m.chosen = 0
 	if keep != "" {
-		for i, it := range m.rows {
+		for i, it := range m.rows() {
 			if it.ID == keep {
 				m.chosen = i
 			}
@@ -113,19 +206,135 @@ func (m *Model) refresh() {
 	}
 }
 
+// rows is the list on show.
+func (m *Model) rows() []model.Item {
+	if m.sec == sectionFavorites {
+		return m.fav
+	}
+	return m.all
+}
+
 func (m *Model) choose(i int) {
-	m.chosen = max(0, min(i, len(m.rows)-1))
-	if len(m.rows) > 0 {
+	m.chosen = max(0, min(i, len(m.rows())-1))
+	if len(m.rows()) > 0 {
 		m.list.ScrollIntoView(m.chosen)
 	}
 }
 
 // current is the chosen item.
 func (m *Model) current() (model.Item, bool) {
-	if m.chosen < 0 || m.chosen >= len(m.rows) {
+	r := m.rows()
+	if m.chosen < 0 || m.chosen >= len(r) {
 		return model.Item{}, false
 	}
-	return m.rows[m.chosen], true
+	return r[m.chosen], true
+}
+
+func (m *Model) enter(s section) {
+	m.sec = s
+	m.chosen = 0
+	m.dropHover()
+	m.redraw()
+}
+
+// ---- actions
+
+type action struct {
+	kind string // apply, pin, note, delete, clear
+	item model.Item
+	from string // reorder: the moved item
+}
+
+func (m *Model) run(a action) {
+	switch a.kind {
+	case "apply":
+		m.dropHover()
+		m.Host.Apply(a.item)
+		m.ShowToast("已写回剪贴板")
+		m.Host.Hide()
+	case "pin":
+		m.History.TogglePinned(a.item.ID)
+	case "note":
+		m.openNote(a.item)
+	case "delete":
+		m.askDelete(a.item)
+	case "clear":
+		m.askClear()
+	case "move":
+		before := a.item.ID
+		m.Host.Reorder(a.from, &before)
+		m.flashID, m.flashUntil = a.item.ID, m.Now().Add(dropFlash)
+		m.after(dropFlash + 20*time.Millisecond)
+	}
+}
+
+func (m *Model) cloud() bool { return m.Host.Sync().Cloud }
+
+func (m *Model) openNote(it model.Item) {
+	m.dropHover()
+	m.dlg = &dialog{kind: "note", title: "添加备注", hint: "请输入备注（可用于搜索）：",
+		text: model.Str(it.Note), ok: "保存", item: it, focus: true}
+}
+
+func (m *Model) askDelete(it model.Item) {
+	m.dropHover()
+	del := func() { m.Host.Delete(it.ID) }
+	if m.cloud() {
+		m.dlg = &dialog{kind: "confirm", title: "删除记录", hint: "此操作将同时删除云端备份，且不可撤销。\n\n是否继续？",
+			ok: "确定", danger: true, onOK: del}
+		return
+	}
+	del()
+}
+
+func (m *Model) askClear() {
+	m.dropHover()
+	clear := func() { m.Host.ClearAll() }
+	hint := "确定要清除本工具记录的全部剪贴记录吗？\n此操作不可撤销。"
+	if m.cloud() {
+		hint = "此操作将同时删除云端备份，且不可撤销。\n\n是否继续？"
+	}
+	m.dlg = &dialog{kind: "confirm", title: "清除全部记录", hint: hint, ok: "清除", danger: true, onOK: clear}
+}
+
+// ---- hover preview
+
+// dropHover closes the preview and forgets the row the pointer was on.
+func (m *Model) dropHover() {
+	m.hoverID, m.hoverLeft = "", time.Time{}
+	if m.Host != nil {
+		m.Host.HidePreview()
+	}
+}
+
+// hovering is told, once a frame after the rows are built, which row the
+// pointer is on (nil for none) and where that row is. The preview opens
+// after the delay, and closes after the grace unless the pointer went over
+// to it.
+func (m *Model) hovering(it *model.Item, rect ui.Rect) {
+	now := m.Now()
+	if m.dlg != nil {
+		it = nil
+	}
+	shown, over := m.Host.Preview()
+	if it != nil {
+		m.hoverLeft = time.Time{}
+		switch {
+		case m.hoverID != it.ID:
+			m.hoverID, m.hoverSince = it.ID, now
+			m.after(previewShowDelay + 10*time.Millisecond)
+		case shown != it.ID && now.Sub(m.hoverSince) >= previewShowDelay:
+			m.Host.ShowPreview(*it, rect)
+		}
+		return
+	}
+	if m.hoverID != "" {
+		m.hoverID, m.hoverLeft = "", now
+		m.after(previewAnchorGrace + 10*time.Millisecond)
+	}
+	if shown != "" && !m.hoverLeft.IsZero() && !over && now.Sub(m.hoverLeft) >= previewAnchorGrace {
+		m.Host.HidePreview()
+	}
 }
 
 // ---- thumbnails
