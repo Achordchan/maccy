@@ -645,6 +645,14 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		}
 		return DownloadResult{}, err
 	}
+	if s.accountChanged(account) {
+		// The session changed while the new history was being saved: take
+		// this account's items out again and save that, so the new session
+		// cannot publish them later.
+		s.discardMutation(ctx, applied, moves, oldSettings)
+		_ = s.cfg.Flush(ctx)
+		return DownloadResult{}, ErrSessionChanged
+	}
 	if moves != nil {
 		moves.Commit()
 	}
@@ -847,6 +855,13 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			return fmt.Errorf("%w (history rollback failed: %v)", err, rerr)
 		}
 		return err
+	}
+	if s.accountChanged(account) {
+		// The session changed while the merged history was being saved: take
+		// this account's items out again and save that.
+		s.discardMutation(ctx, merged, moves, localSettings)
+		_ = s.cfg.Flush(ctx)
+		return ErrSessionChanged
 	}
 	if moves != nil {
 		moves.Commit()

@@ -1352,3 +1352,42 @@ func TestSyncRefusesAnotherAccountsState(t *testing.T) {
 		t.Errorf("bound account %q", got)
 	}
 }
+
+// A sign-in during the final flush must not leave the old account's downloaded
+// items saved for the new session.
+func TestDownloadDiscardsItemsWhenTheSessionChangesDuringFlush(t *testing.T) {
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "account a data")}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	s.AuthRefreshToken = model.Ptr("ra")
+	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	h := &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}}
+	syn := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()},
+		Settings: syncclient.Settings{
+			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
+			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+		},
+		History: h,
+		Client:  syncclient.New(srv.URL),
+		BaseURL: srv.URL,
+		Now:     time.Now,
+	})
+	syn.cfg.Flush = func(context.Context) error {
+		mu.Lock()
+		s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+		s.AuthRefreshToken = model.Ptr("rb")
+		mu.Unlock()
+		return nil
+	}
+
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("a sign-in during the flush: %v", err)
+	}
+	if len(h.items) != 0 {
+		t.Errorf("the old account's items were saved for the new session: %v", h.items)
+	}
+}
