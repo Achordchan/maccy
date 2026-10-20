@@ -308,8 +308,10 @@ func (k *klip) poll() {
 // capture reads the clipboard once and adds what it finds. It runs on the
 // poll goroutine: MyGo hops each clipboard call to the main thread.
 // capture reads the clipboard and adds it to the list. It reports false when
-// the clipboard offers formats but nothing could be read from it (another
-// program may still hold it open), so the caller can try again.
+// nothing could be read (another program may still hold the clipboard open,
+// which also empties Formats), so the caller can try again; an emptied
+// clipboard is retried at every tick until something is copied, which is
+// cheap and good enough for a spike.
 func (k *klip) capture() bool {
 	formats := mygo.Clipboard.Formats()
 	var (
@@ -327,7 +329,7 @@ func (k *klip) capture() bool {
 		kind, text = kindText, mygo.Clipboard.ReadText()
 	}
 	_ = files
-	if kind == kindText && text == "" && len(formats) > 0 {
+	if kind == kindText && text == "" {
 		return false
 	}
 	h := hashOf(fmt.Sprint(kind), text+string(img))
