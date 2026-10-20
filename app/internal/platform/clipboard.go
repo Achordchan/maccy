@@ -83,17 +83,18 @@ func ContentFingerprint() string {
 	h := sha256.New()
 	h.Write([]byte(strings.Join(formats, "\x00")))
 	h.Write([]byte{1})
-	h.Write([]byte(c.ReadText()))
+	text := c.ReadText()
+	h.Write([]byte(text))
 	h.Write([]byte{1})
-	if files, err := c.ReadFiles(); err == nil {
+	files, err := c.ReadFiles()
+	if err == nil {
 		h.Write([]byte(strings.Join(files, "\x00")))
 	}
 	h.Write([]byte{1})
-	for _, f := range formats {
-		if strings.Contains(strings.ToLower(f), "image") || strings.Contains(strings.ToLower(f), "png") {
-			h.Write(c.ReadImage())
-			break
-		}
+	// Screenshot tools name their picture format in odd ways, and Capture
+	// tries a picture whenever there is no text or file, so do the same.
+	if strings.TrimSpace(text) == "" && len(files) == 0 {
+		h.Write(c.ReadImage())
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

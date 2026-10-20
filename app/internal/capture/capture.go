@@ -731,7 +731,18 @@ func (s *Service) retryLater() {
 	if s.Retry == nil || s.tries.Add(1) > 5 {
 		return
 	}
-	time.AfterFunc(300*time.Millisecond, s.Retry)
+	at := int64(-1)
+	if s.Seq != nil {
+		at = s.Seq()
+	}
+	time.AfterFunc(300*time.Millisecond, func() {
+		// A newer change is the watcher's to take; looking at it here too
+		// would capture it twice.
+		if at >= 0 && s.Seq() != at {
+			return
+		}
+		s.Retry()
+	})
 }
 
 // noteSkipped registers a capture that gave way to an Apply. The Apply may

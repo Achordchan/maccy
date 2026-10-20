@@ -782,3 +782,19 @@ func TestAdvertisedImageThatDoesNotComeIsRetried(t *testing.T) {
 		t.Fatalf("%d retries, want 1", n.Load())
 	}
 }
+
+func TestRetryIsDroppedWhenTheClipboardMovedOn(t *testing.T) {
+	r := newRig(t)
+	var seq atomic.Int64
+	seq.Store(5)
+	r.s.Seq = seq.Load
+	var n atomic.Int32
+	r.s.Retry = func() { n.Add(1) }
+	r.clip.formats = nil // unreadable now
+	r.s.Capture(context.Background())
+	seq.Store(6) // somebody copied again before the retry: the watcher takes that one
+	time.Sleep(500 * time.Millisecond)
+	if n.Load() != 0 {
+		t.Fatalf("%d retries of a change that is no longer the newest", n.Load())
+	}
+}
