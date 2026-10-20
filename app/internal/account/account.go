@@ -157,18 +157,18 @@ func (s *Service) storeTokensAt(t syncclient.TokenSet, fallbackEmail string, epo
 		email = fallbackEmail
 	}
 	defer s.afterChange()
-	return s.Store.Update(func(m *model.Settings) {
+	who := strings.TrimSpace(email)
+	err := s.Store.Update(func(m *model.Settings) {
 		// The sync state is about one account; it is kept through a sign-out and a
 		// sign-in to the same one, and dropped when the account is another.
 		prev := s.syncAccount()
 		if prev == "" {
 			prev = strings.TrimSpace(model.Str(m.AuthUserEmail))
 		}
-		if prev != "" && !strings.EqualFold(prev, strings.TrimSpace(email)) {
+		if prev != "" && !strings.EqualFold(prev, who) {
 			m.SyncLastLocalFingerprint, m.SyncLastRemoteVersion = nil, nil
 			m.SyncLastRemoteUpdatedAt, m.SyncLastRemoteSha256 = nil, nil
 		}
-		s.setSyncAccount(strings.TrimSpace(email))
 		m.AuthAccessToken = &t.AccessToken
 		m.AuthRefreshToken = &t.RefreshToken
 		m.AuthIdToken = &t.IDToken
@@ -176,6 +176,14 @@ func (s *Service) storeTokensAt(t syncclient.TokenSet, fallbackEmail string, epo
 		m.AuthUserEmail = &email
 		m.NasAgentBaseUrl = model.OfficialSyncBaseUrl
 	})
+	if err != nil {
+		// The file still has the old login and its checkpoints, so the record of
+		// whose they are stays as it is on disk; this run knows the new one.
+		s.lastAccount = who
+		return err
+	}
+	s.setSyncAccount(who) // after the settings: the two never disagree on disk
+	return nil
 }
 
 // Result is what a call did: Message is for the toast, OK says whether it

@@ -2,6 +2,7 @@ package shelfwin
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -10,6 +11,7 @@ import (
 // Manager opens shelves (ShelfService's window half): each is a window of its
 // own near the cursor. Any number can be open.
 type Manager struct {
+	epoch   atomic.Int64 // moves when the shelves are closed
 	mu      sync.Mutex
 	shelves map[*Model]*mygo.Window
 }
@@ -41,7 +43,14 @@ func (h *host) Resize(size int) {
 // Spawn opens a shelf below and to the right of the cursor, kept inside the
 // work area of that display (PositionShelf). Any goroutine may call it.
 func (mg *Manager) Spawn() {
-	mygo.RunOnMain(func() {
+	epoch := mg.epoch.Load()
+	// Not waited for: the caller is the thread that reads the mouse, and the UI
+	// thread may at that moment be waiting for it (to stop it). A spawn that was
+	// asked for before the shelves were closed is dropped when its turn comes.
+	go mygo.RunOnMain(func() {
+		if mg.epoch.Load() != epoch {
+			return
+		}
 		m := New(nil)
 		m.IconOf = SystemIcon
 		cur := mygo.Screen.CursorScreenPoint()
@@ -94,6 +103,7 @@ func (mg *Manager) remove(m *Model) {
 
 // CloseAll closes every open shelf.
 func (mg *Manager) CloseAll() {
+	mg.epoch.Add(1) // pending spawns are void
 	mg.mu.Lock()
 	wins := make([]*mygo.Window, 0, len(mg.shelves))
 	for _, w := range mg.shelves {

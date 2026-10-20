@@ -53,6 +53,7 @@ type program struct {
 	shelf   *shelf.Service
 	layout  paths.Layout
 
+	redrawPending  atomic.Bool // a redraw is queued for the UI thread
 	followShelf    func()      // starts or stops the shelf as the settings say
 	mandatoryShown atomic.Bool // the window for a mandatory update was put up
 	quitting       atomic.Bool // set when the program is quitting, see OnBeforeQuit
@@ -219,8 +220,14 @@ func (p *program) stopShelf() {
 
 // redraw asks the visible windows for a frame; any goroutine may call it.
 func (p *program) redraw() {
-	// The window fields are set on the UI thread, so they are read there too.
-	mygo.RunOnMain(func() {
+	// One request waits at a time; the window fields are read on the UI thread,
+	// and the caller (a settings handler, a sync, the clipboard) is not held up
+	// by it, nor can it hold the UI thread up.
+	if !p.redrawPending.CompareAndSwap(false, true) {
+		return
+	}
+	go mygo.RunOnMain(func() {
+		p.redrawPending.Store(false)
 		if p.win != nil && p.win.IsVisible() {
 			p.win.Update(func() {})
 		}

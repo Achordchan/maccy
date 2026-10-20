@@ -432,3 +432,25 @@ func TestSyncAccountFileThatCannotBeWrittenDoesNotKeepTheOldName(t *testing.T) {
 		t.Fatalf("a later run would read %q as the account of the checkpoints", got)
 	}
 }
+
+func TestSidecarAndSettingsAgreeAfterAFailedSave(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := settings.Open(filepath.Join(dir, "settings.json"))
+	s := &Service{Client: syncclient.New("http://127.0.0.1:1"), Store: m, AccountFile: filepath.Join(dir, "sync", "account.txt")}
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a", RefreshToken: "ra", Email: "a@example.com"}, "a@example.com")
+	_ = os.Chmod(dir, 0o500) // settings.json can no longer be replaced
+	defer os.Chmod(dir, 0o755)
+	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
+		f.Close()
+		t.Skip("writable anyway (root?)")
+	}
+	if err := s.storeTokens(syncclient.TokenSet{AccessToken: "b", RefreshToken: "rb", Email: "b@example.com"}, "b@example.com"); err == nil {
+		t.Fatal("the save should have failed")
+	}
+	// A later run: the disk has account A's login and checkpoints, and the record
+	// must still say A.
+	later := &Service{AccountFile: s.AccountFile}
+	if got := later.syncAccount(); got != "a@example.com" {
+		t.Fatalf("the record says %q while the settings on disk are account A's", got)
+	}
+}
