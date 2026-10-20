@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"klip/internal/account"
@@ -80,6 +81,8 @@ type App struct {
 	cancel  context.CancelFunc
 	done    sync.WaitGroup
 	started bool
+	ctx     context.Context // lives as long as the program, once started
+	syncing atomic.Int32    // syncs running, background or asked for
 }
 
 // New reads the settings and the history and connects the parts. A settings
@@ -144,6 +147,14 @@ func New(cfg Config) (*App, error) {
 		SuppressAutoSync: func(on bool) { a.Auto.Suppress(on) },
 	})
 	a.Auto = syncer.NewAuto(a.Syncer, a.syncDone)
+	// Every sync is counted while it runs, so that Stop can wait for them (they
+	// start their own goroutines inside Auto).
+	run := a.Auto.Run
+	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
+		a.syncing.Add(1)
+		defer a.syncing.Add(-1)
+		return run(ctx, reason, manual)
+	}
 
 	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings}
 	if cfg.Autostart == nil {
@@ -191,6 +202,7 @@ func (a *App) Start() {
 	a.started = true
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
+	a.ctx = ctx
 	a.mu.Unlock()
 
 	// A change of the history is a reason to sync, a moment later.
@@ -260,6 +272,12 @@ func (a *App) Start() {
 	}()
 }
 
+// stopWait is how long Stop waits for the background work: a worker that is
+// inside a clipboard call needs the UI thread, which is where Stop may be
+// running (it is a quit callback), so waiting for ever could be waiting for
+// ourselves.
+const stopWait = 3 * time.Second
+
 // Stop ends the background work and writes the history.
 func (a *App) Stop() {
 	a.mu.Lock()
@@ -267,11 +285,37 @@ func (a *App) Stop() {
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
-		a.done.Wait()
+		until := time.Now().Add(stopWait)
+		done := make(chan struct{})
+		go func() { a.done.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(stopWait):
+			a.cfg.Logf("stop: background work did not end in %v", stopWait)
+		}
+		// The syncs started from Auto are not in done; they were cancelled
+		// with the context and end soon.
+		for a.syncing.Load() > 0 && time.Now().Before(until) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if a.syncing.Load() > 0 {
+			a.cfg.Logf("stop: a sync did not end")
+		}
 	}
 	if err := a.Persister.Close(); err != nil {
 		a.cfg.Logf("history: %v", err)
 	}
+}
+
+// lifetime is the context of work that belongs to the program: the one made at
+// Start, else Background (before Start there is nothing to cancel).
+func (a *App) lifetime() context.Context {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
 }
 
 // Apply puts an item on the clipboard and moves it to the top, as the main
@@ -287,14 +331,17 @@ func (a *App) Apply(it model.Item) {
 // SyncNow is the user asking for a sync.
 func (a *App) SyncNow() {
 	a.setStatus("同步中…")
-	a.Auto.Trigger(context.Background(), "manual", true)
+	// Only the syncs started in the background count towards "the first sync
+	// is done" (MainWindowViewModel does the same: !manual); a manual one
+	// that succeeds leaves history-triggered syncing to the next background one.
+	a.Auto.Trigger(a.lifetime(), "manual", true)
 }
 
 // AccountChanged is for the preferences window: after a sign-in the history
 // is synchronized at once, as the C# client does.
 func (a *App) AccountChanged(signedIn bool) {
 	if signedIn {
-		a.Auto.Trigger(context.Background(), "login", false)
+		a.Auto.Trigger(a.lifetime(), "login", false)
 	}
 	a.changed()
 }

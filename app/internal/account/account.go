@@ -139,13 +139,18 @@ func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 	access := strings.TrimSpace(model.Str(cur.AuthAccessToken))
 	if access != "" && cur.AuthExpiresAtUnixMs > s.now().UnixMilli()+30_000 {
 		email, err := s.Client.CurrentEmail(ctx, access)
-		if err != nil && ctx.Err() != nil {
-			return "", ctx.Err()
+		if err != nil {
+			// No answer (offline, a reset connection) says nothing about the
+			// login: it stays, and the caller is told to try again later.
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			return "", err
 		}
 		if strings.TrimSpace(email) != "" {
 			return access, nil
 		}
-		s.clearSession()
+		s.clearSession(model.Str(cur.AuthRefreshToken), access)
 		return "", nil
 	}
 	refresh := strings.TrimSpace(model.Str(cur.AuthRefreshToken))
@@ -157,10 +162,21 @@ func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		s.clearSession()
+		var ae *syncclient.APIError
+		if !errors.As(err, &ae) {
+			return "", err // no answer: not a reason to sign out
+		}
+		s.clearSession(refresh, access)
 		return "", nil
 	}
+	// The user may have signed out, or in as somebody else, while the request
+	// was on its way: the answer belongs to the session that asked.
+	same := false
 	_ = s.Store.Update(func(m *model.Settings) {
+		if strings.TrimSpace(model.Str(m.AuthRefreshToken)) != refresh {
+			return
+		}
+		same = true
 		m.AuthAccessToken = &t.AccessToken
 		if strings.TrimSpace(t.RefreshToken) != "" {
 			m.AuthRefreshToken = &t.RefreshToken
@@ -174,11 +190,22 @@ func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 		}
 		m.NasAgentBaseUrl = model.OfficialSyncBaseUrl
 	})
+	if !same {
+		return "", nil
+	}
 	return model.Str(s.Store.Get().AuthAccessToken), nil
 }
 
-func (s *Service) clearSession() {
-	_ = s.Store.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, false) })
+// clearSession signs out, but only the session that was found wanting: if the
+// tokens are no longer those, somebody signed in again meanwhile.
+func (s *Service) clearSession(refresh, access string) {
+	_ = s.Store.Update(func(m *model.Settings) {
+		if strings.TrimSpace(model.Str(m.AuthRefreshToken)) != strings.TrimSpace(refresh) ||
+			strings.TrimSpace(model.Str(m.AuthAccessToken)) != strings.TrimSpace(access) {
+			return
+		}
+		syncclient.ClearAuthSession(m, false)
+	})
 }
 
 // Purpose of a password code.

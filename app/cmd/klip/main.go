@@ -184,15 +184,18 @@ func (p *program) stopShelf() {
 
 // redraw asks the visible windows for a frame; any goroutine may call it.
 func (p *program) redraw() {
-	if p.win != nil && p.win.IsVisible() {
-		p.win.Update(func() {})
-	}
-	if p.prefsWin != nil && p.prefsWin.IsVisible() {
-		p.prefsWin.Update(func() {})
-	}
-	if p.updWin != nil && p.updWin.IsVisible() {
-		p.updWin.Update(func() {})
-	}
+	// The window fields are set on the UI thread, so they are read there too.
+	mygo.RunOnMain(func() {
+		if p.win != nil && p.win.IsVisible() {
+			p.win.Update(func() {})
+		}
+		if p.prefsWin != nil && p.prefsWin.IsVisible() {
+			p.prefsWin.Update(func() {})
+		}
+		if p.updWin != nil && p.updWin.IsVisible() {
+			p.updWin.Update(func() {})
+		}
+	})
 }
 
 // applyTheme sets the look of the windows from the setting: "System",
@@ -297,7 +300,7 @@ func (h host) Quit() { mygo.App.Quit() }
 type prefsHost struct{ p *program }
 
 func (h prefsHost) OpenStorage()           { _ = mygo.Shell.OpenPath(h.p.layout.Root) }
-func (h prefsHost) CheckUpdates() func()   { return nil } // the update module comes later
+func (h prefsHost) CheckUpdates() func()   { return h.p.checkUpdates }
 func (h prefsHost) SyncNow()               { h.p.app.SyncNow() }
 func (h prefsHost) AccountChanged(in bool) { h.p.app.AccountChanged(in) }
 func (h prefsHost) Close()                 { h.p.prefsWin.Hide() }

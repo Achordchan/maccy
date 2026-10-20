@@ -25,7 +25,18 @@ type host struct {
 
 func (h *host) Close() { h.mgr.remove(h.m) }
 
-func (h *host) Resize(size int) { h.win.SetSize(size, size) }
+// Resize changes the size and keeps the window inside the work area: a shelf
+// that was made near an edge would otherwise grow off the screen.
+func (h *host) Resize(size int) {
+	h.win.SetSize(size, size)
+	x, y := h.win.Position()
+	wa := mygo.Screen.DisplayNearestPoint(mygo.Point{X: x + size/2, Y: y + size/2}).WorkArea
+	nx := max(wa.X, min(x, wa.X+wa.Width-size))
+	ny := max(wa.Y, min(y, wa.Y+wa.Height-size))
+	if nx != x || ny != y {
+		h.win.SetPosition(nx, ny)
+	}
+}
 
 // Spawn opens a shelf below and to the right of the cursor, kept inside the
 // work area of that display (PositionShelf). Any goroutine may call it.

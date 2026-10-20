@@ -179,7 +179,16 @@ func (c *Controller) SetExcludePinnedFromLimits(on bool) Effect {
 }
 
 func (c *Controller) SetShelfEnabled(on bool) Effect {
-	return c.set(func(s model.Settings) bool { return s.ShelfEnabled == on }, func(s *model.Settings) { s.ShelfEnabled = on })
+	return c.set(func(s model.Settings) bool {
+		return s.ShelfEnabled == on && !(on && strings.EqualFold(s.ShelfTriggerModifier, "Disabled"))
+	}, func(s *model.Settings) {
+		s.ShelfEnabled = on
+		if on && strings.EqualFold(s.ShelfTriggerModifier, "Disabled") {
+			// "Disabled" is shown as off with Ctrl picked: turning it on must
+			// leave a modifier the hook can use.
+			s.ShelfTriggerModifier = model.DefaultSettings().ShelfTriggerModifier
+		}
+	})
 }
 
 func (c *Controller) SetShelfModifier(v string) Effect {

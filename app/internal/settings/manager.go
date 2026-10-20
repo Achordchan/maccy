@@ -36,13 +36,15 @@ func (m *Manager) Get() model.Settings {
 func (m *Manager) Update(f func(*model.Settings)) error {
 	m.mu.Lock()
 	f(&m.cur)
-	cur := m.cur
 	hs := make([]func(model.Settings), len(m.handlers))
 	copy(hs, m.handlers)
-	err := Save(m.path, cur)
+	err := Save(m.path, m.cur)
 	m.mu.Unlock()
+	// Two updates on two goroutines can reach this point in either order, so
+	// a handler is given the settings as they are now, not the ones this
+	// update made: the last word is always the newest, whoever delivers it.
 	for _, h := range hs {
-		h(cur)
+		h(m.Get())
 	}
 	return err
 }
