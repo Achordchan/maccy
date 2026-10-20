@@ -108,6 +108,8 @@ func (t *trash) add(it model.Item) {
 }
 
 // empty the trash: delete the image files and the cached file directories.
+// It is called with the lock held, so that a change cannot bring back an item
+// whose files are being deleted.
 // A file that cannot be deleted stays; nothing here is worth failing for.
 func (s *Service) empty(ctx context.Context, t trash) {
 	for _, p := range t.images {
@@ -195,16 +197,16 @@ func (s *Service) Add(item model.Item) {
 			s.items = append(s.items[:idx], s.items[idx+1:]...)
 			s.items = append([]model.Item{updated}, s.items...)
 			s.enforceLimits(&t)
-			s.mu.Unlock()
 			s.empty(context.Background(), t)
+			s.mu.Unlock()
 			s.fire()
 			return
 		}
 	}
 	s.items = append([]model.Item{item}, s.items...)
 	s.enforceLimits(&t)
-	s.mu.Unlock()
 	s.empty(context.Background(), t)
+	s.mu.Unlock()
 	s.fire()
 }
 
@@ -246,8 +248,8 @@ func (s *Service) Touch(id string) {
 	s.items = append(s.items[:idx], s.items[idx+1:]...)
 	s.items = append([]model.Item{it}, s.items...)
 	s.enforceLimits(&t)
-	s.mu.Unlock()
 	s.empty(context.Background(), t)
+	s.mu.Unlock()
 	s.fire()
 }
 
@@ -259,8 +261,8 @@ func (s *Service) Remove(id string) {
 		s.mu.Unlock()
 		return
 	}
-	s.mu.Unlock()
 	s.empty(context.Background(), t)
+	s.mu.Unlock()
 	s.fire()
 }
 
@@ -306,8 +308,8 @@ func (s *Service) ReplaceAll(ctx context.Context, items []model.Item) error {
 	}
 	s.items = append([]model.Item(nil), items...)
 	s.enforceLimits(&t)
-	s.mu.Unlock()
 	s.empty(ctx, t)
+	s.mu.Unlock()
 	s.fire()
 	return ctx.Err()
 }
@@ -324,8 +326,8 @@ func (s *Service) ClearAll() {
 		t.add(it)
 	}
 	s.items = nil
-	s.mu.Unlock()
 	s.empty(context.Background(), t)
+	s.mu.Unlock()
 	s.fire()
 }
 
@@ -345,6 +347,9 @@ func (s *Service) TogglePinned(id string) {
 // MoveBefore moves an item to just before another one, or to the end when
 // beforeID is nil or not in the list.
 func (s *Service) MoveBefore(movedID string, beforeID *string) {
+	if beforeID != nil && *beforeID == movedID {
+		return // dropped on itself: it stays where it is
+	}
 	s.mu.Lock()
 	from := indexOf(s.items, movedID)
 	if from < 0 {

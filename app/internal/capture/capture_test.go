@@ -214,10 +214,11 @@ func TestOwnWriteIsFoundByCounter(t *testing.T) {
 	if r.h.Len() != 0 {
 		t.Fatal("our own change, seen late, must not be captured")
 	}
-	seq = 12 // somebody else copied
+	seq = 12                                              // somebody else copied
+	r.now = r.now.Add(-time.Second + 10*time.Millisecond) // right after our write
 	r.s.Capture(context.Background())
 	if r.h.Len() != 1 {
-		t.Fatal("a later change counts")
+		t.Fatal("a change after ours counts at once, even inside the window")
 	}
 }
 

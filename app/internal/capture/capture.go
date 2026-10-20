@@ -129,8 +129,10 @@ func (s *Service) markWritten() {
 func (s *Service) isOwnChange() bool {
 	if s.Seq != nil {
 		if own := s.ownSeq.Load(); own != 0 {
-			if n := s.Seq(); n >= 0 && n == own-2 {
-				return true
+			if n := s.Seq(); n >= 0 {
+				// The counter knows: still where our write left it is ours,
+				// anywhere else somebody else copied, window or not.
+				return n == own-2
 			}
 		}
 	}

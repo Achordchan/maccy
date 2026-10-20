@@ -287,6 +287,10 @@ func TestNoteTouchPinMoveRemove(t *testing.T) {
 	if got := ids(r.svc.Items()); got != "04,03,02,01" {
 		t.Errorf("before an unknown id: %s", got)
 	}
+	r.svc.MoveBefore(a.ID, &a.ID) // dropped on itself: nothing moves
+	if got := ids(r.svc.Items()); got != "04,03,02,01" {
+		t.Errorf("before itself: %s", got)
+	}
 
 	before := r.events.Load()
 	r.svc.Remove("nope")

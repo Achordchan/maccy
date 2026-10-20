@@ -45,6 +45,9 @@ func (w *Watcher) Run(ctx context.Context) {
 	seq := w.Seq
 	if seq == nil {
 		seq = ChangeSeq
+		if w.Fingerprint == nil {
+			w.Fingerprint = ContentFingerprint // used only when ChangeSeq has no counter
+		}
 	}
 	t := time.NewTicker(iv)
 	defer t.Stop()
