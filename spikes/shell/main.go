@@ -294,7 +294,12 @@ func (k *klip) poll() {
 				continue
 			}
 			log.Printf("change counter %d -> %d", k.seqLast, s)
+			prev := k.seqLast
 			k.seqLast = s
+			if !k.capture() {
+				k.seqLast = prev // the clipboard could not be read yet: try again at the next tick
+			}
+			continue
 		}
 		k.capture()
 	}
@@ -302,7 +307,10 @@ func (k *klip) poll() {
 
 // capture reads the clipboard once and adds what it finds. It runs on the
 // poll goroutine: MyGo hops each clipboard call to the main thread.
-func (k *klip) capture() {
+// capture reads the clipboard and adds it to the list. It reports false when
+// the clipboard offers formats but nothing could be read from it (another
+// program may still hold it open), so the caller can try again.
+func (k *klip) capture() bool {
 	formats := mygo.Clipboard.Formats()
 	var (
 		kind  itemKind
@@ -319,6 +327,9 @@ func (k *klip) capture() {
 		kind, text = kindText, mygo.Clipboard.ReadText()
 	}
 	_ = files
+	if kind == kindText && text == "" && len(formats) > 0 {
+		return false
+	}
 	h := hashOf(fmt.Sprint(kind), text+string(img))
 	var bm *ui.Bitmap
 	if kind == kindImage {
@@ -345,6 +356,7 @@ func (k *klip) capture() {
 		k.status = fmt.Sprintf("captured #%d kind=%d formats=%s", k.nextN, kind, k.lastFmts)
 		log.Printf("captured kind=%d formats=%s bytes=%d", kind, k.lastFmts, len(text)+len(img))
 	})
+	return true
 }
 
 func (k *klip) show() {
