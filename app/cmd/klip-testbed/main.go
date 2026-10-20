@@ -35,7 +35,7 @@ import (
 
 func main() {
 	dir := flag.String("dir", "artifacts/testbed", "folder with manifest.json and the files it names")
-	addr := flag.String("addr", ":443", "address to listen on")
+	addr := flag.String("addr", "127.0.0.1:443", "address to listen on (the machine itself; the hosts file points gitee.com here)")
 	certDir := flag.String("cert-dir", "", "where to keep the certificate (default: <dir>/cert)")
 	plain := flag.Bool("http", false, "serve plain HTTP (for tests of the testbed itself)")
 	flag.Parse()
@@ -74,7 +74,7 @@ func Handler(dir string, logf func(string, ...any)) http.Handler {
 		case strings.Contains(r.URL.Path, "/releases/download/"):
 			file = path.Base(r.URL.Path)
 		}
-		if file == "" || strings.ContainsAny(file, `/\`) || file == "." || file == ".." {
+		if file == "" || strings.ContainsAny(file, `/\`) || file == "." || file == ".." || !servable(file) {
 			logf("404 %s", r.URL.Path)
 			http.NotFound(w, r)
 			return
@@ -88,6 +88,18 @@ func Handler(dir string, logf func(string, ...any)) http.Handler {
 		logf("200 %s -> %s", r.URL.Path, full)
 		http.ServeFile(w, r, full)
 	})
+}
+
+// servable says whether a file may be handed out: the manifest and what a
+// release is made of. Anything else is refused whatever folder it sits in, so
+// that pointing -cert-dir at the served folder cannot give away the key of the
+// certificate that people are told to trust.
+func servable(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".json", ".zip", ".exe", ".msi", ".7z":
+		return true
+	}
+	return false
 }
 
 // LoadOrCreateCert keeps a self-signed certificate for host in dir (cert.pem,

@@ -72,3 +72,20 @@ func TestCertificateIsForGiteeAndIsKept(t *testing.T) {
 	}
 	r.Body.Close()
 }
+
+func TestKeysAndCertificatesAreNeverServed(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"key.pem", "cert.pem", "gitee.com.cer", "manifest.json", "klip.zip"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := Handler(dir, func(string, ...any) {})
+	for name, want := range map[string]int{"key.pem": 404, "cert.pem": 404, "gitee.com.cer": 404, "klip.zip": 200} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", "/releases/download/"+name, nil))
+		if rec.Code != want {
+			t.Errorf("%s: %d, want %d", name, rec.Code, want)
+		}
+	}
+}

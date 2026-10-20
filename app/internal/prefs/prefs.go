@@ -217,8 +217,9 @@ func (c *Controller) SetMaxItems(text string) Effect {
 // (Text is then the new text of that box). It reports a change for the toast
 // even when the number was not valid, as C# does.
 func (c *Controller) SetMaxMegabytes(text string) Effect {
+	var saveErr error
 	if n, err := strconv.Atoi(strings.TrimSpace(text)); err == nil && n > 0 && n <= 1<<30 {
-		_ = c.Settings.Update(func(s *model.Settings) {
+		saveErr = c.Settings.Update(func(s *model.Settings) {
 			if int(s.MaxMegabytes) != n {
 				s.MaxMegabytes = int32(n)
 			}
@@ -227,9 +228,12 @@ func (c *Controller) SetMaxMegabytes(text string) Effect {
 	st := c.Settings.Get()
 	e := Effect{Changed: true}
 	if st.CaptureFileMaxMegabytes > st.MaxMegabytes {
-		_ = c.Settings.Update(func(s *model.Settings) { s.CaptureFileMaxMegabytes = s.MaxMegabytes })
+		if err := c.Settings.Update(func(s *model.Settings) { s.CaptureFileMaxMegabytes = s.MaxMegabytes }); err != nil {
+			saveErr = err
+		}
 		e.Text, e.SetText = strconv.Itoa(int(st.MaxMegabytes)), true
 	}
+	e.Err = saveErr
 	return e
 }
 

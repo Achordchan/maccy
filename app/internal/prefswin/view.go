@@ -84,9 +84,11 @@ func (m *Model) effect(c *ui.Context, e prefs.Effect, typed bool, box *string) {
 func (m *Model) check(c *ui.Context, label string, on *bool, set func(bool) prefs.Effect) {
 	if ui.Checkbox(c, on, label).Changed() {
 		e := set(*on)
-		if e.Err != nil {
+		if e.Err != nil && !e.Changed {
 			*on = !*on // the system refused: show what is true
 		}
+		// (A setting that took effect but could not be saved stays as it is:
+		// it is on for now, and the message says it will not survive a restart.)
 		m.effect(c, e, false, nil)
 	}
 }
