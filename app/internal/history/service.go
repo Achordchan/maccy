@@ -299,6 +299,9 @@ func (s *Service) removeLocked(id string, t *trash) bool {
 // list and the cached file directories of ids that are not. The new list is
 // then trimmed to the limits.
 func (s *Service) ReplaceAll(ctx context.Context, items []model.Item) error {
+	if err := ctx.Err(); err != nil {
+		return err // cancelled before anything was changed
+	}
 	newImages := map[string]bool{}
 	newDirs := map[string]bool{}
 	for _, it := range items {
@@ -326,10 +329,12 @@ func (s *Service) ReplaceAll(ctx context.Context, items []model.Item) error {
 	}
 	s.items = append([]model.Item(nil), items...)
 	s.enforceLimits(&t)
-	s.empty(ctx, t)
+	// Past this point the replacement is done, so it is reported as done and
+	// the cleanup is finished even if the caller has given up meanwhile.
+	s.empty(context.Background(), t)
 	s.mu.Unlock()
 	s.fire()
-	return ctx.Err()
+	return nil
 }
 
 // ClearAll empties the list and deletes all the files.

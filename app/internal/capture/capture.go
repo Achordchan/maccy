@@ -497,7 +497,7 @@ func (s *Service) filterFiles(in []string, opt options) []string {
 // still has them when the originals move or go.
 func (s *Service) cacheCopies(id string, files []string) {
 	dir := filepath.Join(s.Layout.Files(), strings.ReplaceAll(strings.ToLower(id), "-", ""))
-	if os.MkdirAll(dir, 0o755) != nil {
+	if os.MkdirAll(dir, 0o700) != nil {
 		return
 	}
 	for i, src := range files {
@@ -558,14 +558,14 @@ func (s *Service) savePNG(data []byte) (path, hash string, size int64, err error
 		// picture that cannot be shown
 		return "", "", 0, derr
 	}
-	if err := os.MkdirAll(s.Layout.Images(), 0o755); err != nil {
+	if err := os.MkdirAll(s.Layout.Images(), 0o700); err != nil {
 		return "", "", 0, fmt.Errorf("%w: %v", errStorage, err)
 	}
 	path = filepath.Join(s.Layout.Images(), fmt.Sprintf("%d_%s.png", s.Now().UnixMilli(), strings.ReplaceAll(newGUID(), "-", "")))
 	// To a side file first: a write that stops half way (disk full) must not
 	// leave a broken picture behind.
 	tmp := path + ".part"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		os.Remove(tmp)
 		return "", "", 0, fmt.Errorf("%w: %v", errStorage, err)
 	}
@@ -653,7 +653,7 @@ func copyFile(src, dst string) (err error) {
 	// Copy to a side file and rename it when whole, so that a copy that
 	// fails half way never stands in for the original.
 	tmp := dst + ".part"
-	out, err := os.Create(tmp)
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // private: the copy may hold what the original kept to itself
 	if err != nil {
 		return err
 	}

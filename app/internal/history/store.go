@@ -49,11 +49,11 @@ func Save(l paths.Layout, items []model.Item) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(l.History()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(l.History()), 0o700); err != nil {
 		return err
 	}
 	tmp := l.History() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, l.History())

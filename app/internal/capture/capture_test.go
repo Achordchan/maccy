@@ -948,3 +948,30 @@ func TestStorageFailureIsReportedAndRetried(t *testing.T) {
 		t.Fatal("a picture that could not be stored must be tried again")
 	}
 }
+
+func TestCachedContentIsPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix permissions")
+	}
+	r := newRig(t)
+	r.clip.formats, r.clip.image = []string{"image/png"}, tinyPNG(t)
+	r.capture()
+	src := write(t, filepath.Join(t.TempDir(), "secret.txt"), []byte("password"))
+	files, _ := cacheDirAndCopy(r, src)
+	for _, p := range append(files, model.Str(r.h.Items()[0].ImageFilePath)) {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm()&0o077 != 0 {
+			t.Errorf("%s is %v: other users can read it", p, st.Mode().Perm())
+		}
+	}
+}
+
+func cacheDirAndCopy(r *rig, src string) ([]string, error) {
+	dst := filepath.Join(r.l.Files(), "x", "0000_secret.txt")
+	_ = os.MkdirAll(filepath.Dir(dst), 0o700)
+	err := copyFile(src, dst)
+	return []string{dst, filepath.Dir(dst)}, err
+}

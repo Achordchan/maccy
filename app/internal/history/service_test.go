@@ -456,3 +456,16 @@ func TestFailedSaveIsTriedAgain(t *testing.T) {
 		t.Fatal("the failed save was never tried again")
 	}
 }
+
+func TestReplaceAllCancelledBeforeChangesNothing(t *testing.T) {
+	r := newRig(t)
+	r.svc.Add(r.text("keep", ""))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := r.svc.ReplaceAll(ctx, nil); err == nil {
+		t.Fatal("a cancelled replacement says so")
+	}
+	if r.svc.Len() != 1 {
+		t.Fatal("nothing may change when it was cancelled before")
+	}
+}
