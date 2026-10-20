@@ -226,13 +226,14 @@ func TestAgainstTheRealServer(t *testing.T) {
 		dest := b.BlobPath(h)
 		return dest, c.DownloadBlob(ctx, access, h, dest)
 	}
-	res, err := snapshot.Read(ctx, b, downloaded, ensure)
+	res, applied, err := snapshot.Read(ctx, b, downloaded, ensure)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res.Items) != 3 || res.ImageCount != 1 || res.FileCount != 1 {
 		t.Fatalf("imported %+v", res)
 	}
+	applied.Commit()
 	if got, _ := os.ReadFile(model.Str(res.Items[1].ImageFilePath)); !bytes.Equal(got, imgBytes) {
 		t.Error("the image differs after the trip")
 	}

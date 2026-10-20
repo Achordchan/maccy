@@ -2432,6 +2432,8 @@ func TestRecoverPendingMergeRecordsTheUpload(t *testing.T) {
 		Version:     "v1",
 		SHA256:      "sha",
 		Before:      Fingerprint([]model.Item{old}),
+		After:       Fingerprint(merged),
+		AfterIDs:    itemIDs(merged),
 	})
 	syn.recoverPendingMerge(context.Background(), "")
 	if got := model.Str(s.SyncLastLocalFingerprint); got != "pending-upload" {
@@ -2478,6 +2480,8 @@ func TestRunRecoversAPendingMergeBeforeDeciding(t *testing.T) {
 		Version:     "v1",
 		SHA256:      "sha",
 		Before:      Fingerprint([]model.Item{old}),
+		After:       Fingerprint(merged),
+		AfterIDs:    itemIDs(merged),
 	})
 	res, _ := syn.Run(context.Background(), nil, "test")
 	if res.Decision.Direction != Upload {
@@ -2508,5 +2512,33 @@ func TestEnsureSettingsCanHoldItemsRoundsUpWithoutOverflow(t *testing.T) {
 	EnsureSettingsCanHoldItems(&s, []model.Item{{ApproxBytes: math.MaxInt64}})
 	if s.MaxMegabytes <= 1 {
 		t.Errorf("MaxMegabytes %d: the overflow disabled the expansion", s.MaxMegabytes)
+	}
+}
+
+// A capture that was never flushed makes the persisted history different from
+// Before; that must not be taken as proof that the merge was saved.
+func TestRecoverPendingMergeDoesNotTrustAnUnflushedCapture(t *testing.T) {
+	s := signedIn(model.DefaultSettings())
+	old := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "old")
+	captured := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "captured")
+	remote := textItemAt("16fd2706-8baf-433b-82eb-8c7fada847da", "remote")
+	h := &unitHistory{items: []model.Item{old}} // the disk still has only H0
+	syn := unitSyncer(t, serveSnapshot(t, snapshotFile(t, nil)), s, h)
+	before := []model.Item{old, captured} // the unflushed capture
+	after := []model.Item{old, captured, remote}
+	syn.writePendingMerge(pendingMergeState{
+		Fingerprint: "pending-upload",
+		Version:     "v1",
+		SHA256:      "sha",
+		Before:      Fingerprint(before),
+		After:       Fingerprint(after),
+		AfterIDs:    itemIDs(after),
+	})
+	syn.recoverPendingMerge(context.Background(), "")
+	if s.SyncLastLocalFingerprint != nil {
+		t.Errorf("state was recovered for a merge that was never saved: %+v", s)
+	}
+	if _, err := os.Stat(syn.pendingMergePath()); !os.IsNotExist(err) {
+		t.Errorf("the pending file survived: %v", err)
 	}
 }

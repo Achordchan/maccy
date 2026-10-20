@@ -462,13 +462,26 @@ type ReadResult struct {
 // it put it. It may be nil.
 type EnsureBlob func(sha256 string) (string, error)
 
-// Read reads a snapshot. Images and files are put in the data folder (from
-// the bytes in the file, or from the blob store, asking ensure for a blob
-// that is not there), and the items point to them. Nothing in the data
-// folder is replaced until the whole snapshot has been read: a snapshot
-// with a missing blob leaves the history and its files as they were.
-func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure EnsureBlob) (ReadResult, error) {
-	return read(ctx, l, l.Root, l.Images(), l.Files(), snapshotPath, ensure)
+// Read reads a snapshot. Images and files are staged first and applied as a
+// transaction: the caller must Commit after saving the history, or Rollback.
+// The old cache of an item is not replaced in place, so a failed save leaves
+// the previous history and its files intact.
+func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure EnsureBlob) (ReadResult, *AppliedPayloads, error) {
+	root, err := os.MkdirTemp(l.Root, ".read-*")
+	if err != nil {
+		return ReadResult{}, nil, err
+	}
+	defer os.RemoveAll(root)
+	res, err := ReadDetached(ctx, l, root, snapshotPath, ensure)
+	if err != nil {
+		return ReadResult{}, nil, err
+	}
+	out, applied, err := ApplyPayloads(l, root, res.Items, nil)
+	if err != nil {
+		return ReadResult{}, nil, err
+	}
+	res.Items = out
+	return res, applied, nil
 }
 
 // ReadDetached reads a snapshot like Read, but writes its payloads under

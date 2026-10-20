@@ -66,7 +66,7 @@ func TestReadRefusesAnItemIDThatIsAPath(t *testing.T) {
 				insertItem(exec, 0, id, 2, `["C:\\src\\a.txt"]`)
 				exec(`INSERT INTO item_files VALUES (?,0,'evil.desktop',NULL,3,?)`, id, []byte("payload"))
 			})
-			_, err := Read(ctx, paths.Layout{Root: data}, snap, nil)
+			_, _, err := Read(ctx, paths.Layout{Root: data}, snap, nil)
 			if err == nil || !strings.Contains(err.Error(), "not a GUID") {
 				t.Fatalf("id %q: %v", id, err)
 			}
@@ -85,7 +85,7 @@ func TestReadRefusesABlobHashThatIsAPath(t *testing.T) {
 		exec(`INSERT INTO item_images VALUES (?, 'pic.png', ?, 3, NULL)`,
 			"7c9e6679-7425-40de-944b-e07fc1f90ae7", "../../../../tmp/evil")
 	})
-	_, err := Read(ctx, l, snap, nil)
+	_, _, err := Read(ctx, l, snap, nil)
 	if err == nil || !strings.Contains(err.Error(), "blob hash") {
 		t.Fatalf("a forged blob hash: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestReadLeavesTheCacheAloneWhenAPayloadIsMissing(t *testing.T) {
 		insertItem(exec, 1, id3, 2, `["C:\\src\\a.txt"]`)
 		exec(`INSERT INTO item_files VALUES (?,0,'a.txt',?,3,NULL)`, id3, strings.Repeat("a", 64))
 	})
-	if _, err := Read(ctx, l, snap, nil); err == nil || !strings.Contains(err.Error(), "blob missing") {
+	if _, _, err := Read(ctx, l, snap, nil); err == nil || !strings.Contains(err.Error(), "blob missing") {
 		t.Fatalf("a missing blob: %v", err)
 	}
 	if b, err := os.ReadFile(filepath.Join(old, "0000_old.txt")); err != nil || string(b) != "old" {
@@ -132,9 +132,9 @@ func TestReadLeavesTheCacheAloneWhenAPayloadIsMissing(t *testing.T) {
 	}
 }
 
-// A directory of an item is replaced by the imported files, not overlaid:
-// files of an older copy must not come back in the next export.
-func TestReadReplacesTheFilesOfAnItem(t *testing.T) {
+// An import installs the files in a folder of its own and leaves the old
+// canonical cache intact until the new history is saved.
+func TestReadInstallsAUniqueCacheAndKeepsTheOldOne(t *testing.T) {
 	const id3 = "16fd2706-8baf-433b-82eb-8c7fada847da"
 	l := paths.Layout{Root: t.TempDir()}
 	dir := filepath.Join(l.Files(), strings.ReplaceAll(id3, "-", ""))
@@ -150,32 +150,24 @@ func TestReadReplacesTheFilesOfAnItem(t *testing.T) {
 		insertItem(exec, 0, id3, 2, `["C:\\src\\new.txt"]`)
 		exec(`INSERT INTO item_files VALUES (?,0,'new.txt',NULL,3,?)`, id3, []byte("new"))
 	})
-	res, err := Read(ctx, l, snap, nil)
+	res, applied, err := Read(ctx, l, snap, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	applied.Commit()
 	if len(res.Items) != 1 || len(res.Items[0].FilePaths) != 1 {
 		t.Fatalf("items %+v", res.Items)
 	}
-	want := filepath.Join(dir, "0000_new.txt")
-	if res.Items[0].FilePaths[0] != want {
-		t.Errorf("path %q, want %q", res.Items[0].FilePaths[0], want)
+	got := res.Items[0].FilePaths[0]
+	if filepath.Base(got) != "0000_new.txt" || filepath.Dir(got) == dir {
+		t.Errorf("path %q, want a new folder with 0000_new.txt", got)
 	}
-	if b, err := os.ReadFile(want); err != nil || string(b) != "new" {
+	if b, err := os.ReadFile(got); err != nil || string(b) != "new" {
 		t.Errorf("imported file %q %v", b, err)
 	}
 	for _, name := range []string{"0000_old.txt", "0001_gone.txt"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-			t.Errorf("the old cache file %s survived: %v", name, err)
-		}
-	}
-	ents, err := os.ReadDir(l.Files())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range ents {
-		if strings.Contains(e.Name(), ".old-") {
-			t.Errorf("a cache backup was left behind: %s", e.Name())
+		if b, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(b) != "old" {
+			t.Errorf("the old cache file %s was touched: %q %v", name, b, err)
 		}
 	}
 }
@@ -272,10 +264,11 @@ func TestReadRepairsACorruptCachedBlob(t *testing.T) {
 		}
 		return local, os.WriteFile(local, data, 0o600)
 	}
-	res, err := Read(ctx, l, snap, ensure)
+	res, applied, err := Read(ctx, l, snap, ensure)
 	if err != nil {
 		t.Fatal(err)
 	}
+	applied.Commit()
 	if b, _ := os.ReadFile(res.Items[0].FilePaths[0]); !bytes.Equal(b, data) {
 		t.Errorf("imported %q", b)
 	}
@@ -345,10 +338,11 @@ func TestEmptyFileRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := paths.Layout{Root: t.TempDir()}
-	res, err := Read(ctx, dst, snap, func(string) (string, error) { return empty, nil })
+	res, applied, err := Read(ctx, dst, snap, func(string) (string, error) { return empty, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
+	applied.Commit()
 	if len(res.Items) != 1 || len(res.Items[0].FilePaths) != 1 {
 		t.Fatalf("%+v", res.Items)
 	}
@@ -380,10 +374,11 @@ func TestReadSchema1EmptyInlineFile(t *testing.T) {
 	exec(`INSERT INTO items VALUES (0,?,2,'2026-05-30T12:00:00.0000000+00:00',0,NULL,NULL,0,1,NULL,NULL,NULL,NULL,NULL)`, id)
 	exec(`INSERT INTO item_files VALUES (?,0,'empty.txt',?)`, id, []byte{})
 	l := paths.Layout{Root: t.TempDir()}
-	res, err := Read(ctx, l, path, nil)
+	res, applied, err := Read(ctx, l, path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	applied.Commit()
 	if len(res.Items) != 1 || len(res.Items[0].FilePaths) != 1 {
 		t.Fatalf("%+v", res.Items)
 	}

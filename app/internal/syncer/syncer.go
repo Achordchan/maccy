@@ -329,13 +329,36 @@ func pendingFingerprint(preMergeFingerprint, current string) string {
 // was not recorded yet. It is written before the history is flushed, so a
 // crash can resume the upload instead of merging the same items again.
 type pendingMergeState struct {
-	Fingerprint string `json:"fingerprint"`
-	Version     string `json:"version,omitempty"`
-	UpdatedAt   string `json:"updatedAt,omitempty"`
-	SHA256      string `json:"sha256,omitempty"`
-	Size        *int64 `json:"size,omitempty"`
-	Before      string `json:"before"`
-	Account     string `json:"account,omitempty"`
+	Fingerprint string   `json:"fingerprint"`
+	Version     string   `json:"version,omitempty"`
+	UpdatedAt   string   `json:"updatedAt,omitempty"`
+	SHA256      string   `json:"sha256,omitempty"`
+	Size        *int64   `json:"size,omitempty"`
+	Before      string   `json:"before"`
+	After       string   `json:"after,omitempty"`
+	AfterIDs    []string `json:"afterIds,omitempty"`
+	Account     string   `json:"account,omitempty"`
+}
+
+func itemIDs(items []model.Item) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, strings.ToLower(it.ID))
+	}
+	return out
+}
+
+func hasAllIDs(items []model.Item, ids []string) bool {
+	have := make(map[string]bool, len(items))
+	for _, it := range items {
+		have[strings.ToLower(it.ID)] = true
+	}
+	for _, id := range ids {
+		if !have[id] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Syncer) pendingMergePath() string {
@@ -395,8 +418,19 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) {
 	if p.Account != "" && s.accountChanged(p.Account) {
 		return
 	}
-	if Fingerprint(s.cfg.History.Items()) == p.Before {
+	items := s.cfg.History.Items()
+	current := Fingerprint(items)
+	switch {
+	case p.After != "" && current == p.After:
+		// exactly the merged history
+	case len(p.AfterIDs) > 0 && hasAllIDs(items, p.AfterIDs):
+		// the merged history plus captures made since
+	case p.Before != "" && current == p.Before:
 		return // the merged history was never saved
+	default:
+		// Cannot prove the merge reached the disk (for example a capture was
+		// persisted before the flush): leave the state alone.
+		return
 	}
 	m := ManifestInfo{Version: p.Version, SnapshotSHA256: p.SHA256, SnapshotSize: p.Size}
 	if p.UpdatedAt != "" {
@@ -801,11 +835,14 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	if merged {
 		// Write the pending state before the history is saved: a crash after
 		// the save but before Run records it must resume the upload.
+		after := s.Fingerprint()
 		s.writePendingMerge(pendingMergeState{
-			Fingerprint: pendingFingerprint(preMerge, s.Fingerprint()),
+			Fingerprint: pendingFingerprint(preMerge, after),
 			Version:     sum,
 			SHA256:      sum,
 			Before:      Fingerprint(before),
+			After:       after,
+			AfterIDs:    itemIDs(s.cfg.History.Items()),
 			Account:     account,
 		})
 	}
@@ -1085,13 +1122,16 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	if basis.UpdatedAt != nil {
 		updatedAt = model.FormatO(*basis.UpdatedAt)
 	}
+	after := s.Fingerprint()
 	s.writePendingMerge(pendingMergeState{
-		Fingerprint: pendingFingerprint(preMergeFingerprint, s.Fingerprint()),
+		Fingerprint: pendingFingerprint(preMergeFingerprint, after),
 		Version:     basis.Version,
 		UpdatedAt:   updatedAt,
 		SHA256:      basis.SnapshotSHA256,
 		Size:        basis.SnapshotSize,
 		Before:      Fingerprint(before),
+		After:       after,
+		AfterIDs:    itemIDs(s.cfg.History.Items()),
 		Account:     account,
 	})
 	report(progress, "persist_local", "persist local", 90)
