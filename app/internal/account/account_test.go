@@ -487,3 +487,13 @@ func TestPasswordResetOfAnotherAccountDoesNotAdoptTheCheckpoints(t *testing.T) {
 		t.Fatal("B started with the checkpoints of A")
 	}
 }
+
+func TestCheckpointsWithoutKnownOwnerAreNotAdopted(t *testing.T) {
+	s, m := newService(t, "http://127.0.0.1:1")
+	// What an older client leaves after a sign-out: checkpoints, no address, no sidecar.
+	_ = m.Update(func(st *model.Settings) { st.SyncLastRemoteVersion = model.Ptr("old-state") })
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "b", RefreshToken: "rb", Email: "b@example.com"}, "b@example.com")
+	if m.Get().SyncLastRemoteVersion != nil {
+		t.Fatal("a login adopted checkpoints whose owner is unknown")
+	}
+}

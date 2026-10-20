@@ -168,7 +168,10 @@ func (s *Service) storeTokensAt(t syncclient.TokenSet, fallbackEmail string, epo
 		if prev == "" {
 			prev = s.syncAccount()
 		}
-		if prev != "" && !strings.EqualFold(prev, who) {
+		// With no owner at all (a sign-out by an older client left checkpoints and
+		// no address) they cannot be tied to this account, so they are dropped
+		// too; the cost is one full comparison on the next sync.
+		if prev == "" || !strings.EqualFold(prev, who) {
 			m.SyncLastLocalFingerprint, m.SyncLastRemoteVersion = nil, nil
 			m.SyncLastRemoteUpdatedAt, m.SyncLastRemoteSha256 = nil, nil
 		}
@@ -488,7 +491,7 @@ func (s *Service) afterPasswordUpdated(email string, epoch int64) {
 		if owner == "" {
 			owner = s.syncAccount()
 		}
-		if owner != "" && !strings.EqualFold(owner, who) {
+		if owner == "" || !strings.EqualFold(owner, who) {
 			m.SyncLastLocalFingerprint, m.SyncLastRemoteVersion = nil, nil
 			m.SyncLastRemoteUpdatedAt, m.SyncLastRemoteSha256 = nil, nil
 		}
