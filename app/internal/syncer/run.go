@@ -60,7 +60,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		return RunResult{}, ErrSessionChanged
 	}
 	localItems := s.cfg.History.Items()
-	d := s.Decide(manifest)
+	d := s.DecideItems(manifest, localItems)
 	res := RunResult{Decision: d}
 
 	switch d.Direction {

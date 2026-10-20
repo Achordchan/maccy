@@ -1112,7 +1112,12 @@ func TestDownloadRollbackKeepsANewCaptureAndTheSettings(t *testing.T) {
 	s := signedIn(model.DefaultSettings())
 	s.MaxItems = 50
 	syn := unitSyncer(t, srv, s, h)
+	failed := false
 	syn.cfg.Flush = func(context.Context) error {
+		if failed {
+			return nil
+		}
+		failed = true
 		h.items = append([]model.Item{captured}, h.items...)
 		return errors.New("disk full")
 	}
@@ -2273,5 +2278,17 @@ func TestDownloadMergeKeepsAnEditedItemDeletedRemotely(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("the locally edited item was dropped: %+v", out)
+	}
+}
+
+// The decision fingerprints the same slice that becomes the download baseline.
+func TestDecideItemsUsesTheGivenHistory(t *testing.T) {
+	live := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "live")
+	baseline := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "baseline")
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, serveSnapshot(t, snapshotFile(t, nil)), s, &unitHistory{items: []model.Item{live}})
+	d := syn.DecideItems(ManifestInfo{Version: "v1", SnapshotSHA256: "x", UpdatedAt: tp(t, "2026-05-30T12:00:00+00:00")}, []model.Item{baseline})
+	if d.LocalFingerprint != Fingerprint([]model.Item{baseline}) {
+		t.Errorf("fingerprint is not of the baseline slice")
 	}
 }

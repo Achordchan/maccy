@@ -266,7 +266,12 @@ func (s *Syncer) Fingerprint() string { return Fingerprint(s.cfg.History.Items()
 
 // Decide says what a sync has to do given the server's manifest.
 func (s *Syncer) Decide(manifest ManifestInfo) Decision {
-	items := s.cfg.History.Items()
+	return s.DecideItems(manifest, s.cfg.History.Items())
+}
+
+// DecideItems decides on the items the caller captured, so the fingerprint
+// and the merge baseline describe the same state.
+func (s *Syncer) DecideItems(manifest ManifestInfo, items []model.Item) Decision {
 	var latest *time.Time
 	for _, it := range items {
 		if latest == nil || it.CapturedAt.After(*latest) {
@@ -705,6 +710,11 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		}
 		rctx, rcancel := cleanupContext()
 		rerr := s.rollbackMutation(rctx, before, applied, oldSettings, limitPruned)
+		if rerr == nil {
+			// Save the restored history before deleting the payloads it may
+			// still be referenced by (an autosave might have saved it).
+			rerr = s.cfg.Flush(rctx)
+		}
 		rcancel()
 		if rerr == nil && moves != nil {
 			moves.Rollback()
@@ -950,6 +960,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		}
 		rctx, rcancel := cleanupContext()
 		rerr := s.rollbackMutation(rctx, before, merged, localSettings, limitPruned)
+		if rerr == nil {
+			rerr = s.cfg.Flush(rctx)
+		}
 		rcancel()
 		if rerr == nil && moves != nil {
 			moves.Rollback()
@@ -1237,16 +1250,15 @@ func itemMetadataChanged(cur, base model.Item) bool {
 // share a synchronized baseline, so the copy count of an item both sides have
 // is the larger one, not the sum.
 func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
-	merged := MergeItems(remote, local)
-	localIDs := make(map[string]bool, len(local))
 	localByID := make(map[string]model.Item, len(local))
+	localIDs := make(map[string]bool, len(local))
 	for _, it := range local {
 		id := strings.ToLower(it.ID)
 		localIDs[id] = true
 		localByID[id] = it
 	}
-	baseIDs := make(map[string]bool, len(baseline))
 	baseByID := make(map[string]model.Item, len(baseline))
+	baseIDs := make(map[string]bool, len(baseline))
 	for _, it := range baseline {
 		id := strings.ToLower(strings.TrimSpace(it.ID))
 		if id == "" || id == emptyGUID {
@@ -1255,39 +1267,58 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 		baseIDs[id] = true
 		baseByID[id] = it
 	}
-	remoteIDs := make(map[string]bool, len(remote))
 	remoteByID := make(map[string]model.Item, len(remote))
+	remoteIDs := make(map[string]bool, len(remote))
 	for _, it := range remote {
 		id := strings.ToLower(it.ID)
 		remoteIDs[id] = true
 		remoteByID[id] = it
 	}
-	// A deletion made while the snapshot was downloading is a local change
-	// too: do not let the remote copy bring the item back.
-	deleted := map[string]bool{}
+
+	// Deletions are applied to the inputs, before MergeItems folds equal
+	// content: a deleted id must not take a hash duplicate with it.
+	deletedLocally := map[string]bool{}
+	deletedRemotely := map[string]bool{}
 	for id := range baseIDs {
 		if !localIDs[id] {
-			deleted[id] = true
+			deletedLocally[id] = true
+			continue
+		}
+		if !remoteIDs[id] && !itemMetadataChanged(localByID[id], baseByID[id]) {
+			deletedRemotely[id] = true
 		}
 	}
-	// The remote side may have deleted an item too: only an item the user did
-	// not edit locally is deleted; an edited one is kept (and uploaded).
-	for id := range baseIDs {
-		if localIDs[id] && !remoteIDs[id] {
-			if !itemMetadataChanged(localByID[id], baseByID[id]) {
-				deleted[id] = true
+	filteredRemote := remote[:0:0]
+	for _, it := range remote {
+		if !deletedLocally[strings.ToLower(it.ID)] {
+			filteredRemote = append(filteredRemote, it)
+		}
+	}
+	filteredLocal := local[:0:0]
+	for _, it := range local {
+		if !deletedRemotely[strings.ToLower(it.ID)] {
+			filteredLocal = append(filteredLocal, it)
+		}
+	}
+
+	merged := MergeItems(filteredRemote, filteredLocal)
+	for i := range merged {
+		best, found := int32(0), false
+		for _, it := range remote {
+			if sameMergeIdentity(merged[i], it) {
+				best, found = max(best, it.CopyCount), true
 			}
 		}
-	}
-	if len(deleted) > 0 {
-		kept := merged[:0]
-		for _, it := range merged {
-			if !deleted[strings.ToLower(it.ID)] {
-				kept = append(kept, it)
+		for _, it := range local {
+			if sameMergeIdentity(merged[i], it) {
+				best, found = max(best, it.CopyCount), true
 			}
 		}
-		merged = kept
+		if found {
+			merged[i].CopyCount = best
+		}
 	}
+
 	// A field the user changed during the download keeps the local value; an
 	// unchanged field takes the downloaded value (which may be a remote edit).
 	for i := range merged {
@@ -1311,22 +1342,6 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 			}
 		} else {
 			merged[i].Pinned = l.Pinned
-		}
-	}
-	for i := range merged {
-		best, found := int32(0), false
-		for _, it := range remote {
-			if sameMergeIdentity(merged[i], it) {
-				best, found = max(best, it.CopyCount), true
-			}
-		}
-		for _, it := range local {
-			if sameMergeIdentity(merged[i], it) {
-				best, found = max(best, it.CopyCount), true
-			}
-		}
-		if found {
-			merged[i].CopyCount = best
 		}
 	}
 	return merged

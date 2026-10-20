@@ -587,3 +587,39 @@ func TestExportRejectsAPartialMigratedCache(t *testing.T) {
 		t.Errorf("a migrated item with a partial cache was exported: %v", err)
 	}
 }
+
+// Surplus indexed files left in a legacy cache do not fail the export: only
+// the referenced files are written.
+func TestExportIgnoresSurplusCacheFiles(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	l := paths.Layout{Root: t.TempDir()}
+	dir := filepath.Join(l.Files(), strings.ReplaceAll(id, "-", ""))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i, name := range []string{"0000_a.txt", "0001_b.txt", "0002_stale.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte{byte('a' + i)}, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	item := model.Item{
+		ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()},
+		FilePaths: []string{"/docs/a.txt", "/docs/b.txt"}, CopyCount: 1,
+	}
+	snap := filepath.Join(t.TempDir(), "snapshot.sqlite")
+	if _, err := Export(ctx, l, snap, []model.Item{item}, model.DefaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM item_files`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("%d files exported, want 2", n)
+	}
+}

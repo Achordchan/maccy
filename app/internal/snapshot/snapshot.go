@@ -290,29 +290,36 @@ func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]B
 			wantFiles++
 		}
 	}
-	if len(files) > 0 && wantFiles > 0 && len(files) != wantFiles {
-		// A cache with fewer files than the item lists is incomplete, also
-		// for a migrated item whose FilePaths name the documents.
-		return nil, errors.New("snapshot: local file payload missing")
-	}
-	if len(it.FilePaths) > 0 && within(l.Files(), filepath.Dir(filepath.Clean(it.FilePaths[0]))) {
-		// An imported item names its files in FilePaths: the cache must still
-		// hold all of them, or the export would publish a partial item.
-		// The index is part of the identity: two files can share a basename.
-		have := make(map[string]bool, len(files))
+	if len(files) > 0 && wantFiles > 0 {
+		// Export exactly the files the item lists: they must all be in the
+		// cache, but surplus files left by an older import are harmless.
+		byKey := make(map[string]cachedFile, len(files))
+		byIdx := make(map[int]cachedFile, len(files))
 		for _, f := range files {
-			have[cacheKey(f.idx, f.name)] = true
+			byKey[cacheKey(f.idx, f.name)] = f
+			byIdx[f.idx] = f
 		}
-		for _, p := range it.FilePaths {
-			name := filepath.Base(filepath.Clean(p))
-			key := name
-			if idx, cut := indexPrefix(name); cut > 0 {
-				key = cacheKey(idx, name[cut:])
+		selected := make([]cachedFile, 0, wantFiles)
+		for i, p := range it.FilePaths {
+			if strings.TrimSpace(p) == "" {
+				continue
 			}
-			if !have[key] {
+			name := filepath.Base(filepath.Clean(p))
+			if idx, cut := indexPrefix(name); cut > 0 {
+				f, ok := byKey[cacheKey(idx, name[cut:])]
+				if !ok {
+					return nil, errors.New("snapshot: local file payload missing")
+				}
+				selected = append(selected, f)
+				continue
+			}
+			f, ok := byIdx[i]
+			if !ok {
 				return nil, errors.New("snapshot: local file payload missing")
 			}
+			selected = append(selected, f)
 		}
+		files = selected
 	}
 	if len(files) == 0 {
 		var srcs []string
