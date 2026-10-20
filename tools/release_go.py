@@ -98,6 +98,11 @@ def fetch_sqlite(runtime: str, dest_dir: Path, cache: Path) -> Path:
     return dest
 
 
+GENERATED_PACKAGE = re.compile(r"maccy-[^/]+-(?:" + "|".join(re.escape(r) for r in GO_ARCH) + r")\.zip")
+
+BUILD_OUTPUT = re.compile(r"maccy\.exe|maccy-package\.json|mygo-sqlite3[^/]*\.dll|" + GENERATED_PACKAGE.pattern)
+
+
 def check_disposable(publish_dir: Path) -> None:
     """build clears the publish folder first. Refuse a folder that is not the
     leftover of an earlier build: this checkout or any folder around it, a
@@ -114,10 +119,12 @@ def check_disposable(publish_dir: Path) -> None:
         return
     if not (pub / "maccy.exe").is_file():
         raise RuntimeError(f"refusing to clear {pub}: it holds files but no maccy.exe from an earlier build")
+    # Only what a build puts there, nothing else: the program, the SQLite
+    # library, a package made from it. A folder with anything more is somebody's.
     for path in entries:
         rel = path.relative_to(pub).as_posix()
-        if path.name == ".git" or ".git" in path.relative_to(pub).parts or is_protected(rel):
-            raise RuntimeError(f"refusing to clear {pub}: {rel} is not part of a build")
+        if not (path.is_file() and BUILD_OUTPUT.fullmatch(rel)):
+            raise RuntimeError(f"refusing to clear {pub}: {rel} is not something a build makes")
 
 
 def build_publish(version: str, runtime: str, publish_dir: Path) -> None:
@@ -148,9 +155,6 @@ def build_publish(version: str, runtime: str, publish_dir: Path) -> None:
 
 
 # ---- package -------------------------------------------------------------
-
-
-GENERATED_PACKAGE = re.compile(r"maccy-[^/]+-(?:" + "|".join(re.escape(r) for r in GO_ARCH) + r")\.zip")
 
 
 def package_file_list(publish_dir: Path, exclude: Path | None = None) -> list[dict]:

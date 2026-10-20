@@ -294,6 +294,12 @@ else:
 	if check(inst) != "REFUSED" {
 		t.Error("an installation with the user's data was offered for clearing")
 	}
+	mixed := t.TempDir()
+	write(t, filepath.Join(mixed, "maccy.exe"), "EXE")
+	write(t, filepath.Join(mixed, "notes.txt"), "mine")
+	if check(mixed) != "REFUSED" {
+		t.Error("a build next to somebody's file was offered for clearing")
+	}
 	build := t.TempDir()
 	write(t, filepath.Join(build, "maccy.exe"), "EXE")
 	write(t, filepath.Join(build, "mygo-sqlite3.dll"), "DLL")

@@ -65,6 +65,7 @@ type Model struct {
 	// file information is read at once, as the tests do.
 	Post     func(func())
 	dragOver bool
+	list     ui.ListState
 }
 
 // New returns an empty shelf.

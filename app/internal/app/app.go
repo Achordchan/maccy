@@ -98,6 +98,7 @@ type App struct {
 	retrying          atomic.Bool        // the loop that tries the first sync again is running
 	loginWanted       atomic.Bool        // a sync for a new sign-in is owed (one was running when it was asked for)
 	initialOK         atomic.Bool        // a background sync has gone through
+	runEntered        atomic.Bool        // the sync that syncDone is told about did start (Run was entered)
 	failStreak        atomic.Int32       // background syncs that failed in a row since the initial one
 	stopWatch         context.CancelFunc // ends the event stream of the current account
 }
@@ -186,6 +187,7 @@ func New(cfg Config) (*App, error) {
 		a.syncing.Add(1) // ended by syncDone, which Auto calls when Run returns
 		a.syncMu.Unlock()
 		a.runActive.Store(true)
+		a.runEntered.Store(true)
 		a.runGen.Store(a.acctGen.Load()) // which account this sync is for
 		return run(ctx, reason, manual)
 	}
@@ -554,9 +556,9 @@ func (a *App) syncDone(reason string, manual bool, err error) {
 	// The sync counts as running until its result has been dealt with: Stop
 	// waits for that, and nothing may use the program (the log) after it.
 	// A request turned away before it ran (a manual sync with nobody signed in)
-	// has no run of its own to end: the one that may still be unwinding is not
-	// its to close.
-	ran := !(manual && errors.Is(err, syncer.ErrNotLoggedIn))
+	// has no run of its own to end; one that was entered and then found itself
+	// signed out has, whatever error it returns. Run says which it was.
+	ran := a.runEntered.Swap(false)
 	defer func() {
 		if ran && a.runActive.Swap(false) {
 			a.syncing.Add(-1)

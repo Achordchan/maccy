@@ -18,6 +18,7 @@ import (
 	"klip/internal/paths"
 	"klip/internal/settings"
 	"klip/internal/syncclient"
+	"klip/internal/syncer"
 )
 
 type fakeClip struct {
@@ -553,4 +554,24 @@ func TestManualSyncTurnedAwayDoesNotLeaveTheFooterSyncing(t *testing.T) {
 		t.Fatalf("footer %q: a request that was refused must not show syncing", got)
 	}
 	close(release)
+}
+
+func TestManualSyncThatFindsItselfSignedOutIsCounted(t *testing.T) {
+	a, err := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()}, Clipboard: &fakeClip{}, ChangeSeq: (&fakeClip{}).seq.Load,
+		BaseURL: "http://127.0.0.1:1", Logf: t.Logf, StartupRetry: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Auto.CanSync = func() bool { return true } // signed in when asked...
+	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
+		a.syncing.Add(1) // as the wrapper that New installs does
+		a.runActive.Store(true)
+		a.runEntered.Store(true)
+		return syncer.ErrNotLoggedIn // ...and refused by the server when it ran
+	}
+	a.Auto.Trigger(a.acct(), "manual", true)
+	waitFor(t, "the sync is over", func() bool { return a.SyncStatus() == "请先登录" })
+	waitFor(t, "counted out", func() bool { return a.syncing.Load() == 0 && !a.runActive.Load() })
 }

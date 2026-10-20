@@ -1,6 +1,7 @@
 package shelfwin
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -338,5 +339,20 @@ func TestDroppedFilesAppearAtOnceAndGetTheirDetailsLater(t *testing.T) {
 	}
 	if m.Items[0].Size != 123 {
 		t.Fatalf("size = %d", m.Items[0].Size)
+	}
+}
+
+func TestManyFilesAreNotAllDrawn(t *testing.T) {
+	var paths []string
+	for i := 0; i < 3000; i++ {
+		paths = append(paths, fmt.Sprintf("/nowhere/file-%04d.txt", i))
+	}
+	r := newRig(t, paths...)
+	r.frame()
+	if !r.tt.HasText("file-0000.txt") {
+		t.Fatalf("the first file is not shown: %.200q", r.tt.Texts())
+	}
+	if n := len(r.tt.Texts()); n > 400 {
+		t.Fatalf("%d texts drawn for 3000 files: the list is not virtualized", n)
 	}
 }

@@ -106,21 +106,21 @@ func (m *Model) expanded(c *ui.Context) {
 		m.closeButton(c)
 	})
 
-	ui.Scroll(c).Grow(1).Children(func() {
-		if m.Grid && len(m.Items) <= 1 {
+	if m.Grid && len(m.Items) <= 1 {
+		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Row(c).Wrap().Gap(12).Children(func() {
 				for i := range m.Items {
 					m.item(c, i, 210, 96)
 				}
 			})
-			return
-		}
-		ui.Column(c).Gap(8).Children(func() {
-			for i := range m.Items {
-				m.item(c, i, 0, 0)
-			}
 		})
-	})
+		return
+	}
+	// Dropping thousands of files must not build a row for each of them on every
+	// frame: the list makes the visible ones only.
+	m.list.Key = func(i int) any { return m.Items[i].Path }
+	m.list.Label = func(i int) string { return m.Items[i].Name }
+	ui.List(c, &m.list, len(m.Items), func(i int) { m.item(c, i, 0, 0) }).Grow(1).Gap(8)
 }
 
 // item is one file of the expanded shelf: a press chooses it (Ctrl adds), a
