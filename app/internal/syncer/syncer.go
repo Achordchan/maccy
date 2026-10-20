@@ -543,7 +543,7 @@ type DownloadResult struct {
 // DownloadAndApply replaces the history and the portable settings with the
 // server's snapshot, unless the history changed since expectFingerprint, in
 // which case the new captures are merged instead of being lost.
-func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint string) (DownloadResult, error) {
+func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint string, baseline []model.Item) (DownloadResult, error) {
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
 	account := s.currentAccount()
@@ -553,7 +553,7 @@ func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), 
 	if err := s.bindFor(account); err != nil {
 		return DownloadResult{}, err
 	}
-	res, err := s.downloadAndApply(ctx, progress, reason, expectFingerprint, account)
+	res, err := s.downloadAndApply(ctx, progress, reason, expectFingerprint, baseline, account)
 	if err != nil {
 		return DownloadResult{}, err
 	}
@@ -561,7 +561,7 @@ func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), 
 	return res, nil
 }
 
-func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint, account string) (DownloadResult, error) {
+func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint string, baseline []model.Item, account string) (DownloadResult, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	started := s.cfg.Now()
@@ -634,7 +634,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			// A capture arrived while the snapshot was downloading: keep it
 			// and let the upload that follows publish both sides.
 			preMerge = Fingerprint(current)
-			next = MergeForDownload(data.Items, current)
+			next = MergeForDownload(data.Items, current, baseline)
 			merged = true
 		}
 		out, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, next, before)
@@ -1227,8 +1227,30 @@ func sameMergeIdentity(a, b model.Item) bool {
 // capture arrived during the download. Unlike a first merge, the two sides
 // share a synchronized baseline, so the copy count of an item both sides have
 // is the larger one, not the sum.
-func MergeForDownload(remote, local []model.Item) []model.Item {
+func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 	merged := MergeItems(remote, local)
+	// A deletion made while the snapshot was downloading is a local change
+	// too: do not let the remote copy bring the item back.
+	localIDs := make(map[string]bool, len(local))
+	for _, it := range local {
+		localIDs[strings.ToLower(it.ID)] = true
+	}
+	deleted := map[string]bool{}
+	for _, it := range baseline {
+		id := strings.ToLower(strings.TrimSpace(it.ID))
+		if id != "" && id != emptyGUID && !localIDs[id] {
+			deleted[id] = true
+		}
+	}
+	if len(deleted) > 0 {
+		kept := merged[:0]
+		for _, it := range merged {
+			if !deleted[strings.ToLower(it.ID)] {
+				kept = append(kept, it)
+			}
+		}
+		merged = kept
+	}
 	for i := range merged {
 		best, found := int32(0), false
 		for _, it := range remote {

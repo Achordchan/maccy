@@ -59,6 +59,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 	if s.accountChanged(account) {
 		return RunResult{}, ErrSessionChanged
 	}
+	localItems := s.cfg.History.Items()
 	d := s.Decide(manifest)
 	res := RunResult{Decision: d}
 
@@ -70,7 +71,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		s.PersistSyncState(d.LocalFingerprint, d.Manifest)
 
 	case Download:
-		dr, err := s.downloadAndApply(ctx, progress, reason, d.LocalFingerprint, account)
+		dr, err := s.downloadAndApply(ctx, progress, reason, d.LocalFingerprint, localItems, account)
 		if err != nil {
 			return res, err
 		}

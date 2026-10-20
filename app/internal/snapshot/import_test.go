@@ -537,3 +537,30 @@ func TestExportRejectsAnIncompleteCache(t *testing.T) {
 		t.Errorf("an item with a missing file was exported: %v", err)
 	}
 }
+
+// Two cached files can share a basename; the completeness check uses the
+// index too, so deleting one is still detected.
+func TestExportRejectsAMissingDuplicateBasename(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	l := paths.Layout{Root: t.TempDir()}
+	dir := filepath.Join(l.Files(), strings.ReplaceAll(id, "-", "")+"-abc")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := filepath.Join(dir, "0000_report.pdf")
+	b := filepath.Join(dir, "0001_report.pdf")
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	item := model.Item{ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()}, FilePaths: []string{a, b}, CopyCount: 1}
+	if err := os.Remove(b); err != nil {
+		t.Fatal(err)
+	}
+	snap := filepath.Join(t.TempDir(), "snapshot.sqlite")
+	if _, err := Export(ctx, l, snap, []model.Item{item}, model.DefaultSettings()); err == nil ||
+		!strings.Contains(err.Error(), "payload missing") {
+		t.Errorf("an item with one of two same-named files was exported: %v", err)
+	}
+}

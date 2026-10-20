@@ -287,16 +287,18 @@ func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]B
 	if len(it.FilePaths) > 0 && within(l.Files(), filepath.Dir(filepath.Clean(it.FilePaths[0]))) {
 		// An imported item names its files in FilePaths: the cache must still
 		// hold all of them, or the export would publish a partial item.
+		// The index is part of the identity: two files can share a basename.
 		have := make(map[string]bool, len(files))
 		for _, f := range files {
-			have[f.name] = true
+			have[cacheKey(f.idx, f.name)] = true
 		}
 		for _, p := range it.FilePaths {
 			name := filepath.Base(filepath.Clean(p))
-			if _, cut := indexPrefix(name); cut > 0 {
-				name = name[cut:]
+			key := name
+			if idx, cut := indexPrefix(name); cut > 0 {
+				key = cacheKey(idx, name[cut:])
 			}
-			if !have[name] {
+			if !have[key] {
 				return nil, errors.New("snapshot: local file payload missing")
 			}
 		}
@@ -391,6 +393,12 @@ func cachedFiles(dir string) []cachedFile {
 		out = append(out, cachedFile{idx, short, filepath.Join(dir, name)})
 	}
 	return out
+}
+
+// cacheKey is how a cached file is matched with the FilePaths entry that
+// names it.
+func cacheKey(idx int, name string) string {
+	return strconv.Itoa(idx) + ":" + name
 }
 
 // indexPrefix returns N of a name that starts with digits and "_", and where

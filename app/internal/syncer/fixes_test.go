@@ -400,7 +400,7 @@ func TestDownloadRemembersTheHistoryItApplied(t *testing.T) {
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, srv, s, h)
 
-	dr, err := syn.DownloadAndApply(context.Background(), nil, "test", "")
+	dr, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func TestDownloadKeepsACaptureMadeWhileItRuns(t *testing.T) {
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, srv, s, h)
 
-	dr, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local}))
+	dr, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -845,7 +845,7 @@ func TestDownloadStopsWhenTheSessionChanges(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := syn.DownloadAndApply(context.Background(), nil, "test", "")
+		_, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil)
 		done <- err
 	}()
 	<-entered
@@ -925,7 +925,7 @@ func TestDownloadStopsWhenSignedOut(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := syn.DownloadAndApply(context.Background(), nil, "test", "")
+		_, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil)
 		done <- err
 	}()
 	<-entered
@@ -989,7 +989,7 @@ func TestDownloadMergeExpandsLimits(t *testing.T) {
 	s.MaxItems = 2
 	syn := unitSyncer(t, srv, s, h)
 
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local})); err != nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local}), nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(h.items) != 4 {
@@ -1013,7 +1013,7 @@ func TestDownloadRollsBackWhenFlushFails(t *testing.T) {
 	syn := unitSyncer(t, srv, s, h)
 	syn.cfg.Flush = func(context.Context) error { return errors.New("disk full") }
 
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err == nil {
 		t.Fatal("a failed flush stopped nothing")
 	}
 	if len(h.items) != 1 || h.items[0].ID != local.ID {
@@ -1077,7 +1077,7 @@ func TestDownloadKeepsPayloadsUntilFlushed(t *testing.T) {
 		Now:      time.Now,
 	})
 	syn.cfg.Flush = func(context.Context) error { return errors.New("disk full") }
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err == nil {
 		t.Fatal("a failed flush stopped nothing")
 	}
 	if _, err := os.Stat(img); err != nil {
@@ -1089,7 +1089,7 @@ func TestDownloadKeepsPayloadsUntilFlushed(t *testing.T) {
 
 	// The next attempt saves the history, and only then removes the payload.
 	syn.cfg.Flush = func(context.Context) error { return nil }
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err != nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(img); !os.IsNotExist(err) {
@@ -1117,7 +1117,7 @@ func TestDownloadRollbackKeepsANewCaptureAndTheSettings(t *testing.T) {
 		return errors.New("disk full")
 	}
 
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err == nil {
 		t.Fatal("a failed flush stopped nothing")
 	}
 	var ids []string
@@ -1230,7 +1230,7 @@ func TestRemoveFilesOnlyGetsKlipPayloads(t *testing.T) {
 		BaseURL:  srv.URL,
 		Now:      time.Now,
 	})
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err != nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(doc); err != nil {
@@ -1301,7 +1301,7 @@ func TestDownloadDiscardsItemsWhenTheSessionChangesAtCommit(t *testing.T) {
 		Now:     time.Now,
 	})
 
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); !errors.Is(err, ErrSessionChanged) {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("a sign-in during the commit: %v", err)
 	}
 	if len(h.items) != 0 {
@@ -1402,7 +1402,7 @@ func TestDownloadDiscardsItemsWhenTheSessionChangesDuringFlush(t *testing.T) {
 		return nil
 	}
 
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); !errors.Is(err, ErrSessionChanged) {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("a sign-in during the flush: %v", err)
 	}
 	if len(h.items) != 0 {
@@ -1591,7 +1591,7 @@ func TestRollbackRunsWhenTheContextIsCancelled(t *testing.T) {
 		cancel()
 		return context.Canceled
 	}
-	if _, err := syn.DownloadAndApply(ctx, nil, "test", ""); err == nil {
+	if _, err := syn.DownloadAndApply(ctx, nil, "test", "", nil); err == nil {
 		t.Fatal("the failed flush stopped nothing")
 	}
 	if len(h.items) != 1 || h.items[0].ID != local.ID {
@@ -1617,7 +1617,7 @@ func TestRollbackKeepsEditsToExistingItems(t *testing.T) {
 		h.items[0].CopyCount = 7
 		return errors.New("disk full")
 	}
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err == nil {
 		t.Fatal("the failed flush stopped nothing")
 	}
 	if len(h.items) != 1 {
@@ -1660,7 +1660,7 @@ func TestRollbackRestoresMetadataThatWasNotEdited(t *testing.T) {
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, srv, s, h)
 	syn.cfg.Flush = func(context.Context) error { return errors.New("disk full") }
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err == nil {
 		t.Fatal("the failed flush stopped nothing")
 	}
 	if len(h.items) != 1 {
@@ -1686,7 +1686,7 @@ func TestRollbackKeepsDuplicateItems(t *testing.T) {
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, srv, s, h)
 	syn.cfg.Flush = func(context.Context) error { return errors.New("disk full") }
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err == nil {
 		t.Fatal("the failed flush stopped nothing")
 	}
 	if len(h.items) != 2 {
@@ -1729,7 +1729,7 @@ func TestSessionCleanupSurvivesCancelledFlush(t *testing.T) {
 		mu.Unlock()
 		return context.Canceled
 	}
-	if _, err := syn.DownloadAndApply(ctx, nil, "test", ""); !errors.Is(err, ErrSessionChanged) {
+	if _, err := syn.DownloadAndApply(ctx, nil, "test", "", nil); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("a cancelled flush with a session change: %v", err)
 	}
 	if len(h.items) != 0 {
@@ -1800,7 +1800,7 @@ func TestSessionCleanupIsSavedAfterACancelledFlush(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := syn.DownloadAndApply(ctx, nil, "test", ""); !errors.Is(err, ErrSessionChanged) {
+	if _, err := syn.DownloadAndApply(ctx, nil, "test", "", nil); !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("a cancelled flush with a session change: %v", err)
 	}
 	muFlush.Lock()
@@ -1896,7 +1896,7 @@ func TestDownloadMergeKeepsSharedCopyCounts(t *testing.T) {
 	h := &downloadArrivalHistory{initial: []model.Item{local}, current: []model.Item{captured, local}}
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, srv, s, h)
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local})); err != nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local}), nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, it := range h.items {
@@ -1973,7 +1973,7 @@ func TestDownloadMergeKeepsCountsWithOneMissingHash(t *testing.T) {
 	h := &downloadArrivalHistory{initial: []model.Item{local}, current: []model.Item{captured, local}}
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, srv, s, h)
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local})); err != nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local}), nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, it := range h.items {
@@ -2028,7 +2028,7 @@ func TestDownloadMergeCountsAcrossIDsByHash(t *testing.T) {
 	remote.ContentHash, remote.CopyCount = &hash, 1
 	local := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "same")
 	local.ContentHash, local.CopyCount = &hash, 7
-	out := MergeForDownload([]model.Item{remote}, []model.Item{local})
+	out := MergeForDownload([]model.Item{remote}, []model.Item{local}, nil)
 	if len(out) != 1 || out[0].CopyCount != 7 {
 		t.Errorf("merged %+v: the local count was lost", out)
 	}
@@ -2095,7 +2095,7 @@ func TestRollbackKeepsAConcurrentDeletion(t *testing.T) {
 		h.items = nil // the user deleted the item
 		return errors.New("disk full")
 	}
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err == nil {
 		t.Fatal("the failed flush stopped nothing")
 	}
 	if len(h.items) != 0 {
@@ -2138,7 +2138,7 @@ func TestRollbackRestoresItemsPrunedByLimits(t *testing.T) {
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, srv, s, h)
 	syn.cfg.Flush = func(context.Context) error { return errors.New("disk full") }
-	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err == nil {
 		t.Fatal("the failed flush stopped nothing")
 	}
 	found := false
@@ -2179,5 +2179,23 @@ func TestFileCacheCleanupUsesTheActiveDir(t *testing.T) {
 	removed := syn.unreferencedFiles([]model.Item{old}, []model.Item{next})
 	if len(removed) != 1 || filepath.Clean(removed[0]) != filepath.Clean(oldFile) {
 		t.Errorf("removed %v: the obsolete cache was kept", removed)
+	}
+}
+
+// Deleting an item while its snapshot downloads is a local change: the
+// download-time merge must not bring it back.
+func TestDownloadMergeKeepsAConcurrentDeletion(t *testing.T) {
+	x := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "x")
+	y := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "y")
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{x, y}))
+	defer srv.Close()
+	h := &downloadArrivalHistory{initial: []model.Item{x}} // current is empty: X was deleted
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{x}), []model.Item{x}); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.items) != 1 || h.items[0].ID != y.ID {
+		t.Fatalf("history %+v: the deleted item came back", h.items)
 	}
 }
