@@ -118,6 +118,11 @@ func (c *Coordinator) MustUpdate() *Info {
 	if i == nil || !i.Mandatory || !c.Supported {
 		return nil
 	}
+	// And there must be something to install: a package for this runtime or an
+	// installer. A release made for another kind of machine cannot be obeyed.
+	if !i.HasSupportedPackage(c.Client.runtime()) && strings.TrimSpace(i.InstallerURL) == "" {
+		return nil
+	}
 	return i
 }
 
@@ -194,7 +199,7 @@ func (c *Coordinator) Check(ctx context.Context) {
 	case UpToDate:
 		c.setChecking(func(s *State) { *s = State{Phase: UpToDateNow, Message: "当前已经是最新版本。"} })
 	case Failed:
-		c.set(func(s *State) {
+		c.setChecking(func(s *State) {
 			*s = State{Phase: Problem, Message: "检查更新失败：" + res.Error, Info: known, Check: true}
 		})
 	default:

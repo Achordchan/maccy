@@ -270,7 +270,6 @@ func (m *Model) submitPassword() {
 	forgot := m.forgot
 	m.codeBusy = true
 	email, code, p1, p2 := m.email, m.code, m.pw1, m.pw2
-	gen := m.subGen // the account this was asked under
 	m.async(func(ctx context.Context) func() {
 		var r account.Result
 		if forgot {
@@ -284,9 +283,10 @@ func (m *Model) submitPassword() {
 			if r.OK {
 				m.closeDialogs()
 				m.refreshAccount()
-				if gen != m.subGen {
-					// Somebody else is signed in by now (the service left that
-					// session alone): there is nothing to show as signed out.
+				if m.Account.SignedIn() {
+					// Somebody is signed in still: the service left a newer login
+					// alone, so there is nothing to show as signed out. (The login
+					// state itself is asked, not a counter of this window's.)
 					return
 				}
 				m.sub = account.None("未登录")
