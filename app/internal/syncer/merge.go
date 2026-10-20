@@ -239,8 +239,13 @@ func EnsureSettingsCanHoldItems(s *model.Settings, items []model.Item) {
 	}
 	needed := int64(1)
 	if total > 0 {
-		const mb = 1024 * 1024
-		needed = max(1, (total+mb-1)/mb)
+		const mb = int64(1024 * 1024)
+		// Quotient and remainder: total+mb-1 would overflow at MaxInt64.
+		needed = total / mb
+		if total%mb != 0 {
+			needed++
+		}
+		needed = max(1, needed)
 		needed = min(needed, int64(^uint32(0)>>1))
 	}
 	if int64(s.MaxMegabytes) < needed {

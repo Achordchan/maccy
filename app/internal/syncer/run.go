@@ -59,6 +59,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 	if s.accountChanged(account) {
 		return RunResult{}, ErrSessionChanged
 	}
+	s.recoverPendingMerge(ctx, account)
 	localItems := s.cfg.History.Items()
 	d := s.DecideItems(manifest, localItems)
 	res := RunResult{Decision: d}

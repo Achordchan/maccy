@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2452,5 +2453,60 @@ func TestRecoverPendingMergeIgnoresAnUnsavedHistory(t *testing.T) {
 	syn.recoverPendingMerge(context.Background(), "")
 	if s.SyncLastLocalFingerprint != nil {
 		t.Errorf("state was recorded for a history that was never saved: %+v", s)
+	}
+}
+
+// Run recovers the pending merge before it decides, so a crash after the
+// flushed merge resumes the upload instead of merging again.
+func TestRunRecoversAPendingMergeBeforeDeciding(t *testing.T) {
+	at := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(500)
+			return
+		}
+		io.WriteString(w, `{"latest":{"version":"v1","updatedAt":"`+at.Format(time.RFC3339)+`","snapshot":{"sha256":"sha","size":1}}}`)
+	}))
+	defer srv.Close()
+	old := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "old")
+	merged := []model.Item{old, textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "new")}
+	s := signedIn(model.DefaultSettings())
+	h := &unitHistory{items: merged}
+	syn := unitSyncer(t, srv, s, h)
+	syn.writePendingMerge(pendingMergeState{
+		Fingerprint: "pending-upload",
+		Version:     "v1",
+		SHA256:      "sha",
+		Before:      Fingerprint([]model.Item{old}),
+	})
+	res, _ := syn.Run(context.Background(), nil, "test")
+	if res.Decision.Direction != Upload {
+		t.Errorf("decision %+v: the pending merge was not recovered before deciding", res.Decision)
+	}
+	if got := model.Str(s.SyncLastLocalFingerprint); got != "pending-upload" {
+		t.Errorf("fingerprint %q", got)
+	}
+}
+
+// A signed-out settings update is not written even when the workflow account
+// is known.
+func TestPersistSyncStateRejectsASignedOutSession(t *testing.T) {
+	s := model.DefaultSettings()
+	syn := New(Config{
+		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+	})
+	syn.PersistSyncState("fp", ManifestInfo{Version: "v1"}, "account-a")
+	if s.SyncLastLocalFingerprint != nil {
+		t.Errorf("state was written into a signed-out session: %+v", s)
+	}
+}
+
+// The megabytes are rounded up without overflowing near MaxInt64.
+func TestEnsureSettingsCanHoldItemsRoundsUpWithoutOverflow(t *testing.T) {
+	s := model.DefaultSettings()
+	s.MaxMegabytes = 1
+	EnsureSettingsCanHoldItems(&s, []model.Item{{ApproxBytes: math.MaxInt64}})
+	if s.MaxMegabytes <= 1 {
+		t.Errorf("MaxMegabytes %d: the overflow disabled the expansion", s.MaxMegabytes)
 	}
 }

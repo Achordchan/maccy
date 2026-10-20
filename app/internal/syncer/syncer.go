@@ -289,8 +289,10 @@ func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo, accou
 	s.cfg.Settings.Update(func(st *model.Settings) {
 		if account != "" {
 			// Check the account inside the same update that writes the state:
-			// a check before the callback cannot stop a sign-in in between.
-			if cur := syncclient.AccountID(model.Str(st.AuthAccessToken)); cur != "" && !strings.EqualFold(cur, account) {
+			// a check before the callback cannot stop a sign-in or sign-out
+			// in between.
+			cur := syncclient.AccountID(model.Str(st.AuthAccessToken))
+			if cur == "" || !strings.EqualFold(cur, account) {
 				return
 			}
 		}
