@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -311,5 +313,20 @@ func TestWatchBacksOffOnImmediateCleanEOF(t *testing.T) {
 	}, func() {})
 	if n := connects.Load(); n > 30 {
 		t.Errorf("connections %d: a clean EOF reconnected without a delay", n)
+	}
+}
+
+// A 200 with no usable receipt is not a successful upload.
+func TestUploadSnapshotRejectsAnEmptyReceipt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	src := filepath.Join(t.TempDir(), "snapshot.sqlite")
+	if err := os.WriteFile(src, []byte("snapshot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(srv.URL).UploadSnapshot(bg, "t", src); err == nil {
+		t.Error("an empty upload receipt was accepted")
 	}
 }

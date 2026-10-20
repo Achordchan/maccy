@@ -432,3 +432,50 @@ func TestRecoverPayloadsKeepsACommittedReplacement(t *testing.T) {
 		t.Error("the journal was left behind")
 	}
 }
+
+// The journal written by ApplyPayloads must describe the items it returns,
+// including the final (not staging) file paths.
+func TestJournalFromApplyPayloadsMatchesTheResult(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	idn := strings.ReplaceAll(id, "-", "")
+	l := paths.Layout{Root: t.TempDir()}
+	root := filepath.Join(l.Root, ".import-test")
+	staged := filepath.Join(root, "files", idn)
+	if err := os.MkdirAll(staged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stagedFile := filepath.Join(staged, "0000_new.txt")
+	if err := os.WriteFile(stagedFile, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(l.Files(), idn)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "0000_old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items := []model.Item{{
+		ID: id, Kind: model.KindFileList, FilePaths: []string{stagedFile}, CopyCount: 1,
+	}}
+	out, applied, err := ApplyPayloads(l, root, items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a crash after the history was saved, before Commit.
+	RecoverPayloads(l, out)
+	applied.Commit()
+
+	if b, err := os.ReadFile(filepath.Join(dir, "0000_new.txt")); err != nil || string(b) != "new" {
+		t.Errorf("the saved replacement was rolled back: %q %v", b, err)
+	}
+	ents, err := os.ReadDir(l.Files())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.Contains(e.Name(), ".old-") {
+			t.Errorf("a backup was left behind: %s", e.Name())
+		}
+	}
+}

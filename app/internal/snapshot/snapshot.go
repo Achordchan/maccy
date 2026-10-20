@@ -855,6 +855,8 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 		applied.undo = append(applied.undo, func() { _ = os.Remove(d) })
 	}
 
+	type dirMove struct{ staged, dest string }
+	var moves []dirMove
 	for i := range out {
 		if out[i].Kind != model.KindFileList || len(out[i].FilePaths) == 0 {
 			continue
@@ -877,26 +879,8 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 			rollback()
 			return nil, nil, err
 		}
-		backup := dest + ".old-" + newGUIDN()
-		applied.entries = append(applied.entries, payloadJournalEntry{Target: dest, Backup: backup})
-		if err := writePayloadJournal(applied.journal, applied.entries, historyDigest(out)); err != nil {
-			rollback()
-			return nil, nil, err
-		}
-		if err := moveDirTo(staged, dest, backup); err != nil {
-			rollback()
-			return nil, nil, err
-		}
-		if _, err := os.Stat(backup); err == nil {
-			applied.stale = append(applied.stale, backup)
-		}
-		to, old := dest, backup
-		applied.undo = append(applied.undo, func() {
-			_ = os.RemoveAll(to)
-			if old != "" {
-				_ = os.Rename(old, to)
-			}
-		})
+		// The paths recorded in the journal (and in the history) are the
+		// final ones, not the staging paths.
 		paths := make([]string, len(out[i].FilePaths))
 		for j, p := range out[i].FilePaths {
 			if within(staged, p) {
@@ -906,6 +890,31 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 			}
 		}
 		out[i].FilePaths = paths
+		moves = append(moves, dirMove{staged: staged, dest: dest})
+	}
+
+	digest := historyDigest(out)
+	for _, m := range moves {
+		backup := m.dest + ".old-" + newGUIDN()
+		applied.entries = append(applied.entries, payloadJournalEntry{Target: m.dest, Backup: backup})
+		if err := writePayloadJournal(applied.journal, applied.entries, digest); err != nil {
+			rollback()
+			return nil, nil, err
+		}
+		if err := moveDirTo(m.staged, m.dest, backup); err != nil {
+			rollback()
+			return nil, nil, err
+		}
+		if _, err := os.Stat(backup); err == nil {
+			applied.stale = append(applied.stale, backup)
+		}
+		to, old := m.dest, backup
+		applied.undo = append(applied.undo, func() {
+			_ = os.RemoveAll(to)
+			if old != "" {
+				_ = os.Rename(old, to)
+			}
+		})
 	}
 
 	return out, applied, nil

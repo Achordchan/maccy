@@ -100,11 +100,15 @@ func (c *Client) UploadSnapshot(ctx context.Context, accessToken, snapshotPath s
 		return nil, fmt.Errorf("upload response: %w", err)
 	}
 	obj := decodeObject(b)
-	return &UploadResult{
+	res := &UploadResult{
 		Version: scalarString(obj["version"]),
 		SHA256:  scalarString(obj["sha256"]),
 		Size:    scalarInt64(obj["size"]),
-	}, nil
+	}
+	if strings.TrimSpace(res.Version) == "" && strings.TrimSpace(res.SHA256) == "" {
+		return nil, errors.New("upload snapshot: response has no snapshot identifier")
+	}
+	return res, nil
 }
 
 // DownloadSnapshot saves the latest snapshot to targetPath.

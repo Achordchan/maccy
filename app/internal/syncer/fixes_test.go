@@ -1926,3 +1926,16 @@ func TestDecideRecognizesADownloadHashMarker(t *testing.T) {
 		t.Errorf("marker with the same history: %+v", d)
 	}
 }
+
+// One item whose ID matches but only one side has a content hash is still
+// one item: the snapshot keeps one row per id.
+func TestMergeItemsReconcilesSameIDWithOneMissingHash(t *testing.T) {
+	const id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+	hash := "H1"
+	remote := model.Item{ID: id, Kind: model.KindText, CapturedAt: model.Time{Time: time.Now()}, Text: model.Ptr("a"), CopyCount: 1, ContentHash: &hash}
+	local := model.Item{ID: id, Kind: model.KindText, CapturedAt: model.Time{Time: time.Now().Add(time.Second)}, Text: model.Ptr("b"), CopyCount: 1}
+	out := MergeItems([]model.Item{remote}, []model.Item{local})
+	if len(out) != 1 {
+		t.Fatalf("merged %d items: the same id survived twice", len(out))
+	}
+}

@@ -17,6 +17,11 @@ func MergeItems(remote, local []model.Item) []model.Item {
 	var order []string // keys in insertion order: the dictionary's
 	var passthrough []model.Item
 
+	// byID reconciles items that are the same item by id but get different
+	// keys because only one side has a content hash (an older client wrote
+	// it). The snapshot export keeps one row per id, so the merged history
+	// must too.
+	byID := map[string]string{}
 	add := func(it model.Item, isLocal bool) {
 		key := mergeKey(it)
 		if strings.TrimSpace(key) == "" {
@@ -24,12 +29,22 @@ func MergeItems(remote, local []model.Item) []model.Item {
 			return
 		}
 		key = strings.ToLower(key) // the C# dictionary ignores case
+		id := strings.ToLower(strings.TrimSpace(it.ID))
+		if id != "" && id != emptyGUID {
+			if existingKey, ok := byID[id]; ok && existingKey != key && merged[existingKey].Kind == it.Kind {
+				merged[existingKey] = mergeDuplicate(merged[existingKey], it, isLocal)
+				return
+			}
+		}
 		if existing, ok := merged[key]; ok {
 			merged[key] = mergeDuplicate(existing, it, isLocal)
 			return
 		}
 		merged[key] = it
 		order = append(order, key)
+		if id != "" && id != emptyGUID {
+			byID[id] = key
+		}
 	}
 	for _, it := range remote {
 		add(it, false)
