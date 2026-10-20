@@ -120,7 +120,7 @@ func (c *Coordinator) MustUpdate() *Info {
 	}
 	// And there must be something to install: a package for this runtime or an
 	// installer. A release made for another kind of machine cannot be obeyed.
-	if !i.HasSupportedPackage(c.Client.runtime()) && strings.TrimSpace(i.InstallerURL) == "" {
+	if !i.HasSupportedPackage(c.Client.runtime()) && !c.hasInstaller(i) {
 		return nil
 	}
 	return i
@@ -259,7 +259,7 @@ func (c *Coordinator) Apply(ctx context.Context) {
 	notice := ""
 	canWrite := c.installDirWritable()
 	if info.HasSupportedPackage(c.Client.runtime()) && !canWrite {
-		if strings.TrimSpace(info.InstallerURL) == "" {
+		if !c.hasInstaller(info) {
 			fail("安装目录需要管理员权限，轻量更新无法写入，且这个版本没有提供安装程序。")
 			return
 		}
@@ -275,20 +275,20 @@ func (c *Coordinator) Apply(ctx context.Context) {
 				c.done()
 				return
 			}
-			if strings.TrimSpace(info.InstallerURL) == "" {
+			if !c.hasInstaller(info) {
 				fail("启动轻量更新失败：" + err.Error())
 				return
 			}
 			notice = "启动轻量更新失败：" + err.Error() + "\n\n将改用完整安装包更新。"
 		} else {
-			if strings.TrimSpace(info.InstallerURL) == "" {
+			if !c.hasInstaller(info) {
 				fail("轻量更新失败：" + err.Error())
 				return
 			}
 			notice = "轻量更新失败：" + err.Error() + "\n\n将改用完整安装包更新。"
 		}
 	}
-	if strings.TrimSpace(info.InstallerURL) == "" {
+	if !c.hasInstaller(info) {
 		fail("没有可用的安装包下载地址。")
 		return
 	}
@@ -307,6 +307,12 @@ func (c *Coordinator) Apply(ctx context.Context) {
 
 // installDirWritable says whether the folder of the program can be written by
 // this process, which is what the helper will have.
+// hasInstaller says whether the release has an installer that this machine
+// can run: the installer of the release tool is for 64-bit Intel/AMD Windows.
+func (c *Coordinator) hasInstaller(i *Info) bool {
+	return strings.TrimSpace(i.InstallerURL) != "" && strings.EqualFold(c.Client.runtime(), "win-x64")
+}
+
 func (c *Coordinator) installDirWritable() bool {
 	if strings.TrimSpace(c.Exe) == "" {
 		return true

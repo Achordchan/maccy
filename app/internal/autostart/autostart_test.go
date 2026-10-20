@@ -116,3 +116,20 @@ func TestDesktopQuoteSurvivesBothReadings(t *testing.T) {
 		}
 	}
 }
+
+func TestSwitchedOffEntryIsNotEnabled(t *testing.T) {
+	dir := t.TempDir()
+	d := Desktop{Dir: dir, Exe: "/usr/bin/klip"}
+	if err := d.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if !d.IsEnabled() {
+		t.Fatal("a fresh entry is on")
+	}
+	f, _ := d.file()
+	b, _ := os.ReadFile(f)
+	_ = os.WriteFile(f, append(b, []byte("Hidden=true\n")...), 0o644) // as a startup manager does it
+	if d.IsEnabled() {
+		t.Fatal("an entry marked Hidden is off")
+	}
+}

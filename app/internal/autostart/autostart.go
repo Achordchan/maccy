@@ -86,14 +86,24 @@ func (d Desktop) file() (string, error) {
 	return filepath.Join(dir, "klip.desktop"), nil
 }
 
-// IsEnabled is true when the entry exists.
+// IsEnabled is true when the entry exists and is not switched off.
 func (d Desktop) IsEnabled() bool {
 	f, err := d.file()
 	if err != nil {
 		return false
 	}
-	_, err = os.Stat(f)
-	return err == nil
+	b, err := os.ReadFile(f)
+	if err != nil {
+		return false
+	}
+	// A startup manager switches an entry off by a line in it, leaving the file.
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.EqualFold(line, "Hidden=true") || strings.EqualFold(line, "X-GNOME-Autostart-enabled=false") {
+			return false
+		}
+	}
+	return true
 }
 
 // SetEnabled writes or removes the entry.

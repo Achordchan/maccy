@@ -537,8 +537,12 @@ func (a *App) setStatus(s string) {
 func (a *App) syncDone(reason string, manual bool, err error) {
 	// The sync counts as running until its result has been dealt with: Stop
 	// waits for that, and nothing may use the program (the log) after it.
+	// A request turned away before it ran (a manual sync with nobody signed in)
+	// has no run of its own to end: the one that may still be unwinding is not
+	// its to close.
+	ran := !(manual && errors.Is(err, syncer.ErrNotLoggedIn))
 	defer func() {
-		if a.runActive.Swap(false) {
+		if ran && a.runActive.Swap(false) {
 			a.syncing.Add(-1)
 		}
 	}()
