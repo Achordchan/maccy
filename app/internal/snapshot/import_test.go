@@ -212,7 +212,7 @@ func TestDetachedReadKeepsTheLocalPayloadsUntilTheMergeDecides(t *testing.T) {
 	// The merge keeps the local item: its files are still the local ones.
 	kept, moves, err := ApplyPayloads(l, root, []model.Item{{
 		ID: id3, Kind: model.KindFileList, FilePaths: []string{localPath},
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,29 +226,23 @@ func TestDetachedReadKeepsTheLocalPayloadsUntilTheMergeDecides(t *testing.T) {
 
 	// The merge keeps the remote item: its files replace the cache, and the
 	// old folder is gone.
-	applied, moves, err := ApplyPayloads(l, root, remote.Items)
+	applied, moves, err := ApplyPayloads(l, root, remote.Items, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	moves.Commit()
 	got := applied[0].FilePaths
-	if len(got) != 1 || filepath.Dir(got[0]) != dir || filepath.Base(got[0]) != "0000_remote.txt" {
+	if len(got) != 1 || filepath.Base(got[0]) != "0000_remote.txt" {
 		t.Fatalf("applied paths %v", got)
+	}
+	if filepath.Dir(got[0]) == dir || !strings.HasPrefix(filepath.Base(filepath.Dir(got[0])), strings.ReplaceAll(id3, "-", "")+"-") {
+		t.Errorf("the imported files are not in their own folder: %v", got)
 	}
 	if b, _ := os.ReadFile(got[0]); string(b) != "remote" {
 		t.Errorf("imported file %q", b)
 	}
-	if _, err := os.Stat(localPath); !os.IsNotExist(err) {
-		t.Error("the local file of the replaced cache survived")
-	}
-	ents, err := os.ReadDir(l.Files())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range ents {
-		if strings.Contains(e.Name(), ".old-") {
-			t.Errorf("a cache backup was left behind: %s", e.Name())
-		}
+	if b, err := os.ReadFile(localPath); err != nil || string(b) != "local" {
+		t.Errorf("the old cache was touched: %q %v", b, err)
 	}
 }
 
@@ -308,7 +302,7 @@ func TestRecoverPayloadsRollsBackAnUncommittedReplacement(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(backup, "0000_old.txt"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{{Target: target, Backup: backup}}, false); err != nil {
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{{Target: target, Backup: backup}}, "", "", false); err != nil {
 		t.Fatal(err)
 	}
 	// The history still names a file that only the backup has.
@@ -427,7 +421,7 @@ func TestRecoverPayloadsKeepsACommittedReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := payloadJournalEntry{Target: target, Backup: backup, Files: map[string]string{"0000_new.txt": sum}}
-	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{entry}, false); err != nil {
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{entry}, "", "", false); err != nil {
 		t.Fatal(err)
 	}
 	RecoverPayloads(l, items)
@@ -443,9 +437,9 @@ func TestRecoverPayloadsKeepsACommittedReplacement(t *testing.T) {
 	}
 }
 
-// The journal written by ApplyPayloads must describe the items it returns,
-// including the final (not staging) file paths.
-func TestJournalFromApplyPayloadsMatchesTheResult(t *testing.T) {
+// ApplyPayloads installs a file-list item in a folder of its own, so the old
+// cache is intact until the new history is saved.
+func TestApplyPayloadsUsesAUniqueFolder(t *testing.T) {
 	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
 	idn := strings.ReplaceAll(id, "-", "")
 	l := paths.Layout{Root: t.TempDir()}
@@ -462,34 +456,21 @@ func TestJournalFromApplyPayloadsMatchesTheResult(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "0000_old.txt"), []byte("old"), 0o644); err != nil {
+	old := filepath.Join(dir, "0000_old.txt")
+	if err := os.WriteFile(old, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	items := []model.Item{{
-		ID: id, Kind: model.KindFileList, FilePaths: []string{stagedFile}, CopyCount: 1,
-	}}
-	out, applied, err := ApplyPayloads(l, root, items)
+	out, applied, err := ApplyPayloads(l, root, []model.Item{{ID: id, Kind: model.KindFileList, FilePaths: []string{stagedFile}, CopyCount: 1}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A capture made after ApplyPayloads changes the history but not these
-	// payloads: recovery must still see the replacement as committed.
-	withCapture := append(out, model.Item{ID: "7c9e6679-7425-40de-944b-e07fc1f90ae7", Kind: model.KindText, Text: model.Ptr("captured"), CopyCount: 1})
-	RecoverPayloads(l, withCapture)
+	if len(out[0].FilePaths) != 1 || filepath.Dir(out[0].FilePaths[0]) == dir {
+		t.Fatalf("paths %v", out[0].FilePaths)
+	}
+	if b, err := os.ReadFile(old); err != nil || string(b) != "old" {
+		t.Errorf("the old cache was touched: %q %v", b, err)
+	}
 	applied.Commit()
-
-	if b, err := os.ReadFile(filepath.Join(dir, "0000_new.txt")); err != nil || string(b) != "new" {
-		t.Errorf("the saved replacement was rolled back: %q %v", b, err)
-	}
-	ents, err := os.ReadDir(l.Files())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range ents {
-		if strings.Contains(e.Name(), ".old-") {
-			t.Errorf("a backup was left behind: %s", e.Name())
-		}
-	}
 }
 
 // A migrated item whose FilePaths are the original documents still needs the
@@ -516,7 +497,7 @@ func TestRecoverPayloadsRequiresTheInstalledFiles(t *testing.T) {
 		Target: target, Backup: backup,
 		Files: map[string]string{"0000_new.txt": strings.Repeat("a", 64)},
 	}
-	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{entry}, false); err != nil {
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{entry}, "", "", false); err != nil {
 		t.Fatal(err)
 	}
 	RecoverPayloads(l, items)
@@ -524,40 +505,4 @@ func TestRecoverPayloadsRequiresTheInstalledFiles(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(target, "0000_old.txt")); err != nil || string(b) != "old" {
 		t.Errorf("the backup was not restored: %q %v", b, err)
 	}
-}
-
-// A committed journal keeps the installed replacement even if the old history
-// is what is on disk (the crash was after MarkCommitted).
-func TestRecoverPayloadsHonorsTheCommitMarker(t *testing.T) {
-	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
-	idn := strings.ReplaceAll(id, "-", "")
-	l := paths.Layout{Root: t.TempDir()}
-	staged := filepath.Join(l.Root, ".import-test", "files", idn)
-	if err := os.MkdirAll(staged, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	stagedFile := filepath.Join(staged, "0000_same.txt")
-	if err := os.WriteFile(stagedFile, []byte("new"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(l.Files(), idn)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "0000_same.txt"), []byte("old"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	items := []model.Item{{ID: id, Kind: model.KindFileList, FilePaths: []string{stagedFile}, CopyCount: 1}}
-	out, moves, err := ApplyPayloads(l, filepath.Join(l.Root, ".import-test"), items)
-	if err != nil {
-		t.Fatal(err)
-	}
-	moves.MarkCommitted()
-	// Crash after the marker: the old history is still the one read back.
-	oldItems := []model.Item{{ID: id, Kind: model.KindFileList, FilePaths: []string{filepath.Join(dir, "0000_same.txt")}, CopyCount: 1}}
-	RecoverPayloads(l, oldItems)
-	if b, err := os.ReadFile(filepath.Join(dir, "0000_same.txt")); err != nil || string(b) != "new" {
-		t.Errorf("the committed replacement was rolled back: %q %v", b, err)
-	}
-	_ = out
 }

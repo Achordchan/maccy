@@ -276,6 +276,13 @@ func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]B
 	if err != nil {
 		return nil, err
 	}
+	// An imported item keeps its files in a unique folder under files/; a
+	// migrated one keeps them in files/<idn> and names the documents.
+	if len(it.FilePaths) > 0 {
+		if d := filepath.Dir(it.FilePaths[0]); within(l.Files(), d) {
+			dir = d
+		}
+	}
 	files := cachedFiles(dir)
 	if len(files) == 0 {
 		var srcs []string
@@ -720,6 +727,8 @@ type AppliedPayloads struct {
 	stale   []string
 	journal string
 	entries []payloadJournalEntry
+	before  string
+	after   string
 }
 
 // payloadJournalEntry is one cache-folder replacement that has not been
@@ -733,6 +742,20 @@ type payloadJournalEntry struct {
 type payloadJournal struct {
 	Entries   []payloadJournalEntry `json:"entries"`
 	Committed bool                  `json:"committed,omitempty"`
+	// Before and After are the digests of the history before and after the
+	// replacement: they tell a saved replacement from an interrupted one even
+	// when the filenames are the same.
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
+}
+
+func historyDigest(items []model.Item) string {
+	b, err := json.Marshal(items)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // payloadEntryCommitted says the saved history refers to the payloads the
@@ -778,11 +801,11 @@ func payloadJournalPath(l paths.Layout) string {
 	return filepath.Join(l.Root, "sync", "payload-journal.json")
 }
 
-func writePayloadJournal(path string, entries []payloadJournalEntry, committed bool) error {
+func writePayloadJournal(path string, entries []payloadJournalEntry, before, after string, committed bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	b, err := json.Marshal(payloadJournal{Entries: entries, Committed: committed})
+	b, err := json.Marshal(payloadJournal{Entries: entries, Committed: committed, Before: before, After: after})
 	if err != nil {
 		return err
 	}
@@ -808,11 +831,21 @@ func RecoverPayloads(l paths.Layout, items []model.Item) {
 		_ = os.Remove(path)
 		return
 	}
+	cur := historyDigest(items)
 	for _, e := range j.Entries {
 		if e.Target == "" || e.Backup == "" {
 			continue
 		}
-		if j.Committed || payloadEntryCommitted(items, e) {
+		committed := j.Committed
+		switch {
+		case j.After != "" && cur == j.After:
+			committed = true
+		case j.Before != "" && cur == j.Before:
+			committed = false
+		case !committed:
+			committed = payloadEntryCommitted(items, e)
+		}
+		if committed {
 			_ = os.RemoveAll(e.Backup)
 			continue
 		}
@@ -845,7 +878,7 @@ func (a *AppliedPayloads) MarkCommitted() {
 	if a.journal == "" || len(a.entries) == 0 {
 		return
 	}
-	_ = writePayloadJournal(a.journal, a.entries, true)
+	_ = writePayloadJournal(a.journal, a.entries, a.before, a.after, true)
 }
 
 // Rollback undoes the moves: the folders that were replaced are put back.
@@ -864,11 +897,11 @@ func (a *AppliedPayloads) Rollback() {
 // The payloads of items that were not kept stay under root, for the caller to
 // delete. The returned handle commits or rolls back the moved folders, so
 // that the files change only together with the history.
-func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Item, *AppliedPayloads, error) {
+func ApplyPayloads(l paths.Layout, root string, items, previous []model.Item) ([]model.Item, *AppliedPayloads, error) {
 	imagesDir := filepath.Join(root, "images")
 	filesDir := filepath.Join(root, "files")
 	out := append([]model.Item(nil), items...)
-	applied := &AppliedPayloads{journal: payloadJournalPath(l)}
+	applied := &AppliedPayloads{journal: payloadJournalPath(l), before: historyDigest(previous)}
 
 	rollback := func() {
 		applied.Rollback()
@@ -911,17 +944,14 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 		if !within(staged, out[i].FilePaths[0]) {
 			continue // the merge kept the payload that is already here
 		}
-		dest, err := itemDir(l.Files(), idn)
-		if err != nil {
-			rollback()
-			return nil, nil, err
-		}
 		if err := os.MkdirAll(l.Files(), 0o755); err != nil {
 			rollback()
 			return nil, nil, err
 		}
-		// The paths recorded in the journal (and in the history) are the
-		// final ones, not the staging paths.
+		// A unique folder, not a replacement of the canonical one: the old
+		// cache stays intact until the new history is saved, so a crash
+		// cannot pair old history with new files (nor the reverse).
+		dest := filepath.Join(l.Files(), idn+"-"+newGUIDN())
 		paths := make([]string, len(out[i].FilePaths))
 		for j, p := range out[i].FilePaths {
 			if within(staged, p) {
@@ -934,38 +964,14 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 		moves = append(moves, dirMove{staged: staged, dest: dest})
 	}
 
+	_ = applied
 	for _, m := range moves {
-		backup := m.dest + ".old-" + newGUIDN()
-		files := map[string]string{}
-		if ents, err := os.ReadDir(m.staged); err == nil {
-			for _, e := range ents {
-				if e.IsDir() {
-					continue
-				}
-				if sum, err := fileSHA256(filepath.Join(m.staged, e.Name())); err == nil {
-					files[e.Name()] = sum
-				}
-			}
-		}
-		applied.entries = append(applied.entries, payloadJournalEntry{Target: m.dest, Backup: backup, Files: files})
-		if err := writePayloadJournal(applied.journal, applied.entries, false); err != nil {
+		if err := os.Rename(m.staged, m.dest); err != nil {
 			rollback()
 			return nil, nil, err
 		}
-		if err := moveDirTo(m.staged, m.dest, backup); err != nil {
-			rollback()
-			return nil, nil, err
-		}
-		if _, err := os.Stat(backup); err == nil {
-			applied.stale = append(applied.stale, backup)
-		}
-		to, old := m.dest, backup
-		applied.undo = append(applied.undo, func() {
-			_ = os.RemoveAll(to)
-			if old != "" {
-				_ = os.Rename(old, to)
-			}
-		})
+		to := m.dest
+		applied.undo = append(applied.undo, func() { _ = os.RemoveAll(to) })
 	}
 
 	return out, applied, nil

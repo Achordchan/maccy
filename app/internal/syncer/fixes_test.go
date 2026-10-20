@@ -2101,3 +2101,52 @@ func TestRollbackKeepsAConcurrentDeletion(t *testing.T) {
 		t.Errorf("the deleted item was resurrected: %+v", h.items)
 	}
 }
+
+// Items the limits pruned are not user deletions: a failed flush restores
+// them with the old history.
+type keepOnlyHistory struct {
+	unitHistory
+	keep  string
+	armed bool
+}
+
+func (h *keepOnlyHistory) ApplyLimits(model.Settings) {
+	if h.armed {
+		return // the rollback restores the old history; do not prune again
+	}
+	h.armed = true
+	var kept []model.Item
+	for _, it := range h.items {
+		if it.ID == h.keep {
+			kept = append(kept, it)
+		}
+	}
+	h.items = kept
+}
+
+func TestRollbackRestoresItemsPrunedByLimits(t *testing.T) {
+	const (
+		shared = "0f8fad5b-d9cb-469f-a165-70867728950e"
+		other  = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	)
+	before := textItemAt(shared, "shared")
+	remote := []model.Item{textItemAt(shared, "shared"), textItemAt(other, "other")}
+	h := &keepOnlyHistory{unitHistory: unitHistory{items: []model.Item{before}}, keep: other}
+	srv := serveSnapshot(t, snapshotFile(t, remote))
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	syn.cfg.Flush = func(context.Context) error { return errors.New("disk full") }
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+		t.Fatal("the failed flush stopped nothing")
+	}
+	found := false
+	for _, it := range h.items {
+		if it.ID == shared {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the limit-pruned shared item was not restored: %+v", h.items)
+	}
+}

@@ -637,7 +637,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			next = MergeForDownload(data.Items, current)
 			merged = true
 		}
-		out, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, next)
+		out, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, next, before)
 		if err != nil {
 			return nil, err
 		}
@@ -679,6 +679,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(settings) })
 		s.cfg.History.ApplyLimits(s.settings())
 	}
+	limitPruned := prunedItems(applied, s.cfg.History.Items())
 	res := DownloadResult{
 		Fingerprint:         appliedFP,
 		SnapshotSHA256:      sum,
@@ -701,7 +702,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			return DownloadResult{}, ErrSessionChanged
 		}
 		rctx, rcancel := cleanupContext()
-		rerr := s.rollbackMutation(rctx, before, applied, oldSettings)
+		rerr := s.rollbackMutation(rctx, before, applied, oldSettings, limitPruned)
 		rcancel()
 		if rerr == nil && moves != nil {
 			moves.Rollback()
@@ -897,7 +898,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		}
 		before = append([]model.Item(nil), current...)
 		merged = MergeItems(remote.Items, current)
-		applied, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, merged)
+		applied, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, merged, before)
 		if err != nil {
 			return nil, err
 		}
@@ -930,6 +931,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 
 	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(mergedSettings) })
 	s.cfg.History.ApplyLimits(s.settings())
+	limitPruned := prunedItems(merged, s.cfg.History.Items())
 	s.timing("merge", "merge_snapshot", started, fmt.Sprintf("%s;localItems=%d;remoteItems=%d;mergedItems=%d", reason, len(local), len(remote.Items), len(merged)))
 
 	removed := s.unreferencedFiles(before, s.cfg.History.Items())
@@ -944,7 +946,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			return ErrSessionChanged
 		}
 		rctx, rcancel := cleanupContext()
-		rerr := s.rollbackMutation(rctx, before, merged, localSettings)
+		rerr := s.rollbackMutation(rctx, before, merged, localSettings, limitPruned)
 		rcancel()
 		if rerr == nil && moves != nil {
 			moves.Rollback()
@@ -1163,15 +1165,26 @@ func (s *Syncer) fileCacheFiles(it model.Item) []string {
 	if it.Kind != model.KindFileList || strings.TrimSpace(it.ID) == "" {
 		return nil
 	}
-	dir := filepath.Join(s.cfg.Layout.Files(), it.IDN())
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
+	base := it.IDN()
+	dirs := []string{filepath.Join(s.cfg.Layout.Files(), base)}
+	ents, err := os.ReadDir(s.cfg.Layout.Files())
+	if err == nil {
+		for _, e := range ents {
+			if e.IsDir() && strings.HasPrefix(e.Name(), base+"-") {
+				dirs = append(dirs, filepath.Join(s.cfg.Layout.Files(), e.Name()))
+			}
+		}
 	}
 	var out []string
-	for _, e := range ents {
-		if !e.IsDir() {
-			out = append(out, filepath.Join(dir, e.Name()))
+	for _, dir := range dirs {
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if !e.IsDir() {
+				out = append(out, filepath.Join(dir, e.Name()))
+			}
 		}
 	}
 	return out
@@ -1234,10 +1247,27 @@ func MergeForDownload(remote, local []model.Item) []model.Item {
 	return merged
 }
 
+// prunedItems is the applied items that the limits removed: they are not
+// user deletions, so a failed replacement restores them.
+func prunedItems(applied, current []model.Item) map[string]bool {
+	have := make(map[string]bool, len(current))
+	for _, it := range current {
+		have[strings.ToLower(it.ID)] = true
+	}
+	pruned := map[string]bool{}
+	for _, it := range applied {
+		id := strings.ToLower(it.ID)
+		if !have[id] {
+			pruned[id] = true
+		}
+	}
+	return pruned
+}
+
 // rollbackItems is the history after a failed mutation: the items before it,
 // with the note, pin and copy count edits made meanwhile, plus the captures
 // that were added. Items that only the failed mutation added are dropped.
-func rollbackItems(before, applied, current []model.Item) []model.Item {
+func rollbackItems(before, applied, current []model.Item, limitPruned map[string]bool) []model.Item {
 	currentByID := make(map[string]model.Item, len(current))
 	for _, it := range current {
 		currentByID[strings.ToLower(it.ID)] = it
@@ -1257,9 +1287,10 @@ func rollbackItems(before, applied, current []model.Item) []model.Item {
 		beforeIDs[id] = true
 		_, inApplied := appliedByID[id]
 		cur, inCurrent := currentByID[id]
-		if inApplied && !inCurrent {
+		if inApplied && !inCurrent && !limitPruned[id] {
 			// The user deleted this item while the failed operation was
-			// being flushed: keep the deletion.
+			// being flushed: keep the deletion. A limit pruning is not a
+			// user deletion and must be undone with the replacement.
 			continue
 		}
 		if inCurrent {
@@ -1351,9 +1382,9 @@ func itemsNotIn(exclude, items []model.Item) []model.Item {
 // captured while the operation was in flight: they were neither downloaded nor
 // part of the mutation, so losing them would be data loss. The previous
 // portable settings are restored too.
-func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.Item, oldSettings model.Settings) error {
+func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.Item, oldSettings model.Settings, limitPruned map[string]bool) error {
 	if err := s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
-		return rollbackItems(before, applied, current), nil
+		return rollbackItems(before, applied, current, limitPruned), nil
 	}); err != nil {
 		return err
 	}
