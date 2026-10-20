@@ -9,7 +9,6 @@ package snapshot
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/egoist/mygo/plugins/sqlite"
 
 	"klip/internal/model"
 	"klip/internal/paths"
@@ -136,47 +135,63 @@ func Export(ctx context.Context, l paths.Layout, snapshotPath string, items []mo
 }
 
 func writeDB(ctx context.Context, l paths.Layout, path string, items []model.Item, s model.Settings, blobs map[string]Blob) error {
-	db, err := sql.Open("sqlite", path)
+	db, err := sqlite.Open(ctx, path, sqlite.OpenOptions{})
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	// One connection: the PRAGMAs above are per connection, and the lock is
-	// exclusive.
-	db.SetMaxOpenConns(1)
 
-	if _, err := db.ExecContext(ctx, ddl); err != nil {
-		return err
+	// The plugin runs one statement at a time, so the script is cut into
+	// its statements. The PRAGMAs only tune how the file is written.
+	for _, stmt := range splitStatements(ddl) {
+		if _, err := db.Execute(ctx, stmt); err != nil {
+			return fmt.Errorf("snapshot: %q: %w", firstLine(stmt), err)
+		}
 	}
-	tx, err := db.BeginTx(ctx, nil)
+
+	stmts := []sqlite.Statement{{SQL: "INSERT INTO meta(key, value) VALUES (?, ?)", Args: []any{"schema", strconv.Itoa(SchemaVersion)}}}
+	if j, err := s.Portable().Marshal(); err == nil && len(j) > 0 {
+		stmts = append(stmts, sqlite.Statement{SQL: "INSERT INTO settings(json) VALUES (?)", Args: []any{string(j)}})
+	}
+	itemStmts, err := itemStatements(ctx, l, items, blobs)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	stmts = append(stmts, itemStmts...)
 
-	if _, err := tx.ExecContext(ctx, "INSERT INTO meta(key, value) VALUES (?, ?)", "schema", strconv.Itoa(SchemaVersion)); err != nil {
-		return err
-	}
-	if j, err := s.Portable().Marshal(); err == nil && len(j) > 0 {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO settings(json) VALUES (?)", string(j)); err != nil {
-			return err
-		}
-	}
-	if err := insertItems(ctx, tx, l, items, blobs); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
+	// One transaction: the file is complete or Export fails.
+	if _, err := db.Transaction(ctx, stmts); err != nil {
 		return err
 	}
 	return db.Close()
 }
 
-func insertItems(ctx context.Context, tx *sql.Tx, l paths.Layout, items []model.Item, blobs map[string]Blob) error {
+// splitStatements cuts a script at its semicolons. The DDL has no semicolon
+// inside a string or a comment.
+func splitStatements(script string) []string {
+	var out []string
+	for _, part := range strings.Split(script, ";") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
+}
+
+// itemStatements builds the statements that insert the items, with their
+// images and files, and records the blobs they refer to.
+func itemStatements(ctx context.Context, l paths.Layout, items []model.Item, blobs map[string]Blob) ([]sqlite.Statement, error) {
+	var stmts []sqlite.Statement
 	seen := map[string]bool{}
 	position := 0
 	for _, it := range items {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		id := strings.ToLower(it.ID)
 		if seen[id] {
@@ -188,7 +203,7 @@ func insertItems(ctx context.Context, tx *sql.Tx, l paths.Layout, items []model.
 		if it.FilePaths != nil {
 			b, err := json.Marshal(it.FilePaths)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			filePathsJSON = string(b)
 		}
@@ -196,50 +211,51 @@ func insertItems(ctx context.Context, tx *sql.Tx, l paths.Layout, items []model.
 		if it.FirstCapturedAt != nil {
 			firstCaptured = model.FormatO(it.FirstCapturedAt.Time)
 		}
-		_, err := tx.ExecContext(ctx, `
+		stmts = append(stmts, sqlite.Statement{SQL: `
 INSERT OR REPLACE INTO items(
   position, id, kind, capturedAt, approxBytes, text, filePathsJson, pinned, copyCount,
   firstCapturedAt, note, contentHash, sourceAppName, sourceAppPath
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			position, id, int(it.Kind), model.FormatO(it.CapturedAt.Time), it.ApproxBytes,
-			nullable(it.Text), filePathsJSON, boolInt(it.Pinned), it.CopyCount, firstCaptured,
-			nullable(it.Note), nullable(it.ContentHash), nullable(it.SourceAppName), nullable(it.SourceAppPath))
-		if err != nil {
-			return err
-		}
+			Args: []any{position, id, int(it.Kind), model.FormatO(it.CapturedAt.Time), it.ApproxBytes,
+				nullable(it.Text), filePathsJSON, boolInt(it.Pinned), it.CopyCount, firstCaptured,
+				nullable(it.Note), nullable(it.ContentHash), nullable(it.SourceAppName), nullable(it.SourceAppPath)}})
 
+		var err error
 		switch it.Kind {
 		case model.KindImage:
-			if err := insertImage(ctx, tx, it, id, blobs); err != nil {
-				return err
+			var st sqlite.Statement
+			if st, err = imageStatement(it, id, blobs); err == nil {
+				stmts = append(stmts, st)
 			}
 		case model.KindFileList:
-			if err := insertFiles(ctx, tx, l, it, id, blobs); err != nil {
-				return err
+			var sts []sqlite.Statement
+			if sts, err = fileStatements(l, it, id, blobs); err == nil {
+				stmts = append(stmts, sts...)
 			}
+		}
+		if err != nil {
+			return nil, err
 		}
 		position++
 	}
-	return nil
+	return stmts, nil
 }
 
-func insertImage(ctx context.Context, tx *sql.Tx, it model.Item, id string, blobs map[string]Blob) error {
+func imageStatement(it model.Item, id string, blobs map[string]Blob) (sqlite.Statement, error) {
 	p := model.Str(it.ImageFilePath)
 	size, sum, ok := hashFile(p)
 	if !ok {
-		return errors.New("snapshot: local image payload missing")
+		return sqlite.Statement{}, errors.New("snapshot: local image payload missing")
 	}
 	name := filepath.Base(p)
 	if name == "" || name == "." {
 		name = "image.png"
 	}
-	if _, err := tx.ExecContext(ctx,
-		"INSERT OR REPLACE INTO item_images(itemId, fileName, blobSha256, sizeBytes, bytes) VALUES (?, ?, ?, ?, NULL)",
-		id, name, sum, size); err != nil {
-		return err
-	}
 	blobs[sum] = Blob{SHA256: sum, SourcePath: p, Size: size}
-	return nil
+	return sqlite.Statement{
+		SQL:  "INSERT OR REPLACE INTO item_images(itemId, fileName, blobSha256, sizeBytes, bytes) VALUES (?, ?, ?, ?, NULL)",
+		Args: []any{id, name, sum, size},
+	}, nil
 }
 
 type cachedFile struct {
@@ -248,7 +264,7 @@ type cachedFile struct {
 	path string
 }
 
-func insertFiles(ctx context.Context, tx *sql.Tx, l paths.Layout, it model.Item, id string, blobs map[string]Blob) error {
+func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]Blob) ([]sqlite.Statement, error) {
 	files := cachedFiles(filepath.Join(l.Files(), it.IDN()))
 	if len(files) == 0 {
 		var srcs []string
@@ -258,7 +274,7 @@ func insertFiles(ctx context.Context, tx *sql.Tx, l paths.Layout, it model.Item,
 			}
 		}
 		if len(srcs) == 0 {
-			return errors.New("snapshot: local file payload missing")
+			return nil, errors.New("snapshot: local file payload missing")
 		}
 		for i, p := range srcs {
 			if st, err := os.Stat(p); err != nil || st.IsDir() {
@@ -267,32 +283,28 @@ func insertFiles(ctx context.Context, tx *sql.Tx, l paths.Layout, it model.Item,
 			files = append(files, cachedFile{i, filepath.Base(p), p})
 		}
 		if len(files) != len(srcs) {
-			return errors.New("snapshot: local file payload missing")
+			return nil, errors.New("snapshot: local file payload missing")
 		}
 	}
 	sort.SliceStable(files, func(i, j int) bool { return files[i].idx < files[j].idx })
 
-	exported := 0
+	var stmts []sqlite.Statement
 	for _, f := range files {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
 		size, sum, ok := hashFile(f.path)
 		if !ok {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx,
-			"INSERT OR REPLACE INTO item_files(itemId, idx, fileName, blobSha256, sizeBytes, bytes) VALUES (?, ?, ?, ?, ?, NULL)",
-			id, f.idx, f.name, sum, size); err != nil {
-			return err
-		}
 		blobs[sum] = Blob{SHA256: sum, SourcePath: f.path, Size: size}
-		exported++
+		stmts = append(stmts, sqlite.Statement{
+			SQL:  "INSERT OR REPLACE INTO item_files(itemId, idx, fileName, blobSha256, sizeBytes, bytes) VALUES (?, ?, ?, ?, ?, NULL)",
+			Args: []any{id, f.idx, f.name, sum, size},
+		})
 	}
-	if exported != len(files) {
-		return errors.New("snapshot: local file payload missing")
+	// Like the C# client: a file that cannot be exported fails the item.
+	if len(stmts) != len(files) {
+		return nil, errors.New("snapshot: local file payload missing")
 	}
-	return nil
+	return stmts, nil
 }
 
 // cachedFiles lists dir/NNNN_name files: the copies the client keeps of the
@@ -358,25 +370,26 @@ func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure Ensur
 	if _, err := os.Stat(snapshotPath); err != nil {
 		return ReadResult{}, fmt.Errorf("snapshot not found: %w", err)
 	}
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(snapshotPath)+"?mode=ro")
+	db, err := sqlite.Open(ctx, snapshotPath, sqlite.OpenOptions{ReadOnly: true})
 	if err != nil {
 		return ReadResult{}, err
 	}
 	defer db.Close()
 
-	var schemaText sql.NullString
-	if err := db.QueryRowContext(ctx, "SELECT value FROM meta WHERE key = ? LIMIT 1", "schema").Scan(&schemaText); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	schemaRows, err := db.Query(ctx, "SELECT value FROM meta WHERE key = ? LIMIT 1", "schema")
+	if err != nil {
 		return ReadResult{}, err
 	}
-	schema, err := strconv.Atoi(strings.TrimSpace(schemaText.String))
+	schema, err := strconv.Atoi(strings.TrimSpace(cellString(first(schemaRows), 0)))
 	if err != nil || (schema != 1 && schema != SchemaVersion) {
 		return ReadResult{}, errors.New("unsupported snapshot schema")
 	}
 
-	var settingsJSON sql.NullString
-	if err := db.QueryRowContext(ctx, "SELECT json FROM settings LIMIT 1").Scan(&settingsJSON); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	settingsRows, err := db.Query(ctx, "SELECT json FROM settings LIMIT 1")
+	if err != nil {
 		return ReadResult{}, err
 	}
+	settingsJSON := cellString(first(settingsRows), 0)
 	items, err := readItems(ctx, db)
 	if err != nil {
 		return ReadResult{}, err
@@ -423,16 +436,16 @@ func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure Ensur
 	}
 	res.Items = items
 
-	if strings.TrimSpace(settingsJSON.String) != "" {
-		if s, err := model.ParseSettings([]byte(settingsJSON.String)); err == nil {
+	if strings.TrimSpace(settingsJSON) != "" {
+		if s, err := model.ParseSettings([]byte(settingsJSON)); err == nil {
 			res.Settings = &s
 		}
 	}
 	return res, nil
 }
 
-func readItems(ctx context.Context, db *sql.DB) ([]model.Item, error) {
-	rows, err := db.QueryContext(ctx, `
+func readItems(ctx context.Context, db *sqlite.DB) ([]model.Item, error) {
+	rows, err := db.Query(ctx, `
 SELECT position, id, kind, capturedAt, approxBytes, text, filePathsJson, pinned, copyCount,
        firstCapturedAt, note, contentHash, sourceAppName, sourceAppPath
 FROM items
@@ -440,55 +453,42 @@ ORDER BY position ASC`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	var items []model.Item
-	for rows.Next() {
-		var (
-			pos                                 int64
-			id, captured                        string
-			kind, copyCount, pinned             int64
-			approx                              int64
-			text, filePathsJSON, first, note    sql.NullString
-			contentHash, sourceName, sourcePath sql.NullString
-		)
-		if err := rows.Scan(&pos, &id, &kind, &captured, &approx, &text, &filePathsJSON, &pinned, &copyCount,
-			&first, &note, &contentHash, &sourceName, &sourcePath); err != nil {
-			return nil, err
-		}
-		at, err := model.ParseTime(captured)
+	for _, r := range rows.Values {
+		at, err := model.ParseTime(cellString(r, 3))
 		if err != nil {
 			return nil, err
 		}
 		it := model.Item{
-			ID:            strings.ToLower(id),
-			Kind:          model.Kind(kind),
+			ID:            strings.ToLower(cellString(r, 1)),
+			Kind:          model.Kind(cellInt(r, 2)),
 			CapturedAt:    model.Time{Time: at},
-			ApproxBytes:   approx,
-			Text:          nstr(text),
-			Pinned:        pinned != 0,
-			CopyCount:     int32(copyCount),
-			Note:          nstr(note),
-			ContentHash:   nstr(contentHash),
-			SourceAppName: nstr(sourceName),
-			SourceAppPath: nstr(sourcePath),
+			ApproxBytes:   cellInt(r, 4),
+			Text:          cellStringPtr(r, 5),
+			Pinned:        cellInt(r, 7) != 0,
+			CopyCount:     int32(cellInt(r, 8)),
+			Note:          cellStringPtr(r, 10),
+			ContentHash:   cellStringPtr(r, 11),
+			SourceAppName: cellStringPtr(r, 12),
+			SourceAppPath: cellStringPtr(r, 13),
 		}
-		if first.Valid {
-			t, err := model.ParseTime(first.String)
+		if f := cellStringPtr(r, 9); f != nil {
+			t, err := model.ParseTime(*f)
 			if err != nil {
 				return nil, err
 			}
 			it.FirstCapturedAt = &model.Time{Time: t}
 		}
-		if strings.TrimSpace(filePathsJSON.String) != "" {
+		if j := cellString(r, 6); strings.TrimSpace(j) != "" {
 			var paths []string
-			if json.Unmarshal([]byte(filePathsJSON.String), &paths) == nil && len(paths) > 0 {
+			if json.Unmarshal([]byte(j), &paths) == nil && len(paths) > 0 {
 				it.FilePaths = paths
 			}
 		}
 		items = append(items, it)
 	}
-	return items, rows.Err()
+	return items, nil
 }
 
 type imageRecord struct {
@@ -504,58 +504,45 @@ type fileRecord struct {
 	bytes  []byte
 }
 
-func readImage(ctx context.Context, db *sql.DB, id string, schema int) (imageRecord, error) {
-	var (
-		rec   imageRecord
-		sum   sql.NullString
-		bytes []byte
-		err   error
-	)
+func readImage(ctx context.Context, db *sqlite.DB, id string, schema int) (imageRecord, error) {
+	q := "SELECT fileName, bytes FROM item_images WHERE itemId = ? LIMIT 1"
 	if schema >= 2 {
-		var size sql.NullInt64
-		err = db.QueryRowContext(ctx, "SELECT fileName, blobSha256, sizeBytes, bytes FROM item_images WHERE itemId = ? LIMIT 1", id).
-			Scan(&rec.fileName, &sum, &size, &bytes)
-	} else {
-		err = db.QueryRowContext(ctx, "SELECT fileName, bytes FROM item_images WHERE itemId = ? LIMIT 1", id).
-			Scan(&rec.fileName, &bytes)
+		q = "SELECT fileName, blobSha256, sizeBytes, bytes FROM item_images WHERE itemId = ? LIMIT 1"
 	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return rec, errors.New("snapshot image payload missing")
-	}
+	rows, err := db.Query(ctx, q, id)
 	if err != nil {
-		return rec, err
+		return imageRecord{}, err
 	}
-	rec.sha256, rec.bytes = sum.String, bytes
-	return rec, nil
+	r := first(rows)
+	if r == nil {
+		return imageRecord{}, errors.New("snapshot image payload missing")
+	}
+	if schema >= 2 {
+		return imageRecord{fileName: cellString(r, 0), sha256: cellString(r, 1), bytes: cellBytes(r, 3)}, nil
+	}
+	return imageRecord{fileName: cellString(r, 0), bytes: cellBytes(r, 1)}, nil
 }
 
-func readFiles(ctx context.Context, db *sql.DB, id string, schema int) ([]fileRecord, error) {
+func readFiles(ctx context.Context, db *sqlite.DB, id string, schema int) ([]fileRecord, error) {
 	q := "SELECT idx, fileName, bytes FROM item_files WHERE itemId = ? ORDER BY idx ASC"
 	if schema >= 2 {
 		q = "SELECT idx, fileName, blobSha256, sizeBytes, bytes FROM item_files WHERE itemId = ? ORDER BY idx ASC"
 	}
-	rows, err := db.QueryContext(ctx, q, id)
+	rows, err := db.Query(ctx, q, id)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []fileRecord
-	for rows.Next() {
-		var f fileRecord
-		var sum sql.NullString
-		var size sql.NullInt64
+	for _, r := range rows.Values {
+		f := fileRecord{idx: int(cellInt(r, 0)), name: cellString(r, 1)}
 		if schema >= 2 {
-			err = rows.Scan(&f.idx, &f.name, &sum, &size, &f.bytes)
+			f.sha256, f.bytes = cellString(r, 2), cellBytes(r, 4)
 		} else {
-			err = rows.Scan(&f.idx, &f.name, &f.bytes)
+			f.bytes = cellBytes(r, 2)
 		}
-		if err != nil {
-			return nil, err
-		}
-		f.sha256 = sum.String
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // writeImportedImage stores an image the way the C# client does: in the
@@ -689,12 +676,59 @@ func nullable(p *string) any {
 	return *p
 }
 
-func nstr(n sql.NullString) *string {
-	if !n.Valid {
+// first returns the first row, or nil.
+func first(r sqlite.Rows) []any {
+	if len(r.Values) == 0 {
 		return nil
 	}
-	s := n.String
+	return r.Values[0]
+}
+
+// The cell helpers read a column of a row the plugin returned: values are
+// nil, int64, float64, string or []byte.
+func cell(row []any, i int) any {
+	if i < 0 || i >= len(row) {
+		return nil
+	}
+	return row[i]
+}
+
+func cellString(row []any, i int) string {
+	switch v := cell(row, i).(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	}
+	return ""
+}
+
+func cellStringPtr(row []any, i int) *string {
+	if cell(row, i) == nil {
+		return nil
+	}
+	s := cellString(row, i)
 	return &s
+}
+
+func cellInt(row []any, i int) int64 {
+	switch v := cell(row, i).(type) {
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	}
+	return 0
+}
+
+func cellBytes(row []any, i int) []byte {
+	switch v := cell(row, i).(type) {
+	case []byte:
+		return v
+	case string:
+		return []byte(v)
+	}
+	return nil
 }
 
 func boolInt(b bool) int {

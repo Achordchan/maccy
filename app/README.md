@@ -29,13 +29,21 @@ cd app && go test ./...
 - 时间格式只在字符串层面比对，没有用 .NET 的解析器验证。
 - `Normalize` 里 Windows 路径的行为（盘符、大小写）只在 macOS 上测过。
 
-## 待决定：SQLite 的实现方式
+## SQLite：已换成 MyGo 的 plugins/sqlite
 
-目前用纯 Go 的 `modernc.org/sqlite`。实测一个只含快照读写的程序，去符号后就有 **约 7MB**（windows/amd64 7.0MB，darwin/arm64 6.9MB，linux/amd64 7.1MB）。加上阶段 1 测得的 MyGo 界面约 9.6MB，整个程序会比现在 12MB 的 zip 还大，和“更轻便”的目标冲突。
+`internal/snapshot` 现在用 `github.com/egoist/mygo/plugins/sqlite`（SQLite 3.53.4，Zig 编译的动态库，通过 purego 加载，无 cgo）。数据库访问集中在 `writeDB`、`itemStatements` 和 `Read` 里的几个读取函数。全部测试不改动通过；测试里另外用 modernc 打开快照，作为独立的 SQLite 实现互相校验（只在测试里，不进程序）。
 
-可选做法：
-- 用 MyGo 自带的 `plugins/sqlite`：它把预编译的 SQLite 动态库作为资源文件随应用分发，不进二进制；需要确认库文件大小和 Windows 上的加载方式。
-- 只在“云同步”时才需要 SQLite；把它放到独立的可选组件里，不登录同步的用户不装。
-- 自己写一个只读写这五张表的最小 SQLite 文件读写器：工作量大，不建议。
+| 项目 | 结果 |
+|---|---|
+| 库文件大小 | darwin-arm64 1.48MB，darwin-amd64 1.38MB，linux-amd64 1.40MB，windows-amd64 1.40MB，windows-arm64 1.27MB |
+| 对二进制的影响 | 纯 Go 的 modernc 约增加 5MB（只含快照读写的程序 7.0MB，纯标准库对照 1.8MB）；插件方式下库不进二进制，只多一个 1.3–1.5MB 的文件，代码部分很小。整个应用里 MyGo 本身已经在，所以净节省约 2MB 左右（估算，未用完整应用实测） |
+| 加载方式 | macOS / Linux：`dlopen`（Linux 加 `RTLD_DEEPBIND`，避免和 WebKit 的系统 SQLite 冲突）；Windows：`syscall.LoadLibrary` + `GetProcAddress`，调用走 `purego.SyscallN` |
+| 库的位置 | 依次找：环境变量 `MYGO_SQLITE_LIBRARY`、应用资源目录、可执行文件所在目录；都没有且未打包时，下载到用户缓存目录并校验 SHA-256；已打包的应用缺库会直接报错，不下载 |
+| 支持的平台 | darwin/linux/windows 的 amd64 和 arm64。**不支持 32 位**：现在 C# 版的 `win-x86` 用户升级不了，需要确认是否还有这类用户 |
+| 性能 | 5000 条文本：导出 42ms（840KB），读取 18ms |
 
-`internal/snapshot` 里数据库访问集中在 `writeDB`、`Read`、`readItems/readImage/readFiles`，换驱动只动这几处。
+要注意的限制：
+- **打包要带上库**：Windows 是 `mygo-sqlite3.dll`，macOS 是 `libmygo-sqlite3.dylib`。`mygo build` 会自动放进应用；我们自己的发布流程（升级 zip 的文件清单、Inno 安装包）要把它列进去，并且 `maccy-package.json` 里要有它的 sha256。
+- **首次运行测试需要联网**，下载库到 `~/Library/Caches/mygo/natives/`；CI 里可以预置或设置 `MYGO_SQLITE_LIBRARY`。
+- 插件每次只执行一条语句，所以建表脚本在代码里按分号拆开，PRAGMA 单独执行；插件拒绝事务控制语句，批量写入用它的 `Transaction`（`BEGIN IMMEDIATE`）。
+- 插件依赖整个 `mygo` 包（取资源目录），所以数据层的单元测试也会链接 MyGo 核心；这对最终应用没有额外代价。
