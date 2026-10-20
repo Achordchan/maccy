@@ -387,10 +387,16 @@ func TestDuplicateIDsAreSkippedAndPositionsStayContiguous(t *testing.T) {
 }
 
 func TestIndexPrefix(t *testing.T) {
-	for name, want := range map[string]int{"0000_a.txt": 0, "0012_x": 12, "a.txt": -1, "00_a.txt": -1, "0001a.txt": -1, "abcd_x": -1} {
-		if got := indexPrefix(name); got != want {
+	for name, want := range map[string]int{
+		"0000_a.txt": 0, "0012_x": 12, "10000_big.txt": 10000,
+		"a.txt": -1, "00_a.txt": -1, "0001a.txt": -1, "abcd_x": -1,
+	} {
+		if got, _ := indexPrefix(name); got != want {
 			t.Errorf("%q: %d want %d", name, got, want)
 		}
+	}
+	if _, cut := indexPrefix("10000_big.txt"); "10000_big.txt"[cut:] != "big.txt" {
+		t.Errorf("cut %d", cut)
 	}
 }
 

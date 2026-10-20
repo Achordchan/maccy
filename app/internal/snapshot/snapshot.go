@@ -356,11 +356,11 @@ func cachedFiles(dir string) []cachedFile {
 			continue
 		}
 		name := e.Name()
-		idx := indexPrefix(name)
+		idx, cut := indexPrefix(name)
 		if idx < 0 {
 			continue
 		}
-		short := name[5:]
+		short := name[cut:]
 		if strings.TrimSpace(short) == "" {
 			short = name
 		}
@@ -369,21 +369,24 @@ func cachedFiles(dir string) []cachedFile {
 	return out
 }
 
-// indexPrefix returns N of a name that starts with "NNNN_", or -1.
-func indexPrefix(name string) int {
-	if len(name) < 5 || name[4] != '_' {
-		return -1
+// indexPrefix returns N of a name that starts with digits and "_", and where
+// the name starts. Indices above 9999 are written with more digits by
+// fmt.Sprintf("%04d", n), so the prefix is not limited to four.
+func indexPrefix(name string) (int, int) {
+	i := strings.IndexByte(name, '_')
+	if i < 4 {
+		return -1, 0
 	}
-	for _, c := range name[:4] {
+	for _, c := range name[:i] {
 		if c < '0' || c > '9' {
-			return -1
+			return -1, 0
 		}
 	}
-	n, err := strconv.Atoi(name[:4])
+	n, err := strconv.Atoi(name[:i])
 	if err != nil {
-		return -1
+		return -1, 0
 	}
-	return n
+	return n, i + 1
 }
 
 // ReadResult is what a snapshot holds, with its images and files written
@@ -728,7 +731,8 @@ type payloadJournalEntry struct {
 }
 
 type payloadJournal struct {
-	Entries []payloadJournalEntry `json:"entries"`
+	Entries   []payloadJournalEntry `json:"entries"`
+	Committed bool                  `json:"committed,omitempty"`
 }
 
 // payloadEntryCommitted says the saved history refers to the payloads the
@@ -774,11 +778,11 @@ func payloadJournalPath(l paths.Layout) string {
 	return filepath.Join(l.Root, "sync", "payload-journal.json")
 }
 
-func writePayloadJournal(path string, entries []payloadJournalEntry) error {
+func writePayloadJournal(path string, entries []payloadJournalEntry, committed bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	b, err := json.Marshal(payloadJournal{Entries: entries})
+	b, err := json.Marshal(payloadJournal{Entries: entries, Committed: committed})
 	if err != nil {
 		return err
 	}
@@ -808,7 +812,7 @@ func RecoverPayloads(l paths.Layout, items []model.Item) {
 		if e.Target == "" || e.Backup == "" {
 			continue
 		}
-		if payloadEntryCommitted(items, e) {
+		if j.Committed || payloadEntryCommitted(items, e) {
 			_ = os.RemoveAll(e.Backup)
 			continue
 		}
@@ -832,6 +836,16 @@ func (a *AppliedPayloads) Commit() {
 		_ = os.RemoveAll(p)
 	}
 	a.undo, a.stale, a.entries = nil, nil, nil
+}
+
+// MarkCommitted records that the history referring to the moved payloads was
+// saved: a crash before the backups are deleted is then recovered as a
+// committed replacement.
+func (a *AppliedPayloads) MarkCommitted() {
+	if a.journal == "" || len(a.entries) == 0 {
+		return
+	}
+	_ = writePayloadJournal(a.journal, a.entries, true)
 }
 
 // Rollback undoes the moves: the folders that were replaced are put back.
@@ -934,7 +948,7 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 			}
 		}
 		applied.entries = append(applied.entries, payloadJournalEntry{Target: m.dest, Backup: backup, Files: files})
-		if err := writePayloadJournal(applied.journal, applied.entries); err != nil {
+		if err := writePayloadJournal(applied.journal, applied.entries, false); err != nil {
 			rollback()
 			return nil, nil, err
 		}

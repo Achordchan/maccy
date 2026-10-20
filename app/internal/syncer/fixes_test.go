@@ -2032,3 +2032,72 @@ func TestDownloadMergeCountsAcrossIDsByHash(t *testing.T) {
 		t.Errorf("merged %+v: the local count was lost", out)
 	}
 }
+
+// A hash group reached through a local item must stay aliased to the id
+// group, so a later item with the same hash joins it too.
+func TestMergeItemsKeepsHashAliases(t *testing.T) {
+	const (
+		a = "0f8fad5b-d9cb-469f-a165-70867728950e"
+		b = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	)
+	hash := "H"
+	remote := []model.Item{{
+		ID: a, Kind: model.KindText, Text: model.Ptr("a"), CopyCount: 1,
+		CapturedAt: model.Time{Time: time.Now().Add(-3 * time.Second)},
+	}}
+	local := []model.Item{
+		{ID: a, Kind: model.KindText, Text: model.Ptr("a"), CopyCount: 1, ContentHash: &hash, CapturedAt: model.Time{Time: time.Now()}},
+		{ID: b, Kind: model.KindText, Text: model.Ptr("b"), CopyCount: 1, ContentHash: &hash, CapturedAt: model.Time{Time: time.Now().Add(-time.Second)}},
+	}
+	out := MergeItems(remote, local)
+	if len(out) != 1 {
+		t.Fatalf("merged %d items: the hash alias was lost", len(out))
+	}
+}
+
+// Folding two remote groups must not let the folded remote note win over a
+// local note.
+func TestMergeItemsKeepsNoteProvenance(t *testing.T) {
+	const (
+		a = "0f8fad5b-d9cb-469f-a165-70867728950e"
+		b = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	)
+	hash := "H"
+	remote := []model.Item{
+		{ID: a, Kind: model.KindText, Text: model.Ptr("a"), CopyCount: 1, Note: model.Ptr("remote a"), CapturedAt: model.Time{Time: time.Now().Add(-3 * time.Second)}},
+		{ID: b, Kind: model.KindText, Text: model.Ptr("b"), CopyCount: 1, Note: model.Ptr("remote b"), ContentHash: &hash, CapturedAt: model.Time{Time: time.Now().Add(-2 * time.Second)}},
+	}
+	local := []model.Item{{
+		ID: a, Kind: model.KindText, Text: model.Ptr("a"), CopyCount: 1, Note: model.Ptr("local a"),
+		ContentHash: &hash, CapturedAt: model.Time{Time: time.Now()},
+	}}
+	out := MergeItems(remote, local)
+	if len(out) != 1 {
+		t.Fatalf("merged %+v", out)
+	}
+	if got := model.Str(out[0].Note); got != "local a" {
+		t.Errorf("note %q: a remote note overwrote the local one", got)
+	}
+}
+
+// A deletion made while the flush was failing is not undone by the rollback.
+func TestRollbackKeepsAConcurrentDeletion(t *testing.T) {
+	const id = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	local := textItemAt(id, "local")
+	remote := textItemAt(id, "remote")
+	h := &unitHistory{items: []model.Item{local}}
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{remote}))
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	syn.cfg.Flush = func(context.Context) error {
+		h.items = nil // the user deleted the item
+		return errors.New("disk full")
+	}
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+		t.Fatal("the failed flush stopped nothing")
+	}
+	if len(h.items) != 0 {
+		t.Errorf("the deleted item was resurrected: %+v", h.items)
+	}
+}

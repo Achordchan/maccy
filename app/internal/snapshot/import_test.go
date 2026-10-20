@@ -308,7 +308,7 @@ func TestRecoverPayloadsRollsBackAnUncommittedReplacement(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(backup, "0000_old.txt"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{{Target: target, Backup: backup}}); err != nil {
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{{Target: target, Backup: backup}}, false); err != nil {
 		t.Fatal(err)
 	}
 	// The history still names a file that only the backup has.
@@ -427,7 +427,7 @@ func TestRecoverPayloadsKeepsACommittedReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := payloadJournalEntry{Target: target, Backup: backup, Files: map[string]string{"0000_new.txt": sum}}
-	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{entry}); err != nil {
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{entry}, false); err != nil {
 		t.Fatal(err)
 	}
 	RecoverPayloads(l, items)
@@ -516,7 +516,7 @@ func TestRecoverPayloadsRequiresTheInstalledFiles(t *testing.T) {
 		Target: target, Backup: backup,
 		Files: map[string]string{"0000_new.txt": strings.Repeat("a", 64)},
 	}
-	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{entry}); err != nil {
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{entry}, false); err != nil {
 		t.Fatal(err)
 	}
 	RecoverPayloads(l, items)
@@ -524,4 +524,40 @@ func TestRecoverPayloadsRequiresTheInstalledFiles(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(target, "0000_old.txt")); err != nil || string(b) != "old" {
 		t.Errorf("the backup was not restored: %q %v", b, err)
 	}
+}
+
+// A committed journal keeps the installed replacement even if the old history
+// is what is on disk (the crash was after MarkCommitted).
+func TestRecoverPayloadsHonorsTheCommitMarker(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	idn := strings.ReplaceAll(id, "-", "")
+	l := paths.Layout{Root: t.TempDir()}
+	staged := filepath.Join(l.Root, ".import-test", "files", idn)
+	if err := os.MkdirAll(staged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stagedFile := filepath.Join(staged, "0000_same.txt")
+	if err := os.WriteFile(stagedFile, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(l.Files(), idn)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "0000_same.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items := []model.Item{{ID: id, Kind: model.KindFileList, FilePaths: []string{stagedFile}, CopyCount: 1}}
+	out, moves, err := ApplyPayloads(l, filepath.Join(l.Root, ".import-test"), items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moves.MarkCommitted()
+	// Crash after the marker: the old history is still the one read back.
+	oldItems := []model.Item{{ID: id, Kind: model.KindFileList, FilePaths: []string{filepath.Join(dir, "0000_same.txt")}, CopyCount: 1}}
+	RecoverPayloads(l, oldItems)
+	if b, err := os.ReadFile(filepath.Join(dir, "0000_same.txt")); err != nil || string(b) != "new" {
+		t.Errorf("the committed replacement was rolled back: %q %v", b, err)
+	}
+	_ = out
 }

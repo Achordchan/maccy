@@ -22,9 +22,22 @@ func MergeItems(remote, local []model.Item) []model.Item {
 	// it). The snapshot export keeps one row per id, so the merged history
 	// must too.
 	byID := map[string]string{}
-	// fold joins another group into into: the two are the same item (an id
-	// group and a hash group can meet through an item that has both).
-	fold := func(into, other string, isLocal bool) {
+	aliases := map[string]string{}
+	localGroup := map[string]bool{}
+	resolve := func(key string) string {
+		for i := 0; i < 8; i++ {
+			next, ok := aliases[key]
+			if !ok || next == key {
+				break
+			}
+			key = next
+		}
+		return key
+	}
+	// fold joins the group other into into: they are the same item. The
+	// folded group keeps its own note provenance.
+	fold := func(into, other string) {
+		into, other = resolve(into), resolve(other)
 		if other == "" || other == into {
 			return
 		}
@@ -32,8 +45,10 @@ func MergeItems(remote, local []model.Item) []model.Item {
 		if !ok {
 			return
 		}
-		merged[into] = mergeDuplicate(merged[into], value, isLocal)
+		merged[into] = mergeDuplicate(merged[into], value, localGroup[other])
+		localGroup[into] = localGroup[into] || localGroup[other]
 		delete(merged, other)
+		delete(localGroup, other)
 		for i, k := range order {
 			if k == other {
 				order = append(order[:i], order[i+1:]...)
@@ -45,6 +60,12 @@ func MergeItems(remote, local []model.Item) []model.Item {
 				byID[alias] = into
 			}
 		}
+		for alias, k := range aliases {
+			if k == other {
+				aliases[alias] = into
+			}
+		}
+		aliases[other] = into
 	}
 	add := func(it model.Item, isLocal bool) {
 		key := mergeKey(it)
@@ -52,33 +73,42 @@ func MergeItems(remote, local []model.Item) []model.Item {
 			passthrough = append(passthrough, it)
 			return
 		}
-		key = strings.ToLower(key) // the C# dictionary ignores case
+		key = resolve(strings.ToLower(key)) // the C# dictionary ignores case
 		id := strings.ToLower(strings.TrimSpace(it.ID))
 		if id != "" && id != emptyGUID {
-			if existingKey, ok := byID[id]; ok && existingKey != key && merged[existingKey].Kind == it.Kind {
-				merged[existingKey] = mergeDuplicate(merged[existingKey], it, isLocal)
-				fold(existingKey, key, isLocal)
-				byID[id] = existingKey
-				return
+			if existingKey, ok := byID[id]; ok {
+				existingKey = resolve(existingKey)
+				if existingKey != key && merged[existingKey].Kind == it.Kind {
+					merged[existingKey] = mergeDuplicate(merged[existingKey], it, isLocal)
+					localGroup[existingKey] = localGroup[existingKey] || isLocal
+					fold(existingKey, key)
+					if key != existingKey {
+						aliases[key] = existingKey
+					}
+					byID[id] = existingKey
+					return
+				}
 			}
 		}
 		if existing, ok := merged[key]; ok {
 			merged[key] = mergeDuplicate(existing, it, isLocal)
+			localGroup[key] = localGroup[key] || isLocal
 			if mergedID := strings.ToLower(strings.TrimSpace(merged[key].ID)); mergedID != "" && mergedID != emptyGUID {
-				if other, ok := byID[mergedID]; ok && other != key {
-					fold(key, other, isLocal)
+				if other, ok := byID[mergedID]; ok {
+					fold(key, other)
 				}
 				byID[mergedID] = key
 			}
 			if id != "" && id != emptyGUID {
-				if other, ok := byID[id]; ok && other != key {
-					fold(key, other, isLocal)
+				if other, ok := byID[id]; ok {
+					fold(key, other)
 				}
 				byID[id] = key
 			}
 			return
 		}
 		merged[key] = it
+		localGroup[key] = isLocal
 		order = append(order, key)
 		if id != "" && id != emptyGUID {
 			byID[id] = key

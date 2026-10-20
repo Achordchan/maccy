@@ -711,6 +711,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		}
 		return DownloadResult{}, err
 	}
+	if moves != nil {
+		moves.MarkCommitted()
+	}
 	if s.accountChanged(account) {
 		// The session changed while the new history was being saved: take
 		// this account's items out again and save that, so the new session
@@ -950,6 +953,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			return fmt.Errorf("%w (history rollback failed: %v)", err, rerr)
 		}
 		return err
+	}
+	if moves != nil {
+		moves.MarkCommitted()
 	}
 	if s.accountChanged(account) {
 		// The session changed while the merged history was being saved: take
@@ -1249,7 +1255,14 @@ func rollbackItems(before, applied, current []model.Item) []model.Item {
 	for _, it := range before {
 		id := strings.ToLower(it.ID)
 		beforeIDs[id] = true
-		if cur, ok := currentByID[id]; ok {
+		_, inApplied := appliedByID[id]
+		cur, inCurrent := currentByID[id]
+		if inApplied && !inCurrent {
+			// The user deleted this item while the failed operation was
+			// being flushed: keep the deletion.
+			continue
+		}
+		if inCurrent {
 			// Only a field changed after the mutation was applied is the
 			// user's edit; the rest goes back to what it was before.
 			if ap, applied := appliedByID[id]; applied {
