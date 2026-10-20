@@ -182,12 +182,12 @@ func TestOwnWritesAreNotCaptured(t *testing.T) {
 	r.s.MarkWriteByUs()
 	r.now = r.now.Add(100 * time.Millisecond)
 	if err := r.s.Capture(context.Background()); err != nil || r.h.Len() != 0 {
-		t.Errorf("within 250 ms: %d items", r.h.Len())
+		t.Errorf("within the window: %d items", r.h.Len())
 	}
-	r.now = r.now.Add(300 * time.Millisecond)
+	r.now = r.now.Add(700 * time.Millisecond)
 	r.s.Capture(context.Background())
 	if r.h.Len() != 1 {
-		t.Error("after 250 ms the change counts")
+		t.Error("after the window the change counts")
 	}
 }
 
@@ -434,6 +434,7 @@ func TestApply(t *testing.T) {
 	cached := write(t, filepath.Join(r.l.Files(), strings.ReplaceAll(id, "-", ""), "0000_a.txt"), []byte("cached-a"))
 
 	text := "hello"
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "hello" // what the clipboard reads back
 	if err := r.s.Apply(model.Item{Kind: model.KindText, Text: &text}); err != nil || r.clip.wroteText == nil || *r.clip.wroteText != "hello" {
 		t.Errorf("text: %v", err)
 	}
@@ -546,5 +547,19 @@ func TestApplyDuringCaptureIsNotCaptured(t *testing.T) {
 	r.s.Capture(context.Background())
 	if r.h.Len() != 0 {
 		t.Fatal("what Apply wrote during the read must not become an item")
+	}
+}
+
+func TestApplyThatLostTheClipboardIsNotOurs(t *testing.T) {
+	r := newRig(t)
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "somebody else"
+	text := "ours"
+	if err := r.s.Apply(model.Item{Kind: model.KindText, Text: &text}); err != nil {
+		t.Fatal(err)
+	}
+	r.now = r.now.Add(10 * time.Millisecond)
+	r.s.Capture(context.Background())
+	if r.h.Len() != 1 {
+		t.Fatal("a copy that replaced our write must be captured, window or not")
 	}
 }

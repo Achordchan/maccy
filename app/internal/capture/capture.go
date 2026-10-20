@@ -93,6 +93,9 @@ func New(layout paths.Layout, h *history.Service, c Clipboard) *Service {
 		Layout: layout, History: h, Clipboard: c,
 		CaptureText: true, CaptureImages: true, CaptureFiles: true, CaptureFileMaxBytes: 20 << 20,
 		Now: time.Now, NewID: newGUID,
+		// 250 ms of C# plus one poll of the platform watcher (400 ms): a write
+		// just after a poll is seen one interval later.
+		OwnWindow: 650 * time.Millisecond,
 	}
 }
 
@@ -119,11 +122,22 @@ func (s *Service) MarkWriteByUs() {
 // our own change left it.
 func (s *Service) markWritten(verify func() bool) {
 	s.lastOwnWrit.Store(s.Now().UnixNano())
+	notOurs := func() { s.lastOwnWrit.Store(0) } // somebody copied in between: capture it
+	var before int64 = -1
+	if s.Seq != nil {
+		before = s.Seq()
+	}
 	if verify != nil && !verify() {
-		return // somebody copied in between: what is there is not ours
+		notOurs()
+		return
 	}
 	if s.Seq != nil {
-		if n := s.Seq(); n >= 0 {
+		n := s.Seq()
+		if n != before {
+			notOurs() // the counter moved while we checked: not only our write
+			return
+		}
+		if n >= 0 {
 			s.ownSeq.Store(n + 2)
 		}
 	}
@@ -218,7 +232,15 @@ func (s *Service) Capture(ctx context.Context) error {
 	}
 	add := func(it model.Item) {
 		if s.interfered(gen) {
-			return // an Apply wrote while we read: this is our own content
+			// An Apply wrote while we read: this is our own content. The files
+			// made for it belong to no item, so they go too.
+			if p := model.Str(it.ImageFilePath); p != "" {
+				_ = os.Remove(p)
+			}
+			if it.Kind == model.KindFileList {
+				_ = os.RemoveAll(filepath.Join(s.Layout.Files(), strings.ReplaceAll(strings.ToLower(it.ID), "-", "")))
+			}
+			return
 		}
 		now := model.Time{Time: s.Now()}
 		it.CapturedAt, it.FirstCapturedAt = now, &now
@@ -497,14 +519,52 @@ func (s *Service) Apply(it model.Item) error {
 	s.MarkWriteByUs()
 	wrote, err := s.write(it)
 	if wrote && err == nil {
-		var verify func() bool
-		if it.Kind == model.KindText {
-			want := model.Str(it.Text)
-			verify = func() bool { return s.Clipboard.ReadText() == want }
-		}
-		s.markWritten(verify) // only a write that happened can be recognised as ours
+		s.markWritten(s.verifier(it)) // only a write that happened can be recognised as ours
 	}
 	return err
+}
+
+// verifier reads the clipboard back to see that it still holds what Apply
+// wrote: the text itself, the same number of files with the same names, or a
+// picture of the same size.
+func (s *Service) verifier(it model.Item) func() bool {
+	switch it.Kind {
+	case model.KindText:
+		want := model.Str(it.Text)
+		return func() bool { return s.Clipboard.ReadText() == want }
+	case model.KindFileList:
+		return func() bool {
+			got, _ := s.Clipboard.ReadFiles()
+			got = nonBlank(got)
+			var want []string
+			for _, p := range it.FilePaths {
+				if strings.TrimSpace(p) != "" && strings.TrimSpace(baseName(p)) != "" {
+					want = append(want, baseName(p))
+				}
+			}
+			if len(got) == 0 || len(got) > len(want) {
+				return false
+			}
+			for i, g := range got {
+				if !strings.HasSuffix(baseName(g), baseName(it.FilePaths[i])) { // cached copies are NNNN_name
+					return false
+				}
+			}
+			return true
+		}
+	case model.KindImage:
+		return func() bool {
+			want, err := os.ReadFile(model.Str(it.ImageFilePath))
+			if err != nil {
+				return true
+			}
+			a, errA := png.DecodeConfig(bytes.NewReader(want))
+			got := s.Clipboard.ReadImage()
+			b, _, errB := image.DecodeConfig(bytes.NewReader(got))
+			return errA == nil && errB == nil && a.Width == b.Width && a.Height == b.Height
+		}
+	}
+	return nil
 }
 
 // interfered says whether an Apply ran, or is running, since gen was read.
