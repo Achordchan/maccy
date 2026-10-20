@@ -1881,3 +1881,26 @@ func TestRecoverPayloadDirsAfterAnInterruptedReplacement(t *testing.T) {
 		t.Error("the backup folder was left behind")
 	}
 }
+
+// A download that merges a concurrent capture has a synchronized baseline:
+// the copy count of an item both sides have is not added up again.
+func TestDownloadMergeKeepsSharedCopyCounts(t *testing.T) {
+	const id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+	remote := textItemAt(id, "shared")
+	local := textItemAt(id, "shared")
+	local.CopyCount = 1
+	captured := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "captured")
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{remote}))
+	defer srv.Close()
+	h := &downloadArrivalHistory{initial: []model.Item{local}, current: []model.Item{captured, local}}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local})); err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range h.items {
+		if it.ID == id && it.CopyCount != 1 {
+			t.Errorf("copy count %d: the shared count was added up", it.CopyCount)
+		}
+	}
+}

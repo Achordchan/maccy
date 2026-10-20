@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"klip/internal/model"
 	"klip/internal/paths"
@@ -286,5 +287,74 @@ func TestReadRepairsACorruptCachedBlob(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(local); !bytes.Equal(b, data) {
 		t.Errorf("the cache was not repaired: %q", b)
+	}
+}
+
+// A replacement that was not committed by saving the history is rolled back
+// from its journal, before normalization can drop the item.
+func TestRecoverPayloadsRollsBackAnUncommittedReplacement(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	target := filepath.Join(l.Files(), "16fd27068baf433b82eb8c7fada847da")
+	backup := target + ".old-deadbeef"
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "0000_new.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "0000_old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{{Target: target, Backup: backup}}); err != nil {
+		t.Fatal(err)
+	}
+
+	RecoverPayloads(l)
+
+	if b, err := os.ReadFile(filepath.Join(target, "0000_old.txt")); err != nil || string(b) != "old" {
+		t.Errorf("the old payload was not restored: %q %v", b, err)
+	}
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Error("the backup was left behind")
+	}
+	if _, err := os.Stat(payloadJournalPath(l)); !os.IsNotExist(err) {
+		t.Error("the journal was left behind")
+	}
+}
+
+// An empty file is content: it has a SHA-256 and must export and import.
+func TestEmptyFileRoundTrip(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	src := paths.Layout{Root: t.TempDir()}
+	dir := filepath.Join(src.Files(), strings.ReplaceAll(id, "-", ""))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(dir, "0000_empty.txt")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := model.Item{
+		ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()},
+		FilePaths: []string{empty}, CopyCount: 1,
+	}
+	snap := filepath.Join(t.TempDir(), "snapshot.sqlite")
+	if _, err := Export(ctx, src, snap, []model.Item{item}, model.DefaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	dst := paths.Layout{Root: t.TempDir()}
+	res, err := Read(ctx, dst, snap, func(string) (string, error) { return empty, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 1 || len(res.Items[0].FilePaths) != 1 {
+		t.Fatalf("%+v", res.Items)
+	}
+	st, err := os.Stat(res.Items[0].FilePaths[0])
+	if err != nil || st.Size() != 0 {
+		t.Errorf("empty file: %v %v", st, err)
 	}
 }

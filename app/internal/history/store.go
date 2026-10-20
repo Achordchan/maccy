@@ -13,6 +13,7 @@ import (
 
 	"klip/internal/model"
 	"klip/internal/paths"
+	"klip/internal/snapshot"
 )
 
 // Load reads the file and drops what no longer has its content, as
@@ -34,6 +35,9 @@ func Load(l paths.Layout) ([]model.Item, error) {
 	if err := json.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &items); err != nil {
 		return nil, err
 	}
+	// An interrupted cache replacement is undone before Normalize decides
+	// that an item has no content.
+	snapshot.RecoverPayloads(l)
 	out := make([]model.Item, 0, len(items))
 	for _, it := range items {
 		if n, ok := Normalize(l, it); ok {

@@ -680,19 +680,32 @@ func (s *importStaging) commit() error {
 // moveDir moves staged to target, keeping a target that was there as
 // target.old-<guid>; the caller deletes it when the import is complete.
 func moveDir(staged, target string) (backup string, err error) {
-	if _, statErr := os.Stat(target); statErr == nil {
-		backup = target + ".old-" + newGUIDN()
-		if err := os.Rename(target, backup); err != nil {
-			return "", err
-		}
-	}
-	if err := os.Rename(staged, target); err != nil {
-		if backup != "" {
-			_ = os.Rename(backup, target)
-		}
+	backup = target + ".old-" + newGUIDN()
+	if err := moveDirTo(staged, target, backup); err != nil {
 		return "", err
 	}
+	if _, err := os.Stat(backup); err != nil {
+		return "", nil
+	}
 	return backup, nil
+}
+
+// moveDirTo is moveDir with the backup name the journal already records.
+func moveDirTo(staged, target, backup string) error {
+	had := false
+	if _, err := os.Stat(target); err == nil {
+		if err := os.Rename(target, backup); err != nil {
+			return err
+		}
+		had = true
+	}
+	if err := os.Rename(staged, target); err != nil {
+		if had {
+			_ = os.Rename(backup, target)
+		}
+		return err
+	}
+	return nil
 }
 
 // AppliedPayloads is a set of payload moves of ApplyPayloads. The caller
@@ -700,16 +713,81 @@ func moveDir(staged, target string) (backup string, err error) {
 // succeeded, or rolls it back when that fails: the files of the old history
 // stay until both are in place.
 type AppliedPayloads struct {
-	undo  []func()
-	stale []string
+	undo    []func()
+	stale   []string
+	journal string
+	entries []payloadJournalEntry
 }
 
-// Commit deletes the folders that the moves replaced.
+// payloadJournalEntry is one cache-folder replacement that has not been
+// committed by saving the history yet.
+type payloadJournalEntry struct {
+	Target string `json:"target"`
+	Backup string `json:"backup"`
+}
+
+type payloadJournal struct {
+	Entries []payloadJournalEntry `json:"entries"`
+}
+
+func payloadJournalPath(l paths.Layout) string {
+	return filepath.Join(l.Root, "sync", "payload-journal.json")
+}
+
+func writePayloadJournal(path string, entries []payloadJournalEntry) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(payloadJournal{Entries: entries})
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	_ = os.Remove(tmp)
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// RecoverPayloads rolls back cache-folder replacements whose journal says
+// they were never committed. It runs before the history is normalized, so an
+// item whose files only exist under a .old-* backup is not dropped.
+func RecoverPayloads(l paths.Layout) {
+	path := payloadJournalPath(l)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var j payloadJournal
+	if json.Unmarshal(b, &j) != nil {
+		_ = os.Remove(path)
+		return
+	}
+	for _, e := range j.Entries {
+		if e.Target == "" || e.Backup == "" {
+			continue
+		}
+		if _, err := os.Stat(e.Backup); err != nil {
+			continue // the move never started, or was rolled back
+		}
+		_ = os.RemoveAll(e.Target)
+		_ = os.Rename(e.Backup, e.Target)
+	}
+	_ = os.Remove(path)
+}
+
+// Commit marks the replacements as saved and deletes the folders they
+// replaced. The journal goes first: a crash after it is gone keeps the new
+// files, and only leaves an orphan backup.
 func (a *AppliedPayloads) Commit() {
+	if a.journal != "" {
+		_ = os.Remove(a.journal)
+	}
 	for _, p := range a.stale {
 		_ = os.RemoveAll(p)
 	}
-	a.undo, a.stale = nil, nil
+	a.undo, a.stale, a.entries = nil, nil, nil
 }
 
 // Rollback undoes the moves: the folders that were replaced are put back.
@@ -717,7 +795,10 @@ func (a *AppliedPayloads) Rollback() {
 	for i := len(a.undo) - 1; i >= 0; i-- {
 		a.undo[i]()
 	}
-	a.undo, a.stale = nil, nil
+	if a.journal != "" {
+		_ = os.Remove(a.journal)
+	}
+	a.undo, a.stale, a.entries = nil, nil, nil
 }
 
 // ApplyPayloads moves the payloads that ReadDetached put under root into the
@@ -729,7 +810,7 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 	imagesDir := filepath.Join(root, "images")
 	filesDir := filepath.Join(root, "files")
 	out := append([]model.Item(nil), items...)
-	applied := &AppliedPayloads{}
+	applied := &AppliedPayloads{journal: payloadJournalPath(l)}
 
 	rollback := func() {
 		applied.Rollback()
@@ -779,12 +860,17 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 			rollback()
 			return nil, nil, err
 		}
-		backup, err := moveDir(staged, dest)
-		if err != nil {
+		backup := dest + ".old-" + newGUIDN()
+		applied.entries = append(applied.entries, payloadJournalEntry{Target: dest, Backup: backup})
+		if err := writePayloadJournal(applied.journal, applied.entries); err != nil {
 			rollback()
 			return nil, nil, err
 		}
-		if backup != "" {
+		if err := moveDirTo(staged, dest, backup); err != nil {
+			rollback()
+			return nil, nil, err
+		}
+		if _, err := os.Stat(backup); err == nil {
 			applied.stale = append(applied.stale, backup)
 		}
 		to, old := dest, backup
@@ -980,7 +1066,7 @@ func sanitizeFileName(name string) string {
 
 func hashFile(p string) (size int64, sum string, ok bool) {
 	st, err := os.Stat(p)
-	if err != nil || st.IsDir() || st.Size() <= 0 {
+	if err != nil || st.IsDir() {
 		return 0, "", false
 	}
 	sum, err = fileSHA256(p)

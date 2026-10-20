@@ -623,7 +623,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	var before, applied []model.Item
 	var moves *snapshot.AppliedPayloads
 	merged := false
-	preMerge := ""
+	preMerge, appliedFP := "", ""
 	err = s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
 		if s.accountChanged(account) {
 			return nil, ErrSessionChanged
@@ -634,7 +634,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			// A capture arrived while the snapshot was downloading: keep it
 			// and let the upload that follows publish both sides.
 			preMerge = Fingerprint(current)
-			next = MergeItems(data.Items, current)
+			next = MergeForDownload(data.Items, current)
 			merged = true
 		}
 		out, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, next)
@@ -648,6 +648,10 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			ap.Rollback()
 			return nil, ErrSessionChanged
 		}
+		// The fingerprint of what this mutation applied, taken while the
+		// history is locked: a later deletion is a local change, not part of
+		// the downloaded baseline.
+		appliedFP = Fingerprint(out)
 		moves, applied = ap, out
 		return out, nil
 	})
@@ -676,7 +680,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		s.cfg.History.ApplyLimits(s.settings())
 	}
 	res := DownloadResult{
-		Fingerprint:         Fingerprint(retainedItems(applied, s.cfg.History.Items())),
+		Fingerprint:         appliedFP,
 		SnapshotSHA256:      sum,
 		Merged:              merged,
 		Account:             account,
@@ -1058,6 +1062,7 @@ func (s *Syncer) mutateHistory(ctx context.Context, f func([]model.Item) ([]mode
 // files the history still names is current (its backup is deleted); a folder
 // whose history names files that are missing is restored from its backup.
 func (s *Syncer) recoverPayloadDirs() {
+	snapshot.RecoverPayloads(s.cfg.Layout)
 	dir := s.cfg.Layout.Files()
 	ents, err := os.ReadDir(dir)
 	if err != nil {
@@ -1178,6 +1183,43 @@ func (s *Syncer) ownPayload(p string) bool {
 		}
 	}
 	return false
+}
+
+// MergeForDownload merges a downloaded history with the local one when a
+// capture arrived during the download. Unlike a first merge, the two sides
+// share a synchronized baseline, so the copy count of an item both sides have
+// is the larger one, not the sum.
+func MergeForDownload(remote, local []model.Item) []model.Item {
+	merged := MergeItems(remote, local)
+	remoteCount := make(map[string]int32, len(remote))
+	localCount := make(map[string]int32, len(local))
+	for _, it := range remote {
+		if k := strings.ToLower(mergeKey(it)); k != "" {
+			remoteCount[k] = it.CopyCount
+		}
+	}
+	for _, it := range local {
+		if k := strings.ToLower(mergeKey(it)); k != "" {
+			localCount[k] = it.CopyCount
+		}
+	}
+	for i := range merged {
+		k := strings.ToLower(mergeKey(merged[i]))
+		if k == "" {
+			continue
+		}
+		r, rok := remoteCount[k]
+		l, lok := localCount[k]
+		switch {
+		case rok && lok:
+			merged[i].CopyCount = max(r, l)
+		case rok:
+			merged[i].CopyCount = r
+		case lok:
+			merged[i].CopyCount = l
+		}
+	}
+	return merged
 }
 
 // rollbackItems is the history after a failed mutation: the items before it,
