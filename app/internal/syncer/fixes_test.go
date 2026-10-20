@@ -1231,3 +1231,62 @@ func TestRemoveFilesOnlyGetsKlipPayloads(t *testing.T) {
 		}
 	}
 }
+
+// switchOnCommitHistory changes the signed-in account between f returning and
+// the new history being stored, the window a real sign-in can land in.
+type switchOnCommitHistory struct {
+	unitHistory
+	onCommit func()
+}
+
+func (h *switchOnCommitHistory) Mutate(ctx context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	next, err := f(append([]model.Item(nil), h.items...))
+	if err != nil {
+		return err
+	}
+	if h.onCommit != nil {
+		h.onCommit()
+		h.onCommit = nil
+	}
+	h.items = append([]model.Item(nil), next...)
+	return nil
+}
+
+// A sign-in that lands during the history commit must not leave the old
+// account's downloaded items in the new session.
+func TestDownloadDiscardsItemsWhenTheSessionChangesAtCommit(t *testing.T) {
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "account a data")}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	s.AuthRefreshToken = model.Ptr("ra")
+	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	local := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")
+	h := &switchOnCommitHistory{unitHistory: unitHistory{items: []model.Item{local}}}
+	h.onCommit = func() {
+		mu.Lock()
+		s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+		s.AuthRefreshToken = model.Ptr("rb")
+		mu.Unlock()
+	}
+	syn := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()},
+		Settings: syncclient.Settings{
+			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
+			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+		},
+		History: h,
+		Client:  syncclient.New(srv.URL),
+		BaseURL: srv.URL,
+		Now:     time.Now,
+	})
+
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("a sign-in during the commit: %v", err)
+	}
+	if len(h.items) != 0 {
+		t.Errorf("the old account's items stayed in the new session: %v", h.items)
+	}
+}

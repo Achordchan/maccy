@@ -569,6 +569,13 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		if err != nil {
 			return nil, err
 		}
+		if s.accountChanged(account) {
+			// The session changed while the payloads were moving: undo them
+			// before the history commit, so the new session cannot get this
+			// account's items.
+			ap.Rollback()
+			return nil, ErrSessionChanged
+		}
 		moves, applied = ap, out
 		return out, nil
 	})
@@ -577,6 +584,10 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			moves.Rollback()
 		}
 		return DownloadResult{}, err
+	}
+	if s.accountChanged(account) {
+		s.discardMutation(ctx, applied, moves, oldSettings)
+		return DownloadResult{}, ErrSessionChanged
 	}
 	// The settings change only after the history was replaced: a failure
 	// above leaves both as they were.
@@ -760,6 +771,12 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		if err != nil {
 			return nil, err
 		}
+		if s.accountChanged(account) {
+			// The session changed while the payloads were moving: undo them
+			// before the history commit.
+			ap.Rollback()
+			return nil, ErrSessionChanged
+		}
 		moves, merged = ap, applied
 		return merged, nil
 	})
@@ -768,6 +785,10 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			moves.Rollback()
 		}
 		return err
+	}
+	if s.accountChanged(account) {
+		s.discardMutation(ctx, merged, moves, localSettings)
+		return ErrSessionChanged
 	}
 	mergedSettings := localSettings.Portable()
 	if remote.Settings != nil {
@@ -978,6 +999,20 @@ func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.I
 	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(oldSettings.Portable()) })
 	s.cfg.History.ApplyLimits(s.settings())
 	return nil
+}
+
+// discardMutation removes the items an operation had applied when the
+// session changed during its commit: the new session must not inherit them.
+// Unlike rollbackMutation it does not restore before, so a history the new
+// session already replaced (or cleared) is left alone.
+func (s *Syncer) discardMutation(ctx context.Context, applied []model.Item, moves *snapshot.AppliedPayloads, oldSettings model.Settings) {
+	_ = s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
+		return itemsNotIn(applied, current), nil
+	})
+	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(oldSettings.Portable()) })
+	if moves != nil {
+		moves.Rollback()
+	}
 }
 
 // retainedItems is the applied items that the history still holds: the limits
