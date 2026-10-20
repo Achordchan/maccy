@@ -109,6 +109,21 @@ func (m *Model) Open() {
 	}
 }
 
+// followLogin brings the account page in line with the login as it is: the
+// tokens may have been taken away in the background (a refresh the server
+// refused), and the page would go on showing the account.
+func (m *Model) followLogin() {
+	if now := m.Account.SignedIn(); now != m.signedIn {
+		m.refreshAccount()
+		m.closeDialogs()
+		m.sub = account.None("未登录")
+		m.subGen++
+		if m.signedIn {
+			m.loadSubscription()
+		}
+	}
+}
+
 func (m *Model) refreshAccount() {
 	m.signedIn = m.Account.SignedIn()
 	m.statusText = m.Account.StatusText()

@@ -108,7 +108,10 @@ func (p *program) ready() {
 	}
 	p.layout = layout
 	applyTheme(p.app.Settings.Get().Theme)
-	p.app.Settings.OnChange(func(st model.Settings) { applyTheme(st.Theme) })
+	p.app.Settings.OnChange(func(st model.Settings) {
+		applyTheme(st.Theme)
+		p.redraw() // a window shows the settings (the login among them)
+	})
 	p.model = panel.New(p.app.History, host{p})
 	p.model.Status = p.app.SyncStatus
 	p.model.Redraw = p.redraw

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -370,5 +371,25 @@ func TestSignedInOnOpenLoadsPlan(t *testing.T) {
 	joined := strings.Join(r.tt.Texts(), "|")
 	if !strings.Contains(joined, "订阅至 20") || !r.has("已登录（paid@example.com）") {
 		t.Fatalf("plan not shown: %q", joined)
+	}
+}
+
+func TestAccountPageFollowsALoginTakenAwayInTheBackground(t *testing.T) {
+	r := newRig(t, "http://127.0.0.1:1")
+	_ = r.set.Update(func(s *model.Settings) {
+		s.AuthAccessToken, s.AuthRefreshToken = model.Ptr("a"), model.Ptr("r")
+		s.AuthUserEmail = model.Ptr("me@example.com")
+		s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	})
+	r.m.Open()
+	r.settle()
+	r.click("云同步")
+	if !r.has("退出登录") {
+		t.Fatalf("signed in: %q", r.tt.Texts())
+	}
+	_ = r.set.Update(func(s *model.Settings) { syncclient.ClearAuthSession(s, false) }) // a refresh the server refused
+	r.settle()
+	if r.has("退出登录") || !r.has("登录") {
+		t.Fatalf("the page still shows the account: %q", r.tt.Texts())
 	}
 }

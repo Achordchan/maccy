@@ -170,10 +170,16 @@ def legacy_files_from(source: str, new_paths: set[str]) -> list[str]:
         listed = json.loads(zf.read("maccy-package.json").decode("utf-8-sig"))
     out = []
     lowered = {p.lower() for p in new_paths}
-    for f in listed.get("files", []):
-        rel = str(f["path"]).replace("\\", "/")
-        if rel.lower() in lowered or is_protected(rel) or rel == "maccy-package.json":
+    # The files of that package, and the old files it was still carrying out of
+    # the releases before it: a fresh 1.0.10 installation going straight to a
+    # later release has both kinds to be rid of.
+    names = [str(f["path"]) for f in listed.get("files", [])] + [str(p) for p in listed.get("legacyFiles", [])]
+    seen = set()
+    for name in names:
+        rel = name.replace("\\", "/")
+        if rel.lower() in lowered or rel.lower() in seen or is_protected(rel) or rel == "maccy-package.json":
             continue
+        seen.add(rel.lower())
         out.append(rel)
     return sorted(out, key=str.lower)
 

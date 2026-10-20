@@ -15,6 +15,7 @@ const labelWidth = 130
 func (m *Model) View(c *ui.Context) {
 	t := c.Theme()
 	c.Root().Background(t.Background)
+	m.followLogin()
 	for _, msg := range m.takeToasts() {
 		c.Toast(msg)
 	}
