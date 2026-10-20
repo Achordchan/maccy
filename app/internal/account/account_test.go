@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -302,5 +303,23 @@ func TestServerTroubleKeepsTheLogin(t *testing.T) {
 			t.Errorf("%d: the login was erased by a server in trouble", status)
 		}
 		hs.Close()
+	}
+}
+
+func TestSignOutThatCannotBeSavedSaysSo(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := settings.Open(filepath.Join(dir, "settings.json"))
+	s := &Service{Client: syncclient.New("http://127.0.0.1:1"), Store: m}
+	_ = m.Update(func(st *model.Settings) { st.AuthRefreshToken = model.Ptr("r") })
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skip("cannot make the folder read-only")
+	}
+	defer os.Chmod(dir, 0o755)
+	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
+		f.Close()
+		t.Skip("the folder is writable anyway")
+	}
+	if r := s.SignOut(); r.OK {
+		t.Fatalf("a sign-out that was not saved reported success: %+v", r)
 	}
 }

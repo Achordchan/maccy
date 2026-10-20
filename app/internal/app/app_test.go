@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -355,4 +356,31 @@ func TestStartChecksForUpdatesAndCleansLegacyFiles(t *testing.T) {
 		t.Fatal("data removed")
 	}
 	waitFor(t, "helper dir cleaned", func() bool { _, err := os.Stat(filepath.Join(root, "updates", "helper")); return err != nil })
+}
+
+func TestFirstSyncIsTriedAgainUntilItGoesThrough(t *testing.T) {
+	a, err := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()}, Clipboard: &fakeClip{}, ChangeSeq: (&fakeClip{}).seq.Load,
+		Interval: 5 * time.Millisecond, BaseURL: "http://127.0.0.1:1", Logf: t.Logf,
+		StartupRetry: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runs atomic.Int32
+	a.Auto.CanSync = func() bool { return true }
+	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
+		if runs.Add(1) < 3 {
+			return errors.New("offline") // the first two tries find no network
+		}
+		return nil
+	}
+	a.Start()
+	defer a.Stop()
+	waitFor(t, "third try", func() bool { return runs.Load() >= 3 })
+	waitFor(t, "initial sync counted", func() bool { return a.initialOK.Load() })
+	time.Sleep(100 * time.Millisecond)
+	if n := runs.Load(); n != 3 {
+		t.Fatalf("%d syncs: once one has gone through, the retries stop", n)
+	}
 }

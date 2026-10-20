@@ -127,7 +127,11 @@ func (s *Service) enter(ctx context.Context, email, password, okMsg, failMsg, ca
 
 // SignOut forgets the tokens and the address.
 func (s *Service) SignOut() Result {
-	_ = s.Store.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, true) })
+	if err := s.Store.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, true) }); err != nil {
+		// The tokens are gone from memory but the file still has them: after
+		// a restart the user would be signed in again.
+		return fail("已退出，但无法保存设置，重启后可能仍是登录状态：" + err.Error())
+	}
 	return Result{OK: true, Message: "已退出登录"}
 }
 
@@ -323,6 +327,9 @@ func (s *Service) ChangePassword(ctx context.Context, typedEmail, code, pw, conf
 	if err != nil {
 		return s.failure(err, "修改密码失败", "修改密码已取消")
 	}
+	// EnsureAccessToken may have renewed the tokens: the session that changes
+	// the password is the one that holds them now.
+	startRefresh = strings.TrimSpace(model.Str(s.Store.Get().AuthRefreshToken))
 	if err := s.Client.ChangePassword(ctx, token, code, pw); err != nil {
 		return s.failure(err, "修改密码失败", "修改密码已取消")
 	}

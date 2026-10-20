@@ -39,6 +39,9 @@ type Config struct {
 	// ChangeSeq and Interval drive the clipboard watcher.
 	ChangeSeq func() int64
 	Interval  time.Duration
+	// StartupRetry is the first pause before the first sync is tried again
+	// (30 s unless a test sets it).
+	StartupRetry time.Duration
 	// BaseURL is the sync server: the official one unless a test sets it.
 	BaseURL string
 	// Autostart is the start at sign-in (autostart.Default when nil).
@@ -83,6 +86,7 @@ type App struct {
 	started   bool
 	ctx       context.Context    // lives as long as the program, once started
 	syncing   atomic.Int32       // syncs running, background or asked for
+	initialOK atomic.Bool        // a background sync has gone through
 	stopWatch context.CancelFunc // ends the event stream of the current account
 }
 
@@ -225,6 +229,7 @@ func (a *App) Start() {
 	go func() { defer a.done.Done(); w.Run(ctx) }()
 	a.watchRemote(ctx)
 	a.Auto.Startup(ctx)
+	a.retryStartup(ctx)
 
 	// What earlier updates left, and what the .NET program left; then the
 	// check for a new version, a little after the start and every 12 hours,
@@ -267,6 +272,33 @@ func (a *App) Start() {
 // running (it is a quit callback), so waiting for ever could be waiting for
 // ourselves.
 const stopWait = 3 * time.Second
+
+// retryStartup tries the first background sync again, 30 s, 1 min, 2 min ...
+// up to every 10 minutes, until one has gone through: history-triggered syncing
+// only starts after it, and a program started offline would otherwise wait for
+// another device to speak first.
+func (a *App) retryStartup(ctx context.Context) {
+	a.done.Add(1)
+	go func() {
+		defer a.done.Done()
+		wait := 30 * time.Second
+		if a.cfg.StartupRetry > 0 {
+			wait = a.cfg.StartupRetry
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			if a.initialOK.Load() {
+				return
+			}
+			a.Auto.Trigger(ctx, "startup", false)
+			wait = min(wait*2, 10*time.Minute)
+		}
+	}()
+}
 
 // watchRemote listens for uploads from other devices. The stream belongs to
 // the signed-in account, so it has a context of its own, ended and started
@@ -384,6 +416,9 @@ func (a *App) setStatus(s string) {
 }
 
 func (a *App) syncDone(reason string, manual bool, err error) {
+	if err == nil && !manual {
+		a.initialOK.Store(true)
+	}
 	switch {
 	case err == nil:
 		a.setStatus("已同步 " + time.Now().Format("15:04"))
