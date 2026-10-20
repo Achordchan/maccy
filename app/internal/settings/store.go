@@ -38,11 +38,20 @@ func Load(path string) (model.Settings, error) {
 // leave half a file.
 func Save(path string, s model.Settings) error {
 	s.MigrateLegacySyncBaseUrl()
+	// The order is taken before serialization: a slow older save must not
+	// enter the write path after a newer one and overwrite it.
+	key := path
+	if abs, err := filepath.Abs(path); err == nil {
+		key = abs
+	}
+	stateAny, _ := saveStates.LoadOrStore(key, &saveState{})
+	state := stateAny.(*saveState)
+	seq := saveSeq.Add(1)
 	data, err := s.Marshal()
 	if err != nil {
 		return err
 	}
-	return writeAtomic(path, data)
+	return writeAtomic(path, data, seq, state)
 }
 
 func ignoreMissing(err error) error {
@@ -62,18 +71,11 @@ var (
 	saveStates sync.Map // absolute path -> *saveState
 )
 
-func writeAtomic(path string, data []byte) error {
+func writeAtomic(path string, data []byte, seq uint64, state *saveState) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	key := path
-	if abs, err := filepath.Abs(path); err == nil {
-		key = abs
-	}
-	stateAny, _ := saveStates.LoadOrStore(key, &saveState{})
-	state := stateAny.(*saveState)
-	seq := saveSeq.Add(1)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if seq <= state.written {

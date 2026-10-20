@@ -788,8 +788,13 @@ func moveDirTo(staged, target, backup string) error {
 // commits it once the history replacement that selects these payloads has
 // succeeded, or rolls it back when that fails: the files of the old history
 // stay until both are in place.
+type payloadUndo struct {
+	target string
+	undo   func()
+}
+
 type AppliedPayloads struct {
-	undo    []func()
+	undo    []payloadUndo
 	stale   []string
 	journal string
 	entries []payloadJournalEntry
@@ -948,9 +953,17 @@ func (a *AppliedPayloads) MarkCommitted() {
 }
 
 // Rollback undoes the moves: the folders that were replaced are put back.
-func (a *AppliedPayloads) Rollback() {
+func (a *AppliedPayloads) Rollback() { a.RollbackKeeping(nil) }
+
+// RollbackKeeping undoes the moves except the payloads keep says are still
+// referenced by the restored history.
+func (a *AppliedPayloads) RollbackKeeping(keep func(string) bool) {
 	for i := len(a.undo) - 1; i >= 0; i-- {
-		a.undo[i]()
+		u := a.undo[i]
+		if keep != nil && keep(u.target) {
+			continue
+		}
+		u.undo()
 	}
 	if a.journal != "" {
 		_ = os.Remove(a.journal)
@@ -992,7 +1005,7 @@ func ApplyPayloads(l paths.Layout, root string, items, previous []model.Item) ([
 		}
 		out[i].ImageFilePath = &dest
 		d := dest
-		applied.undo = append(applied.undo, func() { _ = os.Remove(d) })
+		applied.undo = append(applied.undo, payloadUndo{target: d, undo: func() { _ = os.Remove(d) }})
 	}
 
 	type dirMove struct{ staged, dest string }
@@ -1037,7 +1050,7 @@ func ApplyPayloads(l paths.Layout, root string, items, previous []model.Item) ([
 			return nil, nil, err
 		}
 		to := m.dest
-		applied.undo = append(applied.undo, func() { _ = os.RemoveAll(to) })
+		applied.undo = append(applied.undo, payloadUndo{target: to, undo: func() { _ = os.RemoveAll(to) }})
 	}
 
 	return out, applied, nil

@@ -773,7 +773,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		// history is locked: a later deletion is a local change, not part of
 		// the downloaded baseline.
 		appliedFP = Fingerprint(out)
-		moves, applied = ap, out
+		moves, applied = ap, cloneItems(out)
 		return out, nil
 	})
 	if err != nil {
@@ -816,19 +816,24 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		Account:             account,
 		PreMergeFingerprint: preMerge,
 	}
+	// Write the pending state before the history is saved: a crash after the
+	// save but before Run records it must resume the upload (merged) or keep
+	// the downloaded baseline (ordinary download).
+	appliedFP = Fingerprint(withoutIDs(applied, limitPruned))
+	res.Fingerprint = appliedFP
+	after := appliedFP
+	fingerprint := appliedFP
 	if merged {
-		// Write the pending state before the history is saved: a crash after
-		// the save but before Run records it must resume the upload.
-		after := s.Fingerprint()
-		s.writePendingMerge(pendingMergeState{
-			Fingerprint: pendingFingerprint(preMerge, after),
-			Version:     sum,
-			SHA256:      sum,
-			Before:      Fingerprint(before),
-			After:       after,
-			Account:     account,
-		})
+		fingerprint = pendingFingerprint(preMerge, after)
 	}
+	s.writePendingMerge(pendingMergeState{
+		Fingerprint: fingerprint,
+		Version:     sum,
+		SHA256:      sum,
+		Before:      Fingerprint(before),
+		After:       after,
+		Account:     account,
+	})
 	// What the limits pruned is unreferenced too, including payloads this
 	// import just installed.
 	cleanup := append(append([]model.Item(nil), before...), applied...)
@@ -861,16 +866,14 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		}
 		rcancel()
 		if rerr == nil && moves != nil {
-			moves.Rollback()
+			moves.RollbackKeeping(s.payloadKeeper())
 		}
 		if rerr != nil {
 			return DownloadResult{}, fmt.Errorf("%w (history rollback failed: %v)", err, rerr)
 		}
 		return DownloadResult{}, err
 	}
-	if merged {
-		s.markPendingMergeCommitted()
-	}
+	s.markPendingMergeCommitted()
 	if moves != nil {
 		moves.MarkCommitted()
 	}
@@ -1070,7 +1073,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			ap.Rollback()
 			return nil, ErrSessionChanged
 		}
-		moves, merged = ap, applied
+		moves, merged = ap, cloneItems(applied)
 		return merged, nil
 	})
 	if err != nil {
@@ -1143,7 +1146,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		}
 		rcancel()
 		if rerr == nil && moves != nil {
-			moves.Rollback()
+			moves.RollbackKeeping(s.payloadKeeper())
 		}
 		if rerr != nil {
 			return fmt.Errorf("%w (history rollback failed: %v)", err, rerr)
@@ -1393,6 +1396,27 @@ func (s *Syncer) fileCacheFiles(it model.Item) []string {
 // ownPayload says the file is inside the folders Klip keeps for images and
 // files. A path from a migrated history that points at the user's documents
 // is not one.
+// payloadKeeper says whether a restored history still refers to a payload.
+func (s *Syncer) payloadKeeper() func(string) bool {
+	var refs []string
+	for _, it := range s.cfg.History.Items() {
+		if p := strings.TrimSpace(model.Str(it.ImageFilePath)); p != "" {
+			refs = append(refs, p)
+		}
+		refs = append(refs, it.FilePaths...)
+	}
+	return func(target string) bool {
+		for _, p := range refs {
+			rel, err := filepath.Rel(target, p)
+			if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			return true
+		}
+		return false
+	}
+}
+
 func (s *Syncer) ownPayload(p string) bool {
 	for _, base := range []string{s.cfg.Layout.Images(), s.cfg.Layout.Files()} {
 		rel, err := filepath.Rel(base, p)
@@ -1408,6 +1432,12 @@ func (s *Syncer) ownPayload(p string) bool {
 
 // findIdentity is the item of items that MergeItems folded into target.
 func findIdentity(items []model.Item, target model.Item) (model.Item, bool) {
+	id := strings.ToLower(strings.TrimSpace(target.ID))
+	for _, it := range items {
+		if id != "" && id != emptyGUID && strings.ToLower(it.ID) == id {
+			return it, true
+		}
+	}
 	for _, it := range items {
 		if sameMergeIdentity(it, target) {
 			return it, true
@@ -1631,6 +1661,33 @@ func rollbackItems(before, applied, current []model.Item, limitPruned map[string
 
 // sameCaptureState says a current item is still the imported item, not a
 // recapture that happened while the flush was failing.
+// withoutIDs drops the items the limits removed from the applied snapshot.
+func withoutIDs(items []model.Item, removed map[string]bool) []model.Item {
+	if len(removed) == 0 {
+		return items
+	}
+	out := make([]model.Item, 0, len(items))
+	for _, it := range items {
+		if !removed[strings.ToLower(it.ID)] {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// cloneItems detaches a snapshot of the applied items: the user's edits to
+// the live history must not change the baseline rollback compares against.
+func cloneItems(items []model.Item) []model.Item {
+	out := make([]model.Item, len(items))
+	for i, it := range items {
+		out[i] = it
+		if len(it.FilePaths) > 0 {
+			out[i].FilePaths = append([]string(nil), it.FilePaths...)
+		}
+	}
+	return out
+}
+
 func sameCaptureState(a, b model.Item) bool {
 	if !a.CapturedAt.Equal(b.CapturedAt.Time) || a.CopyCount != b.CopyCount || a.Pinned != b.Pinned ||
 		!sameNote(a.Note, b.Note) || model.Str(a.Text) != model.Str(b.Text) ||

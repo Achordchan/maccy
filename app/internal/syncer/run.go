@@ -108,6 +108,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 			return res, ErrSessionChanged
 		}
 		s.PersistSyncState(dr.Fingerprint, state, dr.Account)
+		s.clearPendingMerge()
 
 	case Merge:
 		if err := s.mergeAndApply(ctx, d.Manifest, d.LocalFingerprint, progress, reason, account); err != nil {
@@ -271,6 +272,7 @@ func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) er
 		s.persistPendingMerge(dr.PreMergeFingerprint, state, dr.Account)
 	} else {
 		s.PersistSyncState(dr.Fingerprint, state, dr.Account)
+		s.clearPendingMerge()
 	}
 	_ = s.bindAccount(dr.Account)
 	return nil

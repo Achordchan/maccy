@@ -2647,3 +2647,103 @@ func TestRollbackKeepsARecaptureOfAnImportedItem(t *testing.T) {
 		t.Errorf("the recapture was dropped: %+v", out)
 	}
 }
+
+// A recaptured image keeps the payload the rollback would otherwise delete.
+func TestRollbackKeepsThePayloadOfARecapturedImport(t *testing.T) {
+	src := paths.Layout{Root: t.TempDir()}
+	if err := os.MkdirAll(src.Images(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	img := filepath.Join(src.Images(), "remote.png")
+	if err := os.WriteFile(img, []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	remote := model.Item{
+		ID: "0f8fad5b-d9cb-469f-a165-70867728950e", Kind: model.KindImage,
+		CapturedAt: model.Time{Time: time.Now()}, ApproxBytes: 5, ImageFilePath: &img, CopyCount: 1,
+	}
+	snapPath := filepath.Join(src.Root, "snapshot.sqlite")
+	if _, err := snapshot.Export(context.Background(), src, snapPath, []model.Item{remote}, model.DefaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(snapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/sync/snapshot":
+			w.Write(data)
+		case strings.HasPrefix(r.URL.Path, "/sync/blobs/"):
+			w.Write([]byte("image"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	h := &unitHistory{}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	first := true
+	syn.cfg.Flush = func(context.Context) error {
+		if !first {
+			return nil
+		}
+		first = false
+		h.items[0].CopyCount = 2 // recaptured while the flush runs
+		return errors.New("disk full")
+	}
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err == nil {
+		t.Fatal("the failed flush stopped nothing")
+	}
+	if len(h.items) != 1 || h.items[0].CopyCount != 2 {
+		t.Fatalf("history %+v", h.items)
+	}
+	p := model.Str(h.items[0].ImageFilePath)
+	if _, err := os.Stat(p); err != nil {
+		t.Errorf("the retained item's payload was deleted: %v", err)
+	}
+}
+
+// An exact id match beats a hash match when reconciling metadata.
+func TestDownloadMergePrefersTheExactID(t *testing.T) {
+	const (
+		a = "0f8fad5b-d9cb-469f-a165-70867728950e"
+		b = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	)
+	hash := "H"
+	baseA := textItemAt(a, "same")
+	baseA.ContentHash, baseA.Note = &hash, model.Ptr("a-base")
+	baseB := textItemAt(b, "same")
+	baseB.ContentHash, baseB.Note = &hash, model.Ptr("b-base")
+	local := []model.Item{baseB} // A was deleted during the download
+	remoteB := baseB
+	remoteB.Note = model.Ptr("b-remote")
+	out := MergeForDownload([]model.Item{remoteB}, local, []model.Item{baseA, baseB})
+	if len(out) != 1 || model.Str(out[0].Note) != "b-remote" {
+		t.Errorf("merged %+v: the remote note update was discarded", out)
+	}
+}
+
+// An ordinary (non-merged) download also leaves a recoverable baseline: a
+// crash before Run saves the markers must not lead to a first-sync merge.
+func TestOrdinaryDownloadLeavesARecoverableBaseline(t *testing.T) {
+	remote := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "remote")
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{remote}))
+	defer srv.Close()
+	h := &unitHistory{}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	dr, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(syn.pendingMergePath()); err != nil {
+		t.Fatalf("no recoverable baseline was written: %v", err)
+	}
+	s.SyncLastLocalFingerprint = nil
+	syn.recoverPendingMerge(context.Background(), "")
+	if got := model.Str(s.SyncLastLocalFingerprint); got != dr.Fingerprint {
+		t.Errorf("fingerprint %q, want %q", got, dr.Fingerprint)
+	}
+}
