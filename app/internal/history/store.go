@@ -141,7 +141,15 @@ func Normalize(l paths.Layout, it model.Item) (model.Item, bool) {
 				break
 			}
 		}
+		// The active cache is the one FilePaths names when it is in Klip's
+		// files folder; the canonical folder is for migrated items whose
+		// paths are the user's documents.
 		cacheDir := filepath.Join(l.Files(), it.IDN())
+		if len(paths) > 0 {
+			if d := filepath.Dir(filepath.Clean(paths[0])); withinDir(l.Files(), d) {
+				cacheDir = d
+			}
+		}
 		cached := listFiles(cacheDir)
 		if !hasSource && len(cached) == 0 {
 			return it, false
@@ -175,6 +183,14 @@ func utf16Len(s string) int {
 		}
 	}
 	return n
+}
+
+func withinDir(base, p string) bool {
+	rel, err := filepath.Rel(base, p)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func isFile(p string) bool {

@@ -1165,26 +1165,27 @@ func (s *Syncer) fileCacheFiles(it model.Item) []string {
 	if it.Kind != model.KindFileList || strings.TrimSpace(it.ID) == "" {
 		return nil
 	}
-	base := it.IDN()
-	dirs := []string{filepath.Join(s.cfg.Layout.Files(), base)}
-	ents, err := os.ReadDir(s.cfg.Layout.Files())
-	if err == nil {
-		for _, e := range ents {
-			if e.IsDir() && strings.HasPrefix(e.Name(), base+"-") {
-				dirs = append(dirs, filepath.Join(s.cfg.Layout.Files(), e.Name()))
-			}
+	// The active cache is the one FilePaths names, when it is one of ours;
+	// the canonical folder is only for migrated items whose paths are the
+	// user's documents. Returning every folder with the prefix would keep
+	// the obsolete copies "referenced" forever.
+	dir := ""
+	if len(it.FilePaths) > 0 {
+		if d := filepath.Dir(filepath.Clean(it.FilePaths[0])); s.ownPayload(d) {
+			dir = d
 		}
 	}
+	if dir == "" {
+		dir = filepath.Join(s.cfg.Layout.Files(), it.IDN())
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
 	var out []string
-	for _, dir := range dirs {
-		ents, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range ents {
-			if !e.IsDir() {
-				out = append(out, filepath.Join(dir, e.Name()))
-			}
+	for _, e := range ents {
+		if !e.IsDir() {
+			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}
 	return out

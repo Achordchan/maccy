@@ -2150,3 +2150,33 @@ func TestRollbackRestoresItemsPrunedByLimits(t *testing.T) {
 		t.Errorf("the limit-pruned shared item was not restored: %+v", h.items)
 	}
 }
+
+// Only the cache the item actually references is kept; an older unique copy
+// is cleaned up.
+func TestFileCacheCleanupUsesTheActiveDir(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	idn := strings.ReplaceAll(id, "-", "")
+	l := paths.Layout{Root: t.TempDir()}
+	oldDir := filepath.Join(l.Files(), idn+"-old")
+	newDir := filepath.Join(l.Files(), idn+"-new")
+	for _, dir := range []string{oldDir, newDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldFile := filepath.Join(oldDir, "0000_old.txt")
+	newFile := filepath.Join(newDir, "0000_new.txt")
+	if err := os.WriteFile(oldFile, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newFile, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	syn := New(Config{Layout: l})
+	old := model.Item{ID: id, Kind: model.KindFileList, FilePaths: []string{oldFile}}
+	next := model.Item{ID: id, Kind: model.KindFileList, FilePaths: []string{newFile}}
+	removed := syn.unreferencedFiles([]model.Item{old}, []model.Item{next})
+	if len(removed) != 1 || filepath.Clean(removed[0]) != filepath.Clean(oldFile) {
+		t.Errorf("removed %v: the obsolete cache was kept", removed)
+	}
+}

@@ -214,3 +214,29 @@ func TestEmptyFileListSurvivesSaveAndLoad(t *testing.T) {
 		t.Errorf("empty file list: %v %+v", err, got)
 	}
 }
+
+// The size comes from the cache the item references, not the old canonical
+// folder.
+func TestNormalizeUsesTheActiveCacheSize(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	id := "16fd2706-8baf-433b-82eb-8c7fada847da"
+	idn := strings.ReplaceAll(id, "-", "")
+	canonical := filepath.Join(l.Files(), idn)
+	active := filepath.Join(l.Files(), idn+"-new")
+	for dir, size := range map[string]int{canonical: 100, active: 5} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "0000_file.txt"), bytes.Repeat([]byte("x"), size), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	it := model.Item{
+		ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()},
+		FilePaths: []string{filepath.Join(active, "0000_file.txt")}, CopyCount: 1,
+	}
+	got, ok := Normalize(l, it)
+	if !ok || got.ApproxBytes != 5 {
+		t.Errorf("size %d (ok %v), want 5", got.ApproxBytes, ok)
+	}
+}
