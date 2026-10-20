@@ -397,6 +397,9 @@ type DownloadResult struct {
 	Fingerprint string
 	// SnapshotSHA256 is of the snapshot file, as the server hashes it.
 	SnapshotSHA256 string
+	// Merged says the history changed while the snapshot was downloaded and
+	// the new items were merged in: the result has to be uploaded.
+	Merged bool
 }
 
 // DownloadAndApply replaces the history and the portable settings with the
@@ -456,12 +459,14 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 
 	var applied []model.Item
 	var moves *snapshot.AppliedPayloads
+	merged := false
 	err = s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
 		next := data.Items
 		if expectFingerprint != "" && Fingerprint(current) != expectFingerprint {
 			// A capture arrived while the snapshot was downloading: keep it
 			// and let the upload that follows publish both sides.
 			next = MergeItems(data.Items, current)
+			merged = true
 		}
 		out, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, next)
 		if err != nil {
@@ -479,7 +484,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	if moves != nil {
 		moves.Commit()
 	}
-	res := DownloadResult{Fingerprint: Fingerprint(applied), SnapshotSHA256: sum}
+	res := DownloadResult{Fingerprint: Fingerprint(applied), SnapshotSHA256: sum, Merged: merged}
 	s.timing("download", "import_snapshot", started, reason)
 
 	report(progress, "persist_local", "保存本地状态", 90)

@@ -53,6 +53,17 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		if err != nil {
 			return res, err
 		}
+		if dr.Merged {
+			// The history changed while the snapshot was downloading: the
+			// merge has unpublished items, so upload it as a merge does.
+			up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_download_merge_upload")
+			if err != nil {
+				return res, err
+			}
+			res.Uploaded = up
+			s.persistAfterUpload(ctx, up, &d.Manifest, fp)
+			break
+		}
 		s.PersistSyncState(dr.Fingerprint, snapshotState(dr, d.Manifest, s.cfg.Now().UTC()))
 
 	case Merge:

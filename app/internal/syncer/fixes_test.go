@@ -650,3 +650,57 @@ func TestUploadOnlySkipsWhenTheRemoteHasThatSnapshot(t *testing.T) {
 		t.Errorf("uploads %d: the same snapshot was uploaded again", n)
 	}
 }
+
+// When a capture turns a download into a merge, the merged history is
+// uploaded; otherwise it would be remembered as synchronized while the
+// server still has the older snapshot.
+func TestRunUploadsAfterADownloadMergedACapture(t *testing.T) {
+	remote := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "remote")
+	data := snapshotFile(t, []model.Item{remote})
+	tmp := filepath.Join(t.TempDir(), "remote.sqlite")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sha, err := snapshot.FileSHA256(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var puts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/sync/manifest":
+			io.WriteString(w, `{"schema":1,"latest":{"version":"v1","updatedAt":"2026-05-30T12:00:00+00:00","snapshot":{"sha256":"`+sha+`","size":1}}}`)
+		case r.URL.Path == "/sync/snapshot" && r.Method == http.MethodGet:
+			w.Write(data)
+		case r.URL.Path == "/sync/snapshot" && r.Method == http.MethodPut:
+			puts.Add(1)
+			io.WriteString(w, `{"version":"v2","sha256":"uploaded","size":1}`)
+		case r.URL.Path == "/sync/blobs/check":
+			io.WriteString(w, `{"missing":[]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	captured := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "captured during the download")
+	h := &downloadArrivalHistory{current: []model.Item{captured}}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	res, err := syn.Run(context.Background(), nil, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision.Direction != Download {
+		t.Fatalf("decision %+v", res.Decision)
+	}
+	if n := puts.Load(); n != 1 {
+		t.Errorf("uploads %d: the merged history was not published", n)
+	}
+	if len(h.items) != 2 {
+		t.Errorf("history %d items: remote and the capture should both be there", len(h.items))
+	}
+	if got := model.Str(s.SyncLastRemoteVersion); got != "v2" {
+		t.Errorf("version %q", got)
+	}
+}
