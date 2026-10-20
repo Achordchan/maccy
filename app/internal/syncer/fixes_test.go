@@ -1756,3 +1756,59 @@ func TestDownloadStateUsesAFreshManifestOrTheHash(t *testing.T) {
 		t.Errorf("version %q: the hash marker was not used", got.Version)
 	}
 }
+
+// The cleanup of a session change is saved even when the sync context was
+// cancelled during the flush that preceded it.
+func TestSessionCleanupIsSavedAfterACancelledFlush(t *testing.T) {
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "account a data")}))
+	defer srv.Close()
+	var mu sync.Mutex
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	s.AuthRefreshToken = model.Ptr("ra")
+	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	h := &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}}
+	syn := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()},
+		Settings: syncclient.Settings{
+			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
+			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+		},
+		History: h,
+		Client:  syncclient.New(srv.URL),
+		BaseURL: srv.URL,
+		Now:     time.Now,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	var muFlush sync.Mutex
+	flushes := 0
+	syn.cfg.Flush = func(fctx context.Context) error {
+		if err := fctx.Err(); err != nil {
+			return err
+		}
+		muFlush.Lock()
+		flushes++
+		first := flushes == 1
+		muFlush.Unlock()
+		if first {
+			cancel()
+			mu.Lock()
+			s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+			s.AuthRefreshToken = model.Ptr("rb")
+			mu.Unlock()
+		}
+		return nil
+	}
+	if _, err := syn.DownloadAndApply(ctx, nil, "test", ""); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("a cancelled flush with a session change: %v", err)
+	}
+	muFlush.Lock()
+	n := flushes
+	muFlush.Unlock()
+	if n < 2 {
+		t.Errorf("flush calls %d: the session cleanup was not saved", n)
+	}
+	if len(h.items) != 0 {
+		t.Errorf("the applied items were left behind: %+v", h.items)
+	}
+}

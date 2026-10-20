@@ -104,9 +104,10 @@ func Export(ctx context.Context, l paths.Layout, snapshotPath string, items []mo
 	if strings.TrimSpace(snapshotPath) == "" {
 		return ExportResult{}, errors.New("snapshot: path is empty")
 	}
-	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o700); err != nil {
 		return ExportResult{}, err
 	}
+	_ = os.Chmod(filepath.Dir(snapshotPath), 0o700)
 	for _, suffix := range []string{"", "-journal", "-wal", "-shm"} {
 		if err := os.Remove(snapshotPath + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return ExportResult{}, err
@@ -118,6 +119,8 @@ func Export(ctx context.Context, l paths.Layout, snapshotPath string, items []mo
 		return ExportResult{}, err
 	}
 
+	// The snapshot carries the clipboard history: it is for this user only.
+	_ = os.Chmod(snapshotPath, 0o600)
 	st, err := os.Stat(snapshotPath)
 	if err != nil {
 		return ExportResult{}, err

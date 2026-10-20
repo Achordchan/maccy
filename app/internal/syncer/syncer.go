@@ -710,7 +710,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		if err := s.discardMutation(ctx, applied, moves, oldSettings); err != nil {
 			return DownloadResult{}, fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
 		}
-		_ = s.cfg.Flush(ctx)
+		if err := s.persistCleanup(); err != nil {
+			return DownloadResult{}, fmt.Errorf("%w (session cleanup not saved: %v)", ErrSessionChanged, err)
+		}
 		return DownloadResult{}, ErrSessionChanged
 	}
 	if moves != nil {
@@ -943,7 +945,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		if err := s.discardMutation(ctx, merged, moves, localSettings); err != nil {
 			return fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
 		}
-		_ = s.cfg.Flush(ctx)
+		if err := s.persistCleanup(); err != nil {
+			return fmt.Errorf("%w (session cleanup not saved: %v)", ErrSessionChanged, err)
+		}
 		return ErrSessionChanged
 	}
 	if moves != nil {
@@ -1198,6 +1202,23 @@ func cleanupContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 30*time.Second)
 }
 
+// persistCleanup writes a session-change cleanup on a context of its own, so
+// a cancelled sync still saves the removal of the old account's items. It
+// retries, because the window it closes is the history surviving a restart.
+func (s *Syncer) persistCleanup() error {
+	var err error
+	for i := 0; i < 3; i++ {
+		ctx, cancel := cleanupContext()
+		err = s.cfg.Flush(ctx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return err
+}
+
 // itemsNotIn is the items whose id is not in exclude.
 func itemsNotIn(exclude, items []model.Item) []model.Item {
 	have := make(map[string]bool, len(exclude))
@@ -1273,9 +1294,10 @@ func report(f func(Progress), code, msg string, pct int) {
 
 func (s *Syncer) tempSnapshotPath() (string, error) {
 	dir := filepath.Join(s.cfg.Layout.Root, "sync", "tmp")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	_ = os.Chmod(dir, 0o700)
 	return filepath.Join(dir, "snapshot-"+guidN()+".sqlite"), nil
 }
 
@@ -1284,6 +1306,7 @@ func (s *Syncer) preMergeBackupPath() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	_ = os.Chmod(dir, 0o700)
 	// ".000" is the milliseconds of the layout, not literal text. The guid
 	// keeps two backups of the same millisecond apart; Export deletes a file
 	// that is already there.

@@ -328,7 +328,7 @@ func saveBody(resp *http.Response, target string) error {
 	}
 	tmp := target + ".download"
 	os.Remove(tmp)
-	out, err := os.Create(tmp)
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
