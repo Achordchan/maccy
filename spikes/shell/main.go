@@ -128,6 +128,7 @@ func (k *klip) view(c *ui.Context) {
 			}
 			if ui.Button(c, "Clear").Clicked() {
 				k.items = nil
+				k.lastHash, k.ownHash = "", "" // the same text copied again must be kept
 				k.filter()
 			}
 		})
