@@ -552,3 +552,24 @@ func TestPackageListingTheSameFileTwiceIsRefused(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestPackageManifestWithABOMIsRead(t *testing.T) {
+	data := append([]byte("\xef\xbb\xbf"), []byte(`{"appId":"maccy","version":"1.0.11","runtime":"win-x64","files":[{"path":"maccy.exe"}]}`)...)
+	m, err := ParsePackageManifest(data)
+	if err != nil || len(m.Files) != 1 {
+		t.Fatalf("%+v %v", m, err)
+	}
+}
+
+func TestWindowsAliasesOfProtectedFilesAreRefused(t *testing.T) {
+	for _, p := range []string{"settings.json.", "settings.json:stream", "images /a.png", "images/a.png.", "SETTIN~1.JSO", "dir/bad|name", "con?"} {
+		if _, err := NormalizePath(p); err == nil {
+			t.Errorf("%q must be refused", p)
+		}
+	}
+	for _, p := range []string{"maccy.exe", "mygo-sqlite3.dll", "sub/dir/file.v2.txt"} {
+		if _, err := NormalizePath(p); err != nil {
+			t.Errorf("%q: %v", p, err)
+		}
+	}
+}

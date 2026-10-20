@@ -666,3 +666,23 @@ func TestStalledDownloadIsGivenUp(t *testing.T) {
 		t.Fatal("a stalled download waited for ever")
 	}
 }
+
+func TestCleanOldLeavesAnUpdateUnderWayAlone(t *testing.T) {
+	r := newCoord(t, "1.0.10")
+	staged := filepath.Join(r.c.Root, "staging", "1.0.11", "maccy.exe")
+	write(t, staged, "NEW")
+	r.c.mu.Lock()
+	r.c.applying = true
+	r.c.mu.Unlock()
+	r.c.CleanOld()
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatal("startup cleanup deleted what the update about to run needs")
+	}
+	r.c.mu.Lock()
+	r.c.applying = false
+	r.c.mu.Unlock()
+	r.c.CleanOld()
+	if _, err := os.Stat(staged); err == nil {
+		t.Fatal("with no update under way the old files go")
+	}
+}

@@ -357,6 +357,14 @@ func (c *Coordinator) launchPlan(plan Plan, version string) error {
 func (c *Coordinator) CleanOld() {
 	c.fsMu.Lock()
 	defer c.fsMu.Unlock()
+	// If an update has been started, what is in these folders is not old: the
+	// helper and the staged files are for the update that is about to run.
+	c.mu.Lock()
+	applying := c.applying
+	c.mu.Unlock()
+	if applying {
+		return
+	}
 	_ = os.RemoveAll(filepath.Join(c.Root, "helper"))
 	_ = os.RemoveAll(filepath.Join(c.Root, "staging"))
 }

@@ -54,6 +54,10 @@ func (a *Auto) debounce() time.Duration {
 // the history itself.
 func (a *Auto) Suppress(on bool) { a.suppressed.Store(on) }
 
+// Suppressed says whether history changes are being ignored because the sync
+// itself is making them.
+func (a *Auto) Suppressed() bool { return a.suppressed.Load() }
+
 // Trigger runs a sync now, unless one is running. A manual one that cannot
 // start because there is no sign-in reports ErrNotLoggedIn.
 func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {

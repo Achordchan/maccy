@@ -107,7 +107,11 @@ func servable(name string) bool {
 func LoadOrCreateCert(dir, host string) (tls.Certificate, string, error) {
 	certPath, keyPath, cerPath := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem"), filepath.Join(dir, host+".cer")
 	if c, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
-		return c, cerPath, nil
+		// Kept only while it is good for another day: an old one would fail
+		// every upgrade test and restarting would not mend it.
+		if leaf, perr := x509.ParseCertificate(c.Certificate[0]); perr == nil && time.Now().Add(24*time.Hour).Before(leaf.NotAfter) {
+			return c, cerPath, nil
+		}
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return tls.Certificate{}, "", err

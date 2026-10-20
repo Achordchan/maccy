@@ -42,6 +42,26 @@ func IsProtected(rel string) bool {
 	return false
 }
 
+// windowsAlias says whether a name has a spelling that Windows reads as some
+// other file: a trailing dot or space ("settings.json." is settings.json), a
+// colon (a stream of a file, or a drive), characters a file name cannot have,
+// or an 8.3 short name (SETTIN~1.JSO). The data of the user is protected by
+// name, so a name that is not what it will turn into is refused.
+func windowsAlias(part string) bool {
+	if strings.HasSuffix(part, ".") || strings.HasSuffix(part, " ") {
+		return true
+	}
+	if strings.ContainsAny(part, ":<>\"|?*") {
+		return true
+	}
+	for i := 0; i+1 < len(part); i++ {
+		if part[i] == '~' && part[i+1] >= '0' && part[i+1] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
 // NormalizePath is NormalizePackagePath: a relative path without "." and
 // "..", with either slash, in the system's form.
 func NormalizePath(p string) (string, error) {
@@ -59,6 +79,9 @@ func NormalizePath(p string) (string, error) {
 		}
 		if part == "." || part == ".." {
 			return "", errors.New("package path is unsafe: " + p)
+		}
+		if windowsAlias(part) {
+			return "", errors.New("package path is unsafe on Windows: " + p)
 		}
 		parts = append(parts, part)
 	}

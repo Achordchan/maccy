@@ -86,6 +86,7 @@ type App struct {
 	started           bool
 	ctx               context.Context    // lives as long as the program, once started
 	syncing           atomic.Int32       // syncs running, background or asked for
+	runActive         atomic.Bool        // a sync counted in syncing is between Run and syncDone
 	changedDuringSync atomic.Bool        // the history changed while a sync ran
 	acctGen           atomic.Int64       // moves when the account changes
 	runGen            atomic.Int64       // the account generation the running sync started under
@@ -161,8 +162,8 @@ func New(cfg Config) (*App, error) {
 	// start their own goroutines inside Auto).
 	run := a.Auto.Run
 	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
-		a.syncing.Add(1)
-		defer a.syncing.Add(-1)
+		a.syncing.Add(1) // ended by syncDone, which Auto calls when Run returns
+		a.runActive.Store(true)
 		a.runGen.Store(a.acctGen.Load()) // which account this sync is for
 		return run(ctx, reason, manual)
 	}
@@ -220,8 +221,11 @@ func (a *App) Start() {
 	a.History.OnChanged(func() {
 		if a.syncing.Load() > 0 {
 			// A sync is running and has taken its picture of the history
-			// already; Auto turns this away, so it is kept for after.
-			a.changedDuringSync.Store(true)
+			// already; Auto turns this away, so it is kept for after. What the
+			// sync itself changes is not that.
+			if !a.Auto.Suppressed() {
+				a.changedDuringSync.Store(true)
+			}
 			return
 		}
 		a.Auto.OnHistoryChanged(ctx)
@@ -440,10 +444,28 @@ func (a *App) setStatus(s string) {
 }
 
 func (a *App) syncDone(reason string, manual bool, err error) {
-	if a.changedDuringSync.Swap(false) && err == nil {
+	// The sync counts as running until its result has been dealt with: Stop
+	// waits for that, and nothing may use the program (the log) after it.
+	defer func() {
+		if a.runActive.Swap(false) {
+			a.syncing.Add(-1)
+		}
+	}()
+	if a.changedDuringSync.Load() {
 		// Changes that came in while it ran were not part of it: sync again
-		// when it is over (the runner is busy until this returns).
-		time.AfterFunc(150*time.Millisecond, func() { a.Auto.OnHistoryChanged(a.lifetime()) })
+		// when it is over (the runner is busy until this returns). After a
+		// failure the flag stays and the next try is later.
+		wait := 150 * time.Millisecond
+		if err != nil {
+			wait = 30 * time.Second
+		} else {
+			a.changedDuringSync.Store(false)
+		}
+		time.AfterFunc(wait, func() {
+			if ctx := a.lifetime(); ctx.Err() == nil {
+				a.Auto.OnHistoryChanged(ctx)
+			}
+		})
 	}
 	// A sync that began before the account changed says nothing about the new
 	// account: it neither counts as its first sync nor settles what it is owed.
@@ -457,7 +479,11 @@ func (a *App) syncDone(reason string, manual bool, err error) {
 		// The sync for the new sign-in was asked for while this one ran and was
 		// turned away. The runner is still marked busy until this returns, so
 		// ask again a moment later.
-		time.AfterFunc(100*time.Millisecond, func() { a.Auto.Trigger(a.lifetime(), "login", false) })
+		time.AfterFunc(100*time.Millisecond, func() {
+			if ctx := a.lifetime(); ctx.Err() == nil {
+				a.Auto.Trigger(ctx, "login", false)
+			}
+		})
 	}
 	switch {
 	case err == nil:

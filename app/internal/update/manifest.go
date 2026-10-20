@@ -7,6 +7,7 @@
 package update
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -132,6 +133,7 @@ type PackageFile struct {
 
 // ParsePackageManifest reads maccy-package.json.
 func ParsePackageManifest(data []byte) (*PackageManifest, error) {
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")) // a file saved by Windows PowerShell starts with a BOM
 	var m PackageManifest
 	if err := json.Unmarshal(lowerKeys(data), &m); err != nil {
 		return nil, err

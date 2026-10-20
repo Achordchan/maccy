@@ -1,14 +1,21 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestHandlerServesTheAddressesOfTheClients(t *testing.T) {
@@ -88,4 +95,38 @@ func TestKeysAndCertificatesAreNeverServed(t *testing.T) {
 			t.Errorf("%s: %d, want %d", name, rec.Code, want)
 		}
 	}
+}
+
+func TestExpiredCertificateIsMadeAgain(t *testing.T) {
+	dir := t.TempDir()
+	first, _, err := LoadOrCreateCert(dir, "gitee.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Age it: certificate and key replaced by ones that ran out yesterday.
+	old := expiredPair(t, dir)
+	again, _, err := LoadOrCreateCert(dir, "gitee.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := x509.ParseCertificate(again.Certificate[0])
+	if !leaf.NotAfter.After(time.Now()) || string(again.Certificate[0]) == string(old) || string(first.Certificate[0]) == string(again.Certificate[0]) {
+		t.Fatalf("an expired certificate was reused: ends %v", leaf.NotAfter)
+	}
+}
+
+// expiredPair writes a certificate that ended yesterday over the kept one.
+func expiredPair(t *testing.T, dir string) []byte {
+	t.Helper()
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "gitee.com"},
+		NotBefore: time.Now().Add(-48 * time.Hour), NotAfter: time.Now().Add(-24 * time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, _ := x509.MarshalECPrivateKey(key)
+	_ = os.WriteFile(filepath.Join(dir, "cert.pem"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "key.pem"), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600)
+	return der
 }
