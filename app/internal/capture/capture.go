@@ -562,7 +562,15 @@ func (s *Service) savePNG(data []byte) (path, hash string, size int64, err error
 		return "", "", 0, fmt.Errorf("%w: %v", errStorage, err)
 	}
 	path = filepath.Join(s.Layout.Images(), fmt.Sprintf("%d_%s.png", s.Now().UnixMilli(), strings.ReplaceAll(newGUID(), "-", "")))
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	// To a side file first: a write that stops half way (disk full) must not
+	// leave a broken picture behind.
+	tmp := path + ".part"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		os.Remove(tmp)
+		return "", "", 0, fmt.Errorf("%w: %v", errStorage, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
 		return "", "", 0, fmt.Errorf("%w: %v", errStorage, err)
 	}
 	return path, hashOf("img", data), int64(len(data)), nil

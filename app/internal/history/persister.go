@@ -21,6 +21,7 @@ type Persister struct {
 	mu        sync.Mutex
 	timer     *time.Timer
 	closed    bool
+	fails     int // saves in a row that failed
 	saveMu    sync.Mutex
 }
 
@@ -78,10 +79,38 @@ func (p *Persister) onChanged() {
 	if d <= 0 {
 		d = 350 * time.Millisecond
 	}
+	p.arm(d)
+}
+
+// arm sets the timer for a save; the caller holds mu.
+func (p *Persister) arm(d time.Duration) {
 	p.timer = time.AfterFunc(d, func() {
 		// Clear the flag before the snapshot: a change that comes while the
 		// disk is written then schedules the next save instead of being lost.
 		p.scheduled.Store(false)
-		_ = p.save()
+		if err := p.save(); err != nil {
+			p.retry()
+			return
+		}
+		p.mu.Lock()
+		p.fails = 0
+		p.mu.Unlock()
 	})
+}
+
+// retry tries a failed save again with a growing wait (the disk may be full or
+// away for a while): 1 s, 2 s, 4 s ... up to 30 s. A change that comes
+// meanwhile joins the same save.
+func (p *Persister) retry() {
+	if !p.scheduled.CompareAndSwap(false, true) {
+		return // a change has scheduled the next save already
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		p.scheduled.Store(false)
+		return
+	}
+	p.fails = min(p.fails+1, 5)
+	p.arm(min(time.Second<<(p.fails-1), 30*time.Second))
 }
