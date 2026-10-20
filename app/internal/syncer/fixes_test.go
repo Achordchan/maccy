@@ -1391,3 +1391,61 @@ func TestDownloadDiscardsItemsWhenTheSessionChangesDuringFlush(t *testing.T) {
 		t.Errorf("the old account's items were saved for the new session: %v", h.items)
 	}
 }
+
+// switchOnReadHistory changes the account while the history is being read for
+// an upload.
+type switchOnReadHistory struct {
+	unitHistory
+	onRead func()
+}
+
+func (h *switchOnReadHistory) Items() []model.Item {
+	items := h.unitHistory.Items()
+	if h.onRead != nil {
+		h.onRead()
+		h.onRead = nil
+	}
+	return items
+}
+
+// The items read for an upload belong to the session that started it: a
+// sign-in during the read must abort before anything is sent.
+func TestUploadStopsWhenTheSessionChangesWhileReadingHistory(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	s.AuthRefreshToken = model.Ptr("ra")
+	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	h := &switchOnReadHistory{unitHistory: unitHistory{items: []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "private")}}}
+	h.onRead = func() {
+		mu.Lock()
+		s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+		s.AuthRefreshToken = model.Ptr("rb")
+		mu.Unlock()
+	}
+	syn := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()},
+		Settings: syncclient.Settings{
+			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
+			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+		},
+		History: h,
+		Client:  syncclient.New(srv.URL),
+		BaseURL: srv.URL,
+		Now:     time.Now,
+	})
+
+	if _, err := syn.Upload(context.Background(), nil, "test"); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("a sign-in while the history was read: %v", err)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("the server was contacted %d times for another account's history", n)
+	}
+}

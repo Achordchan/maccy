@@ -113,6 +113,15 @@ func (s *Syncer) checkToken(token, account string) error {
 	return nil
 }
 
+// ensureAccount refuses when the workflow's account changed and the token
+// about to be used belongs to another one.
+func (s *Syncer) ensureAccount(token, account string) error {
+	if s.accountChanged(account) {
+		return ErrSessionChanged
+	}
+	return s.checkToken(token, account)
+}
+
 // tokenFor is checkToken for the stored token: the token the caller gets is
 // the one it will send, so it cannot be replaced by another account's.
 func (s *Syncer) tokenFor(account string) (string, error) {
@@ -355,6 +364,12 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason, ac
 
 	items := s.cfg.History.Items()
 	fp = Fingerprint(items)
+	// The history is read under the account that started the upload: a sign-in
+	// while it is being read must not ship the new account's items with this
+	// one's token.
+	if err := s.ensureAccount(token, account); err != nil {
+		return nil, fp, err
+	}
 	st := s.settings()
 	s.timing("upload", "snapshot_source_ready", started, fmt.Sprintf("%s;items=%d", reason, len(items)))
 
@@ -377,6 +392,9 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason, ac
 		}
 	}
 
+	if err := s.ensureAccount(token, account); err != nil {
+		return nil, fp, err
+	}
 	if len(exp.Blobs) > 0 {
 		report(progress, "upload_blobs", "上传二进制对象", 68)
 		if token, err = s.uploadMissingBlobsWithRefresh(ctx, token, exp, started, reason, account); err != nil {
@@ -389,6 +407,9 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason, ac
 		var e error
 		res, e = s.cfg.Client.UploadSnapshot(ctx, t, path)
 		return e
+	}
+	if err := s.ensureAccount(token, account); err != nil {
+		return nil, fp, err
 	}
 	err = call(token)
 	if err != nil {
@@ -424,7 +445,10 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason, ac
 }
 
 func (s *Syncer) uploadMissingBlobsWithRefresh(ctx context.Context, token string, exp snapshot.ExportResult, started time.Time, reason, account string) (string, error) {
-	err := s.uploadMissingBlobs(ctx, token, exp, started, reason)
+	if err := s.ensureAccount(token, account); err != nil {
+		return token, err
+	}
+	err := s.uploadMissingBlobs(ctx, token, exp, started, reason, account)
 	if err == nil || !isAuthError(err) {
 		return token, err
 	}
@@ -438,10 +462,10 @@ func (s *Syncer) uploadMissingBlobsWithRefresh(ctx context.Context, token string
 	if token, err = s.tokenFor(account); err != nil {
 		return token, err
 	}
-	return token, s.uploadMissingBlobs(ctx, token, exp, started, reason+";blob_refresh")
+	return token, s.uploadMissingBlobs(ctx, token, exp, started, reason+";blob_refresh", account)
 }
 
-func (s *Syncer) uploadMissingBlobs(ctx context.Context, token string, exp snapshot.ExportResult, started time.Time, reason string) error {
+func (s *Syncer) uploadMissingBlobs(ctx context.Context, token string, exp snapshot.ExportResult, started time.Time, reason, account string) error {
 	seen := map[string]bool{}
 	var unique []snapshot.Blob
 	for _, b := range exp.Blobs {
@@ -473,6 +497,9 @@ func (s *Syncer) uploadMissingBlobs(ctx context.Context, token string, exp snaps
 		}
 		if !missing[strings.ToLower(b.SHA256)] {
 			continue
+		}
+		if err := s.ensureAccount(token, account); err != nil {
+			return err
 		}
 		if err := s.cfg.Client.UploadBlob(ctx, token, b.SHA256, b.SourcePath); err != nil {
 			return err
