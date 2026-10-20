@@ -418,7 +418,9 @@ func TestRestoreStateIsBoundToTheDownloadedSnapshot(t *testing.T) {
 	defer other.Close()
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, other, s, &unitHistory{})
-	syn.PersistAfterDownload(context.Background(), DownloadResult{Fingerprint: "fp", SnapshotSHA256: "aaa"})
+	if err := syn.PersistAfterDownload(context.Background(), DownloadResult{Fingerprint: "fp", SnapshotSHA256: "aaa"}); err != nil {
+		t.Fatal(err)
+	}
 
 	if got := model.Str(s.SyncLastRemoteVersion); got != "" {
 		t.Errorf("version %q: another device's snapshot was recorded", got)
@@ -434,7 +436,9 @@ func TestRestoreStateIsBoundToTheDownloadedSnapshot(t *testing.T) {
 	defer same.Close()
 	s2 := signedIn(model.DefaultSettings())
 	syn2 := unitSyncer(t, same, s2, &unitHistory{})
-	syn2.PersistAfterDownload(context.Background(), DownloadResult{Fingerprint: "fp", SnapshotSHA256: "aaa"})
+	if err := syn2.PersistAfterDownload(context.Background(), DownloadResult{Fingerprint: "fp", SnapshotSHA256: "aaa"}); err != nil {
+		t.Fatal(err)
+	}
 	if got := model.Str(s2.SyncLastRemoteVersion); got != "v2" {
 		t.Errorf("version %q: the manifest of the restored snapshot was not used", got)
 	}
@@ -776,5 +780,62 @@ func TestUploadStopsWhenTheSessionChanges(t *testing.T) {
 	}
 	if n := refreshes.Load(); n != 0 {
 		t.Errorf("the new account's token was refreshed %d times for the old upload", n)
+	}
+}
+
+// A download that started in one account must not apply its snapshot after
+// the user signed into another: the new session's local history would hold
+// the old account's clipboard contents, which the next sync would upload.
+func TestDownloadStopsWhenTheSessionChanges(t *testing.T) {
+	data := snapshotFile(t, []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from account a")})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync/snapshot" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		once.Do(func() { close(entered) })
+		<-release
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	s.AuthRefreshToken = model.Ptr("ra")
+	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	h := &unitHistory{}
+	syn := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()},
+		Settings: syncclient.Settings{
+			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
+			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+		},
+		History: h,
+		Client:  syncclient.New(srv.URL),
+		BaseURL: srv.URL,
+		Now:     time.Now,
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := syn.DownloadAndApply(context.Background(), nil, "test", "")
+		done <- err
+	}()
+	<-entered
+	mu.Lock()
+	s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+	s.AuthRefreshToken = model.Ptr("rb")
+	mu.Unlock()
+	close(release)
+
+	if err := <-done; !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("a session change during the download: %v", err)
+	}
+	if h.replaced != 0 {
+		t.Error("the old account's snapshot was applied to the new session")
 	}
 }

@@ -170,14 +170,20 @@ func uploadIsInManifest(up *syncclient.UploadResult, m ManifestInfo) bool {
 // applied; another device may have uploaded in between, and its version
 // recorded next to the restored history would make the next sync think the
 // two are the same.
-func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) {
+func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) error {
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
+	if s.accountChanged(dr.Account) {
+		// The restore belongs to another session: the current one must not
+		// record its snapshot as its own.
+		return ErrSessionChanged
+	}
 	m, err := s.ManifestInfo(ctx)
 	if err != nil {
 		m = ManifestInfo{}
 	}
 	s.PersistSyncState(dr.Fingerprint, snapshotState(dr, m, s.cfg.Now().UTC()))
+	return nil
 }
 
 // snapshotState is the server state to remember after a download: the

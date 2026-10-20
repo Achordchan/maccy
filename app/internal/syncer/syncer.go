@@ -444,6 +444,9 @@ type DownloadResult struct {
 	// Merged says the history changed while the snapshot was downloaded and
 	// the new items were merged in: the result has to be uploaded.
 	Merged bool
+	// Account is the account the download started in, so that a later step
+	// (PersistAfterDownload) can tell whether the session changed.
+	Account string
 }
 
 // DownloadAndApply replaces the history and the portable settings with the
@@ -503,10 +506,16 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	s.suppress(true)
 	defer s.suppress(false)
 
+	if s.accountChanged(account) {
+		return DownloadResult{}, ErrSessionChanged
+	}
 	var applied []model.Item
 	var moves *snapshot.AppliedPayloads
 	merged := false
 	err = s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
+		if s.accountChanged(account) {
+			return nil, ErrSessionChanged
+		}
 		next := data.Items
 		if expectFingerprint != "" && Fingerprint(current) != expectFingerprint {
 			// A capture arrived while the snapshot was downloading: keep it
@@ -536,7 +545,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(*data.Settings) })
 		s.cfg.History.ApplyLimits(s.settings())
 	}
-	res := DownloadResult{Fingerprint: Fingerprint(applied), SnapshotSHA256: sum, Merged: merged}
+	res := DownloadResult{Fingerprint: Fingerprint(applied), SnapshotSHA256: sum, Merged: merged, Account: account}
 	s.timing("download", "import_snapshot", started, reason)
 
 	report(progress, "persist_local", "保存本地状态", 90)
@@ -663,6 +672,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	s.timing("merge", "read_snapshot", started, fmt.Sprintf("%s;remoteItems=%d;images=%d;files=%d", reason, len(remote.Items), remote.ImageCount, remote.FileCount))
 
 	report(progress, "merge_snapshot", "merge snapshots", 78)
+	if s.accountChanged(account) {
+		return ErrSessionChanged
+	}
 	var merged []model.Item
 	var moves *snapshot.AppliedPayloads
 	s.suppress(true)
@@ -671,6 +683,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	// are moved into place under the same lock: a capture made while the
 	// download ran is merged, not overwritten.
 	err = s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
+		if s.accountChanged(account) {
+			return nil, ErrSessionChanged
+		}
 		merged = MergeItems(remote.Items, current)
 		applied, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, merged)
 		if err != nil {
