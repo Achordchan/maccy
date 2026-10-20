@@ -576,9 +576,9 @@ func TestManualSyncThatFindsItselfSignedOutIsCounted(t *testing.T) {
 	waitFor(t, "counted out", func() bool { return a.syncing.Load() == 0 && !a.runActive.Load() })
 }
 
-// A deletion that could not be uploaded is sent before the next sync reconciles
-// anything, or the server's older copy could win the merge.
-func TestPendingDeletionUploadGoesBeforeTheNextSync(t *testing.T) {
+// A deletion the server never heard of is made again after the next sync,
+// which may have merged the item back in, and survives a restart.
+func TestPendingDeletionIsMadeAgainAfterTheNextSync(t *testing.T) {
 	srv := nastest.Start(t)
 	ctx := context.Background()
 	tok := srv.Subscribe(ctx, "owner@example.com", "password1")
@@ -589,11 +589,42 @@ func TestPendingDeletionUploadGoesBeforeTheNextSync(t *testing.T) {
 	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
 		t.Fatal(err)
 	}
-	a := newApp(t, root, &fakeClip{}, srv.URL)
+	// The record of an earlier run: an item was deleted, the upload failed.
+	_ = os.MkdirAll(filepath.Join(root, "sync"), 0o700)
+	_ = os.WriteFile(filepath.Join(root, "sync", "pending-delete.json"), []byte(`["gone"]`), 0o600)
+	clip := &fakeClip{}
+	a := newApp(t, root, clip, srv.URL)
+	a.History.Add(model.Item{ID: "gone", Kind: model.KindText, Text: model.Ptr("restored by a merge"), CopyCount: 1, ContentHash: model.Ptr("text:restored by a merge")})
+	a.History.Add(model.Item{ID: "kept", Kind: model.KindText, Text: model.Ptr("stays"), CopyCount: 1, ContentHash: model.Ptr("text:stays")})
 	a.Start()
 	defer a.Stop()
-	waitFor(t, "first sync", func() bool { return strings.HasPrefix(a.SyncStatus(), "已同步") })
-	a.mutationPending.Store(true)
-	a.SyncNow()
-	waitFor(t, "the pending upload was made", func() bool { return !a.mutationPending.Load() })
+	waitFor(t, "the owed deletion was made", func() bool {
+		for _, it := range a.History.Items() {
+			if it.ID == "gone" {
+				return false
+			}
+		}
+		return len(a.History.Items()) == 1 && len(a.pending.IDs()) == 0
+	})
+	if _, err := os.Stat(filepath.Join(root, "sync", "pending-delete.json")); err == nil {
+		t.Fatal("the record is kept after the server has the deletion")
+	}
+}
+
+func TestPendingDeletesKeepAcrossRunsAndResetWithTheAccount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sync", "pending-delete.json")
+	p := &pendingDeletes{path: path}
+	p.Add("a", "b")
+	again := &pendingDeletes{path: path} // a later run
+	if got := again.IDs(); len(got) != 2 {
+		t.Fatalf("%v", got)
+	}
+	again.Forget("a")
+	if got := (&pendingDeletes{path: path}).IDs(); len(got) != 1 || got[0] != "b" {
+		t.Fatalf("%v", got)
+	}
+	again.Reset()
+	if got := (&pendingDeletes{path: path}).IDs(); len(got) != 0 {
+		t.Fatalf("%v", got)
+	}
 }

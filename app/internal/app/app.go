@@ -103,7 +103,7 @@ type App struct {
 	loginWanted       atomic.Bool        // a sync for a new sign-in is owed (one was running when it was asked for)
 	initialOK         atomic.Bool        // a background sync has gone through
 	runEntered        atomic.Bool        // the sync that syncDone is told about did start (Run was entered)
-	mutationPending   atomic.Bool        // a change of the history was not uploaded yet (this run only)
+	pending           pendingDeletes     // deletions the server does not have yet
 	failStreak        atomic.Int32       // background syncs that failed in a row since the initial one
 	stopWatch         context.CancelFunc // ends the event stream of the current account
 }
@@ -130,6 +130,7 @@ func New(cfg Config) (*App, error) {
 		cfg.Logf("settings: %v", err)
 	}
 	a.History = history.NewService(cfg.Layout)
+	a.pending.path = filepath.Join(cfg.Layout.Root, "sync", "pending-delete.json")
 	a.Persister = history.NewPersister(a.History, cfg.Layout)
 	if err := a.Persister.Load(context.Background()); err != nil {
 		cfg.Logf("history: %v", err)
@@ -196,14 +197,11 @@ func New(cfg Config) (*App, error) {
 		a.runActive.Store(true)
 		a.runEntered.Store(true)
 		a.runGen.Store(a.acctGen.Load()) // which account this sync is for
-		if a.mutationPending.Load() {
-			// What the user deleted is sent before anything is reconciled.
-			if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil {
-				return err
-			}
-			a.mutationPending.Store(false)
+		err := run(ctx, reason, manual)
+		if err != nil {
+			return err
 		}
-		return run(ctx, reason, manual)
+		return a.settleDeletions(ctx)
 	}
 
 	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings, AccountFile: filepath.Join(cfg.Layout.Root, "sync", "account.txt"), BeforeLoginChange: a.endAccountWork, AfterLoginChange: a.beginAccountWork}
@@ -492,7 +490,7 @@ func (a *App) SyncNow() {
 // still manages to finish is known to be of the old account.
 func (a *App) endAccountWork() {
 	a.acctGen.Add(1)
-	a.mutationPending.Store(false) // it was the old account's
+	a.pending.Reset() // they were the old account's
 	a.mu.Lock()
 	if a.started {
 		a.acctCancel()

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -271,14 +272,16 @@ func (a *App) finishView(reason string, manual bool, err error) {
 	}
 }
 
-// afterMutation applies what the user changed in the history and, when there
-// is an account, uploads it at once (UploadCloudAfterLocalMutationAsync): a
-// sync that looked at the server first could bring back what was just deleted.
-// The change and its upload are one piece of work that waits for the sync that
-// may be running and keeps the others out, so that no sync can put the deleted
-// items back or share its fingerprints with the upload; it belongs to the
-// account that is signed in, and Stop waits for it.
-func (a *App) afterMutation(mutate func()) {
+// afterMutation applies what the user changed in the history (removing the
+// items ids) and, when there is an account, uploads it at once
+// (UploadCloudAfterLocalMutationAsync): a sync that looked at the server first
+// could bring back what was just deleted. The change and its upload are one
+// piece of work that waits for the sync that may be running and keeps the
+// others out, so that no sync can put the deleted items back or share its
+// fingerprints with the upload; it belongs to the account that is signed in,
+// and Stop waits for it. A removal the server did not get is kept (see
+// pendingDeletes) and made again after the next sync.
+func (a *App) afterMutation(ids []string, mutate func()) {
 	if !a.Syncer.CanAutoSync() {
 		a.mutateQuietly(mutate)
 		return
@@ -292,18 +295,15 @@ func (a *App) afterMutation(mutate func()) {
 			a.runActive.Store(true)
 			defer a.runActive.Store(false)
 			a.mutateQuietly(mutate)
-			if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil && ctx.Err() == nil {
-				a.cfg.Logf("upload after change: %v", err)
-				// The change is only local: whatever sync comes next sends it
-				// first, or the server's older copy could win the merge and
-				// bring the item back.
-				a.mutationPending.Store(true)
-				time.AfterFunc(30*time.Second, func() {
-					if c := a.acct(); c.Err() == nil {
-						a.Auto.Trigger(c, "auto", false)
-					}
-				})
+			if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil {
+				if ctx.Err() == nil {
+					a.cfg.Logf("upload after change: %v", err)
+					a.pending.Add(ids...)
+					a.retryLater()
+				}
+				return
 			}
+			a.pending.Forget(ids...)
 		})
 		if !ran {
 			// The account changed before its turn came: the change is the user's
@@ -323,6 +323,39 @@ func (a *App) afterMutation(mutate func()) {
 	}()
 }
 
+// retryLater asks for a sync in a while, which also makes the deletions that
+// are owed.
+func (a *App) retryLater() {
+	time.AfterFunc(30*time.Second, func() {
+		if c := a.acct(); c.Err() == nil {
+			a.Auto.Trigger(c, "auto", false)
+		}
+	})
+}
+
+// settleDeletions is for the end of a sync that went through: what it merged in
+// may include items the user deleted and the server never heard of. They are
+// removed again, and the result is uploaded; what other devices added stays.
+func (a *App) settleDeletions(ctx context.Context) error {
+	ids := a.pending.IDs()
+	if len(ids) == 0 {
+		return nil
+	}
+	a.mutateQuietly(func() {
+		for _, id := range ids {
+			a.History.Remove(id)
+		}
+	})
+	if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil {
+		if ctx.Err() == nil {
+			a.retryLater()
+		}
+		return err
+	}
+	a.pending.Forget(ids...)
+	return nil
+}
+
 func (a *App) mutateQuietly(mutate func()) {
 	a.Auto.Suppress(true)
 	mutate()
@@ -330,10 +363,16 @@ func (a *App) mutateQuietly(mutate func()) {
 }
 
 // Delete removes an item; with an account the cloud copy follows.
-func (a *App) Delete(id string) { a.afterMutation(func() { a.History.Remove(id) }) }
+func (a *App) Delete(id string) { a.afterMutation([]string{id}, func() { a.History.Remove(id) }) }
 
 // ClearAll empties the history; with an account the cloud copy follows.
-func (a *App) ClearAll() { a.afterMutation(a.History.ClearAll) }
+func (a *App) ClearAll() {
+	var ids []string
+	for _, it := range a.History.Items() {
+		ids = append(ids, it.ID)
+	}
+	a.afterMutation(ids, a.History.ClearAll)
+}
 
 // Reorder moves an item before another one (or to the end).
 func (a *App) Reorder(id string, before *string) { a.History.MoveBefore(id, before) }

@@ -34,7 +34,7 @@ func (mg *Manager) Preview() (string, bool) {
 	mg.mu.Lock()
 	defer mg.mu.Unlock()
 	if mg.model == nil {
-		return "", false
+		return mg.id, false // a picture is on its way, the window is not there yet
 	}
 	return mg.id, mg.model.Over()
 }
