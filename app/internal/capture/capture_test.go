@@ -814,3 +814,20 @@ func TestRetryIsDroppedWithoutCounterWhenContentMoved(t *testing.T) {
 		t.Fatalf("%d retries of content that was replaced", n.Load())
 	}
 }
+
+func TestOldCheckDoesNotEndNewerOwnership(t *testing.T) {
+	r := newRig(t)
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "new"
+	newer := "new"
+	old := func() bool { // reads an external copy, and meanwhile a newer Apply finishes
+		_ = r.s.Apply(model.Item{Kind: model.KindText, Text: &newer})
+		return false
+	}
+	r.s.ownCheck.Store(&old)
+	if r.s.checkOwn(&old) {
+		t.Fatal("the old check said no")
+	}
+	if r.s.ownCheck.Load() == nil {
+		t.Fatal("the ownership of the newer Apply was ended by the older check")
+	}
+}

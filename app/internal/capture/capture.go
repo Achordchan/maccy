@@ -91,6 +91,8 @@ type Service struct {
 	ownSeq      atomic.Int64                // counter after our last write, plus 2; 0 is none
 	applying    atomic.Int32                // Apply calls in progress
 	ownCheck    atomic.Pointer[func() bool] // reads the clipboard back; true while it holds what we wrote
+	ownMu       sync.Mutex                  // makes a change of the ownership state one step
+	ownGen      atomic.Int64                // moves with every change of it
 	setMu       sync.RWMutex                // guards the capture settings below
 	capMu       sync.Mutex                  // one Capture at a time (the watcher and Retry)
 	tries       atomic.Int32                // retries of an unreadable clipboard in a row
@@ -147,16 +149,25 @@ func (s *Service) options() options {
 // MarkWriteByUs says that the app has just written to the clipboard, so that
 // the change that follows is not captured again.
 func (s *Service) MarkWriteByUs() {
-	s.lastOwnWrit.Store(s.Now().UnixNano())
-	s.ownSeq.Store(0)
-	s.ownCheck.Store(nil)
+	s.setOwn(s.Now().UnixNano(), 0, nil)
+}
+
+// setOwn sets the ownership state in one step (never held across a clipboard
+// call) and moves its generation.
+func (s *Service) setOwn(at int64, seqPlus2 int64, check *func() bool) {
+	s.ownMu.Lock()
+	defer s.ownMu.Unlock()
+	s.ownGen.Add(1)
+	s.lastOwnWrit.Store(at)
+	s.ownSeq.Store(seqPlus2)
+	s.ownCheck.Store(check)
 }
 
 // markWritten is called when the write is done: the counter then stands where
 // our own change left it.
 func (s *Service) markWritten(verify func() bool) {
-	s.lastOwnWrit.Store(s.Now().UnixNano())
-	notOurs := func() { s.lastOwnWrit.Store(0) } // somebody copied in between: capture it
+	now := s.Now().UnixNano()
+	notOurs := func() { s.setOwn(0, 0, nil) } // somebody copied in between: capture it
 	var before int64 = -1
 	if s.Seq != nil {
 		before = s.Seq()
@@ -165,9 +176,7 @@ func (s *Service) markWritten(verify func() bool) {
 		notOurs()
 		return
 	}
-	if verify != nil {
-		s.ownCheck.Store(&verify) // without a counter, content tells ours from theirs
-	}
+	var seqPlus2 int64
 	if s.Seq != nil {
 		n := s.Seq()
 		if n != before {
@@ -175,20 +184,33 @@ func (s *Service) markWritten(verify func() bool) {
 			return
 		}
 		if n >= 0 {
-			s.ownSeq.Store(n + 2)
+			seqPlus2 = n + 2
 		}
 	}
+	var check *func() bool
+	if verify != nil {
+		check = &verify // without a counter, content tells ours from theirs
+	}
+	s.setOwn(now, seqPlus2, check)
 }
 
 // checkOwn asks the verifier. Once it says the clipboard holds something
 // else, the ownership is over: a later copy of the same text is a new copy.
 func (s *Service) checkOwn(check *func() bool) bool {
+	gen := s.ownGen.Load()
 	if (*check)() {
 		return true
 	}
-	s.ownCheck.Store(nil)
-	s.ownSeq.Store(0)
-	s.lastOwnWrit.Store(0)
+	// Only the ownership this check was about may be ended: an Apply that
+	// recorded a newer one meanwhile keeps it.
+	s.ownMu.Lock()
+	defer s.ownMu.Unlock()
+	if s.ownGen.Load() == gen {
+		s.ownGen.Add(1)
+		s.lastOwnWrit.Store(0)
+		s.ownSeq.Store(0)
+		s.ownCheck.Store(nil)
+	}
 	return false
 }
 
