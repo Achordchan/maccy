@@ -3,6 +3,7 @@
 package update
 
 import (
+	"fmt"
 	"os/exec"
 	"syscall"
 	"unsafe"
@@ -24,6 +25,7 @@ var (
 	procWait        = kernel32.NewProc("WaitForSingleObject")
 	procCloseHandle = kernel32.NewProc("CloseHandle")
 	procMessageBoxW = user32.NewProc("MessageBoxW")
+	procShellExecW  = syscall.NewLazyDLL("shell32.dll").NewProc("ShellExecuteW")
 )
 
 // waitExit blocks until the process is gone; one that cannot be opened is
@@ -58,4 +60,21 @@ func alert(title, msg string) {
 	t, _ := syscall.UTF16PtrFromString(title)
 	m, _ := syscall.UTF16PtrFromString(msg)
 	procMessageBoxW.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), mbOK|mbIconError)
+}
+
+// launchInstaller starts the installer through the shell, which shows the
+// prompt for administrator rights that an installer asks for; starting it as a
+// plain process fails with "requires elevation".
+func launchInstaller(path string) error {
+	verb, _ := syscall.UTF16PtrFromString("open")
+	file, _ := syscall.UTF16PtrFromString(path)
+	const swShowNormal = 1
+	r, _, err := procShellExecW.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)), 0, 0, swShowNormal)
+	if r <= 32 { // ShellExecute reports success with a value above 32
+		if err == nil || err == syscall.Errno(0) {
+			err = fmt.Errorf("ShellExecute returned %d", r)
+		}
+		return err
+	}
+	return nil
 }

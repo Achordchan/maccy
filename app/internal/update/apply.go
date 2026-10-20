@@ -42,6 +42,9 @@ type Hooks struct {
 	Sleep func(time.Duration)
 	// Launch starts a program and does not wait for it.
 	Launch func(path string) error
+	// LaunchInstaller starts the installer, which may need to ask for rights
+	// (the shell does that; a plain process start cannot).
+	LaunchInstaller func(path string) error
 	// Alert tells the user that the update failed.
 	Alert func(title, msg string)
 	// Now is time.Now.
@@ -56,6 +59,13 @@ func (h Hooks) fill() Hooks {
 	}
 	if h.Sleep == nil {
 		h.Sleep = time.Sleep
+	}
+	if h.LaunchInstaller == nil {
+		if h.Launch != nil {
+			h.LaunchInstaller = h.Launch
+		} else {
+			h.LaunchInstaller = launchInstaller
+		}
 	}
 	if h.Launch == nil {
 		h.Launch = launch
@@ -132,7 +142,7 @@ func RunPlan(p Plan, h Hooks) error {
 
 	if p.Installer != "" {
 		lg.say("starting installer " + p.Installer)
-		if err := h.Launch(p.Installer); err != nil {
+		if err := h.LaunchInstaller(p.Installer); err != nil {
 			lg.say("failed: " + err.Error())
 			h.Alert("Klip 更新失败", "无法启动安装程序："+err.Error())
 			// Klip has already exited for this: start it again.

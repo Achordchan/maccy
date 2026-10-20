@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -87,7 +88,7 @@ var (
 // the file (by its type, so it needs no file to read), cached. nil when there
 // is none.
 func SystemIcon(path string) *ui.Bitmap {
-	key := strings.ToLower(path)
+	key := iconKey(path)
 	iconMu.Lock()
 	if bm, ok := iconCache[key]; ok {
 		iconMu.Unlock()
@@ -105,9 +106,31 @@ func SystemIcon(path string) *ui.Bitmap {
 		}
 	}
 	iconMu.Lock()
+	if len(iconCache) >= iconCacheMax {
+		iconCache = map[string]*ui.Bitmap{} // a bound on the memory; icons are cheap to ask for again
+	}
 	iconCache[key] = bm
 	iconMu.Unlock()
 	return bm
+}
+
+// iconCacheMax is how many icons are kept.
+const iconCacheMax = 256
+
+// iconKey says which icons are the same: the shell draws one icon for all the
+// files of a type, so many files cost one entry. Programs, shortcuts and icons
+// carry their own and are kept by path.
+func iconKey(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".exe", ".lnk", ".ico", ".url", ".scr", ".cur", ".ani":
+		return strings.ToLower(path)
+	case "":
+		if st, err := os.Stat(path); err == nil && st.IsDir() {
+			return "<dir>"
+		}
+	}
+	return "ext:" + ext
 }
 
 func shellIcon(path string) image.Image {

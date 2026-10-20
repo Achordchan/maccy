@@ -35,3 +35,7 @@ func StartHelper(helperExe, planPath string) error {
 }
 
 func alert(title, msg string) { fmt.Fprintln(os.Stderr, title+": "+msg) }
+
+// launchInstaller starts the installer: no shell to ask for rights here, so it
+// is started as any program.
+func launchInstaller(path string) error { return launch(path) }
