@@ -75,12 +75,12 @@ func (s *Service) StatusText() string {
 	return "已登录"
 }
 
-func (s *Service) storeTokens(t syncclient.TokenSet, fallbackEmail string) {
+func (s *Service) storeTokens(t syncclient.TokenSet, fallbackEmail string) error {
 	email := t.Email
 	if strings.TrimSpace(email) == "" {
 		email = fallbackEmail
 	}
-	_ = s.Store.Update(func(m *model.Settings) {
+	return s.Store.Update(func(m *model.Settings) {
 		m.AuthAccessToken = &t.AccessToken
 		m.AuthRefreshToken = &t.RefreshToken
 		m.AuthIdToken = &t.IDToken
@@ -121,7 +121,11 @@ func (s *Service) enter(ctx context.Context, email, password, okMsg, failMsg, ca
 	if err != nil {
 		return s.failure(err, failMsg, cancelMsg)
 	}
-	s.storeTokens(t, email)
+	if err := s.storeTokens(t, email); err != nil {
+		// Signed in for this run (the tokens are in memory and work), but the
+		// file does not have them: say so, or the user finds out at the next start.
+		return Result{OK: true, Message: okMsg + "，但无法保存登录状态，重启后需要重新登录：" + err.Error()}
+	}
 	return Result{OK: true, Message: okMsg}
 }
 

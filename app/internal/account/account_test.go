@@ -323,3 +323,22 @@ func TestSignOutThatCannotBeSavedSaysSo(t *testing.T) {
 		t.Fatalf("a sign-out that was not saved reported success: %+v", r)
 	}
 }
+
+func TestSignInThatCannotBeSavedSaysSo(t *testing.T) {
+	srv := nastest.Start(t)
+	dir := t.TempDir()
+	m, _ := settings.Open(filepath.Join(dir, "settings.json"))
+	s := &Service{Client: syncclient.New(srv.URL), Store: m}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skip("cannot make the folder read-only")
+	}
+	defer os.Chmod(dir, 0o755)
+	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
+		f.Close()
+		t.Skip("the folder is writable anyway")
+	}
+	r := s.Register(context.Background(), "save@example.com", "password1")
+	if !r.OK || !strings.Contains(r.Message, "无法保存") {
+		t.Fatalf("the user must be told the login was not saved: %+v", r)
+	}
+}
