@@ -123,8 +123,9 @@ func (m *Model) noteBar(c *ui.Context) {
 			m.focusNew = false
 			m.noteHand.Focus()
 		}
-		ui.TextInputBase(c, &m.noteBuf).Bind(&m.noteHand).Grow(1).Placeholder("备注（留空则清除）").Label("备注")
-		save := ui.PrimaryButton(c, "保存").Clicked() || c.Shortcut(0, ui.KeyEnter)
+		in := ui.TextInputBase(c, &m.noteBuf).Bind(&m.noteHand).Grow(1).Placeholder("备注（留空则清除）").Label("备注")
+		// The box takes Enter for itself, so a shortcut would never see it.
+		save := ui.PrimaryButton(c, "保存").Clicked() || in.Submitted()
 		cancel := ui.Button(c, "取消").Clicked() || c.Shortcut(0, ui.KeyEscape)
 		switch {
 		case save:

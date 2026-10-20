@@ -447,3 +447,20 @@ func TestThumbnailsAreSmallAndMadeInTheBackground(t *testing.T) {
 		t.Fatalf("thumbnail is %dx%d, want it cut down to fit %d", w, h, thumbSize)
 	}
 }
+
+func TestViewNoteSavesWithEnter(t *testing.T) {
+	r := newRig(t, "one")
+	if err := r.tt.RightClick("one"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.tt.ChooseMenuItem("备注…"); err != nil {
+		t.Fatal(err)
+	}
+	r.tt.Frame()
+	r.tt.Type("买菜")
+	r.tt.Key(0, ui.KeyEnter)
+	r.tt.Frame()
+	if got := model.Str(r.h.Items()[0].Note); got != "买菜" {
+		t.Fatalf("Enter in the note box did not save: %q", got)
+	}
+}

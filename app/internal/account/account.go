@@ -290,6 +290,7 @@ func validateNewPassword(email, code, pw, confirm string) string {
 // ResetPassword sets a new password with the code from the mail, for a user
 // who is not signed in.
 func (s *Service) ResetPassword(ctx context.Context, email, code, pw, confirm string) Result {
+	startRefresh := strings.TrimSpace(model.Str(s.Store.Get().AuthRefreshToken))
 	email = strings.TrimSpace(email)
 	if msg := validateNewPassword(email, code, pw, confirm); msg != "" {
 		return fail(msg)
@@ -299,12 +300,13 @@ func (s *Service) ResetPassword(ctx context.Context, email, code, pw, confirm st
 	if err := s.Client.ResetPassword(ctx, email, code, pw); err != nil {
 		return s.failure(err, "找回密码失败", "找回密码已取消")
 	}
-	s.afterPasswordUpdated(email)
+	s.afterPasswordUpdated(email, startRefresh)
 	return Result{OK: true, Message: "密码已更新，请使用新密码重新登录"}
 }
 
 // ChangePassword sets a new password for the signed-in user.
 func (s *Service) ChangePassword(ctx context.Context, typedEmail, code, pw, confirm string) Result {
+	startRefresh := strings.TrimSpace(model.Str(s.Store.Get().AuthRefreshToken))
 	email := strings.TrimSpace(model.Str(s.Store.Get().AuthUserEmail))
 	if email == "" {
 		email = strings.TrimSpace(typedEmail)
@@ -324,14 +326,20 @@ func (s *Service) ChangePassword(ctx context.Context, typedEmail, code, pw, conf
 	if err := s.Client.ChangePassword(ctx, token, code, pw); err != nil {
 		return s.failure(err, "修改密码失败", "修改密码已取消")
 	}
-	s.afterPasswordUpdated(email)
+	s.afterPasswordUpdated(email, startRefresh)
 	return Result{OK: true, Message: "密码已更新，请使用新密码重新登录"}
 }
 
 // afterPasswordUpdated is ClearAuthAfterPasswordUpdated: the old session is
-// no good, the address stays for the next sign-in.
-func (s *Service) afterPasswordUpdated(email string) {
+// no good, the address stays for the next sign-in. It ends the session the
+// request started in (refresh is its refresh token, "" for a reset made while
+// signed out); if somebody else is signed in by now, that one is left alone.
+func (s *Service) afterPasswordUpdated(email, refresh string) {
 	_ = s.Store.Update(func(m *model.Settings) {
+		cur := strings.TrimSpace(model.Str(m.AuthRefreshToken))
+		if cur != "" && cur != strings.TrimSpace(refresh) {
+			return // another session since: not the one whose password changed
+		}
 		m.AuthUserEmail = &email
 		syncclient.ClearAuthSession(m, false)
 	})
