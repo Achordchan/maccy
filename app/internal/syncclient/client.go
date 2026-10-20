@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,6 +70,32 @@ func NewWithHTTP(baseURL string, h *http.Client) *Client {
 		http:           h,
 		accountTimeout: accountCallTimeout,
 	}
+}
+
+// AccountID is the account an access token belongs to: the "sub" claim of
+// the JWT, or its email when there is no subject. The signature is not
+// verified: the value is used only to tell two sessions apart, never to trust
+// the token. An opaque token gives "".
+func AccountID(accessToken string) string {
+	parts := strings.Split(strings.TrimSpace(accessToken), ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sub   string `json:"sub"`
+		Email string `json:"email"`
+	}
+	if json.Unmarshal(raw, &claims) != nil {
+		return ""
+	}
+	if claims.Sub != "" {
+		return claims.Sub
+	}
+	return claims.Email
 }
 
 // ErrNoBaseURL is returned when the client has no server address.

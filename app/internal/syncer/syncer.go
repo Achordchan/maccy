@@ -81,6 +81,38 @@ func (s *Syncer) bearer() string {
 	return strings.TrimSpace(model.Str(s.settings().AuthAccessToken))
 }
 
+// currentAccount is the account of the stored access token, "" when the
+// token does not say (an opaque one).
+func (s *Syncer) currentAccount() string { return syncclient.AccountID(s.bearer()) }
+
+// accountChanged says a known account is no longer the signed-in one: the
+// user signed out or signed into another account during the workflow.
+func (s *Syncer) accountChanged(account string) bool {
+	if strings.TrimSpace(account) == "" {
+		return false
+	}
+	cur := s.currentAccount()
+	return cur != "" && !strings.EqualFold(cur, account)
+}
+
+// refreshBound renews the token only for the account that started the
+// workflow. If the settings now hold another account, its credentials are
+// not used for the old account's data (a retry would publish a snapshot into
+// the wrong account).
+func (s *Syncer) refreshBound(ctx context.Context, account string) (bool, error) {
+	if s.accountChanged(account) {
+		return false, ErrSessionChanged
+	}
+	ok, err := s.session.Refresh(ctx)
+	if err != nil || !ok {
+		return ok, err
+	}
+	if s.accountChanged(account) {
+		return false, ErrSessionChanged
+	}
+	return true, nil
+}
+
 func isAuthError(err error) bool { return syncclient.IsStatus(err, 401) }
 
 // isSubscriptionExpired is IsSubscriptionExpired: a 403 whose body says so.
@@ -96,7 +128,13 @@ func isSubscriptionExpired(err error) bool {
 // refreshAndRetry is the pattern of the C# calls: when the server refuses the
 // token, renew it once and try again. A subscription that has expired is its
 // own error.
-func (s *Syncer) refreshAndRetry(ctx context.Context, token string, call func(token string) error) (string, error) {
+func (s *Syncer) refreshAndRetry(ctx context.Context, token, account string, call func(token string) error) (string, error) {
+	if strings.TrimSpace(account) == "" {
+		account = syncclient.AccountID(token)
+	}
+	if s.accountChanged(account) {
+		return token, ErrSessionChanged
+	}
 	err := call(token)
 	if err == nil {
 		return token, nil
@@ -107,7 +145,7 @@ func (s *Syncer) refreshAndRetry(ctx context.Context, token string, call func(to
 	if !isAuthError(err) {
 		return token, err
 	}
-	ok, rerr := s.session.Refresh(ctx)
+	ok, rerr := s.refreshBound(ctx, account)
 	if rerr != nil {
 		return token, rerr
 	}
@@ -135,7 +173,7 @@ func (s *Syncer) manifestJSON(ctx context.Context) (string, error) {
 		return "", err
 	}
 	var out string
-	_, err = s.refreshAndRetry(ctx, token, func(t string) error {
+	_, err = s.refreshAndRetry(ctx, token, syncclient.AccountID(token), func(t string) error {
 		var e error
 		out, e = s.cfg.Client.GetManifestJSON(ctx, t)
 		return e
@@ -235,25 +273,31 @@ func nonEmpty(v string) *string {
 func (s *Syncer) Upload(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, error) {
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
-	up, _, err := s.uploadWithFingerprint(ctx, progress, reason)
+	up, _, err := s.uploadWithFingerprint(ctx, progress, reason, s.currentAccount())
 	return up, err
 }
 
 // uploadWithFingerprint is Upload, and also says which history went into the
 // snapshot: a change made while the upload ran must not be remembered as
 // uploaded.
-func (s *Syncer) uploadWithFingerprint(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, string, error) {
+func (s *Syncer) uploadWithFingerprint(ctx context.Context, progress func(Progress), reason, account string) (*syncclient.UploadResult, string, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
-	return s.upload(ctx, progress, reason)
+	return s.upload(ctx, progress, reason, account)
 }
 
-func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason string) (res *syncclient.UploadResult, fp string, err error) {
+func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason, account string) (res *syncclient.UploadResult, fp string, err error) {
 	started := s.cfg.Now()
 	report(progress, "prepare_local", "准备本地数据", 30)
 	token, err := s.connection(ctx)
 	if err != nil {
 		return nil, "", err
+	}
+	if strings.TrimSpace(account) == "" {
+		account = syncclient.AccountID(token)
+	}
+	if s.accountChanged(account) {
+		return nil, "", ErrSessionChanged
 	}
 
 	path, err := s.tempSnapshotPath()
@@ -288,7 +332,7 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason str
 
 	if len(exp.Blobs) > 0 {
 		report(progress, "upload_blobs", "上传二进制对象", 68)
-		if token, err = s.uploadMissingBlobsWithRefresh(ctx, token, exp, started, reason); err != nil {
+		if token, err = s.uploadMissingBlobsWithRefresh(ctx, token, exp, started, reason, account); err != nil {
 			return nil, fp, err
 		}
 	}
@@ -307,7 +351,7 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason str
 		if !isAuthError(err) {
 			return nil, fp, err
 		}
-		ok, rerr := s.session.Refresh(ctx)
+		ok, rerr := s.refreshBound(ctx, account)
 		if rerr != nil {
 			return nil, fp, rerr
 		}
@@ -316,7 +360,7 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason str
 		}
 		token = s.bearer()
 		if len(exp.Blobs) > 0 {
-			if token, err = s.uploadMissingBlobsWithRefresh(ctx, token, exp, started, reason+";after_refresh"); err != nil {
+			if token, err = s.uploadMissingBlobsWithRefresh(ctx, token, exp, started, reason+";after_refresh", account); err != nil {
 				return nil, fp, err
 			}
 		}
@@ -330,12 +374,12 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason str
 	return res, fp, nil
 }
 
-func (s *Syncer) uploadMissingBlobsWithRefresh(ctx context.Context, token string, exp snapshot.ExportResult, started time.Time, reason string) (string, error) {
+func (s *Syncer) uploadMissingBlobsWithRefresh(ctx context.Context, token string, exp snapshot.ExportResult, started time.Time, reason, account string) (string, error) {
 	err := s.uploadMissingBlobs(ctx, token, exp, started, reason)
 	if err == nil || !isAuthError(err) {
 		return token, err
 	}
-	ok, rerr := s.session.Refresh(ctx)
+	ok, rerr := s.refreshBound(ctx, account)
 	if rerr != nil {
 		return token, rerr
 	}
@@ -408,10 +452,10 @@ type DownloadResult struct {
 func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint string) (DownloadResult, error) {
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
-	return s.downloadAndApply(ctx, progress, reason, expectFingerprint)
+	return s.downloadAndApply(ctx, progress, reason, expectFingerprint, s.currentAccount())
 }
 
-func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint string) (DownloadResult, error) {
+func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint, account string) (DownloadResult, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	started := s.cfg.Now()
@@ -420,6 +464,12 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	if err != nil {
 		return DownloadResult{}, err
 	}
+	if strings.TrimSpace(account) == "" {
+		account = syncclient.AccountID(token)
+	}
+	if s.accountChanged(account) {
+		return DownloadResult{}, ErrSessionChanged
+	}
 	path, err := s.tempSnapshotPath()
 	if err != nil {
 		return DownloadResult{}, err
@@ -427,7 +477,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	defer tryDelete(path)
 
 	report(progress, "download_snapshot", "下载快照", 52)
-	if token, err = s.downloadSnapshot(ctx, token, path); err != nil {
+	if token, err = s.downloadSnapshot(ctx, token, path, account); err != nil {
 		return DownloadResult{}, err
 	}
 	s.timing("download", "download_snapshot", started, fmt.Sprintf("%s;size=%d", reason, fileSize(path)))
@@ -445,17 +495,13 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		return DownloadResult{}, err
 	}
 	defer os.RemoveAll(importRoot)
-	data, err := snapshot.ReadDetached(ctx, s.cfg.Layout, importRoot, path, s.ensureBlob(ctx, &token))
+	data, err := snapshot.ReadDetached(ctx, s.cfg.Layout, importRoot, path, s.ensureBlob(ctx, &token, account))
 	if err != nil {
 		return DownloadResult{}, err
 	}
 
 	s.suppress(true)
 	defer s.suppress(false)
-	if data.Settings != nil {
-		s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(*data.Settings) })
-		s.cfg.History.ApplyLimits(s.settings())
-	}
 
 	var applied []model.Item
 	var moves *snapshot.AppliedPayloads
@@ -484,6 +530,12 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	if moves != nil {
 		moves.Commit()
 	}
+	// The settings change only after the history was replaced: a failure
+	// above leaves both as they were.
+	if data.Settings != nil {
+		s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(*data.Settings) })
+		s.cfg.History.ApplyLimits(s.settings())
+	}
 	res := DownloadResult{Fingerprint: Fingerprint(applied), SnapshotSHA256: sum, Merged: merged}
 	s.timing("download", "import_snapshot", started, reason)
 
@@ -495,8 +547,8 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	return res, nil
 }
 
-func (s *Syncer) downloadSnapshot(ctx context.Context, token, path string) (string, error) {
-	return s.refreshAndRetry(ctx, token, func(t string) error {
+func (s *Syncer) downloadSnapshot(ctx context.Context, token, path, account string) (string, error) {
+	return s.refreshAndRetry(ctx, token, account, func(t string) error {
 		return s.cfg.Client.DownloadSnapshot(ctx, t, path)
 	})
 }
@@ -505,7 +557,10 @@ func (s *Syncer) downloadSnapshot(ctx context.Context, token, path string) (stri
 // stored locally. It reads *token each time, as the C# closure does, so a
 // renewed token is used. A blob that cannot be fetched is "not there": the
 // import then fails with "blob missing".
-func (s *Syncer) ensureBlob(ctx context.Context, token *string) snapshot.EnsureBlob {
+func (s *Syncer) ensureBlob(ctx context.Context, token *string, account string) snapshot.EnsureBlob {
+	if strings.TrimSpace(account) == "" {
+		account = syncclient.AccountID(*token)
+	}
 	return func(sha string) (string, error) {
 		local := s.cfg.Layout.BlobPath(sha)
 		if local == "" {
@@ -516,7 +571,11 @@ func (s *Syncer) ensureBlob(ctx context.Context, token *string) snapshot.EnsureB
 		}
 		err := s.cfg.Client.DownloadBlob(ctx, *token, sha, local)
 		if err != nil && isAuthError(err) {
-			if ok, _ := s.session.Refresh(ctx); !ok {
+			ok, rerr := s.refreshBound(ctx, account)
+			if rerr != nil {
+				return "", rerr
+			}
+			if !ok {
 				return "", nil
 			}
 			*token = s.bearer()
@@ -539,10 +598,10 @@ func (s *Syncer) ensureBlob(ctx context.Context, token *string) snapshot.EnsureB
 func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMergeFingerprint string, progress func(Progress), reason string) error {
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
-	return s.mergeAndApply(ctx, basis, preMergeFingerprint, progress, reason)
+	return s.mergeAndApply(ctx, basis, preMergeFingerprint, progress, reason, s.currentAccount())
 }
 
-func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMergeFingerprint string, progress func(Progress), reason string) error {
+func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMergeFingerprint string, progress func(Progress), reason, account string) error {
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	started := s.cfg.Now()
@@ -550,6 +609,12 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	token, err := s.connection(ctx)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(account) == "" {
+		account = syncclient.AccountID(token)
+	}
+	if s.accountChanged(account) {
+		return ErrSessionChanged
 	}
 	local := s.cfg.History.Items()
 	localSettings := s.settings()
@@ -577,7 +642,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	defer tryDelete(path)
 
 	report(progress, "download_snapshot", "download remote snapshot", 44)
-	if token, err = s.downloadSnapshot(ctx, token, path); err != nil {
+	if token, err = s.downloadSnapshot(ctx, token, path, account); err != nil {
 		return err
 	}
 	s.timing("merge", "download_snapshot", started, fmt.Sprintf("%s;size=%d", reason, fileSize(path)))
@@ -591,7 +656,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		return err
 	}
 	defer os.RemoveAll(importRoot)
-	remote, err := snapshot.ReadDetached(ctx, s.cfg.Layout, importRoot, path, s.ensureBlob(ctx, &token))
+	remote, err := snapshot.ReadDetached(ctx, s.cfg.Layout, importRoot, path, s.ensureBlob(ctx, &token, account))
 	if err != nil {
 		return err
 	}

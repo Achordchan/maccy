@@ -2,6 +2,8 @@ package syncer
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -114,7 +116,9 @@ func TestPersistAfterUploadKeepsTheUploadedVersion(t *testing.T) {
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, srv, s, &unitHistory{items: []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "hello")}})
 	up := &syncclient.UploadResult{Version: "mine", SHA256: "my-sha"}
-	syn.persistAfterUpload(context.Background(), up, &ManifestInfo{Version: "basis"}, "fp-sent")
+	if err := syn.persistAfterUpload(context.Background(), up, &ManifestInfo{Version: "basis"}, "fp-sent", ""); err != nil {
+		t.Fatal(err)
+	}
 
 	if got := model.Str(s.SyncLastRemoteVersion); got != "mine" {
 		t.Errorf("version %q: the manifest of another device was recorded", got)
@@ -138,7 +142,9 @@ func TestPersistAfterUploadUsesTheManifestOfItsOwnUpload(t *testing.T) {
 
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, srv, s, &unitHistory{})
-	syn.persistAfterUpload(context.Background(), &syncclient.UploadResult{Version: "mine", SHA256: "my-sha"}, nil, "fp")
+	if err := syn.persistAfterUpload(context.Background(), &syncclient.UploadResult{Version: "mine", SHA256: "my-sha"}, nil, "fp", ""); err != nil {
+		t.Fatal(err)
+	}
 
 	if got := model.Str(s.SyncLastRemoteVersion); got != "mine" {
 		t.Errorf("version %q", got)
@@ -702,5 +708,73 @@ func TestRunUploadsAfterADownloadMergedACapture(t *testing.T) {
 	}
 	if got := model.Str(s.SyncLastRemoteVersion); got != "v2" {
 		t.Errorf("version %q", got)
+	}
+}
+
+func testJWT(sub string) string {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"` + sub + `"}`))
+	return "header." + payload + ".signature"
+}
+
+// An upload that started in one account must not retry with another account's
+// token: that would publish the first account's snapshot into the second.
+func TestUploadStopsWhenTheSessionChanges(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var refreshes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/sync/snapshot":
+			once.Do(func() { close(entered) })
+			<-release
+			w.WriteHeader(http.StatusUnauthorized)
+		case r.URL.Path == "/auth/refresh":
+			refreshes.Add(1)
+			io.WriteString(w, `{"accessToken":"`+testJWT("account-b")+`","refreshToken":"rb","accessTokenExpiresAt":"2030-01-01T00:00:00+00:00"}`)
+		case r.URL.Path == "/sync/blobs/check":
+			io.WriteString(w, `{"missing":[]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	s.AuthRefreshToken = model.Ptr("ra")
+	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	syn := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()},
+		Settings: syncclient.Settings{
+			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
+			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+		},
+		History: &unitHistory{items: []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "private")}},
+		Client:  syncclient.New(srv.URL),
+		BaseURL: srv.URL,
+		Now:     time.Now,
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := syn.Upload(context.Background(), nil, "test")
+		done <- err
+	}()
+	<-entered
+	// The user signs into another account while the upload is in flight.
+	mu.Lock()
+	s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+	s.AuthRefreshToken = model.Ptr("rb")
+	mu.Unlock()
+	close(release)
+
+	err := <-done
+	if !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("a session change during the upload: %v", err)
+	}
+	if n := refreshes.Load(); n != 0 {
+		t.Errorf("the new account's token was refreshed %d times for the old upload", n)
 	}
 }

@@ -21,6 +21,10 @@ import (
 var (
 	ErrSubscriptionExpired = errors.New("subscription expired")
 	ErrNotLoggedIn         = errors.New("not logged in")
+	// ErrSessionChanged says the signed-in account changed while the sync was
+	// running: its requests and its state belong to the old session, so the
+	// workflow stops instead of using the new account's credentials.
+	ErrSessionChanged = errors.New("sync session changed")
 )
 
 // Direction is what a sync has to do.

@@ -36,54 +36,70 @@ func (s *Syncer) Run(ctx context.Context, progress func(Progress), reason string
 }
 
 func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string) (RunResult, error) {
+	account := s.currentAccount()
 	report(progress, "check_remote", "检查远端", 10)
 	manifest, err := s.remoteManifest(ctx)
 	if err != nil {
 		return RunResult{}, err
+	}
+	if s.accountChanged(account) {
+		return RunResult{}, ErrSessionChanged
 	}
 	d := s.Decide(manifest)
 	res := RunResult{Decision: d}
 
 	switch d.Direction {
 	case None:
+		if s.accountChanged(account) {
+			return res, ErrSessionChanged
+		}
 		s.PersistSyncState(d.LocalFingerprint, d.Manifest)
 
 	case Download:
-		dr, err := s.downloadAndApply(ctx, progress, reason, d.LocalFingerprint)
+		dr, err := s.downloadAndApply(ctx, progress, reason, d.LocalFingerprint, account)
 		if err != nil {
 			return res, err
 		}
 		if dr.Merged {
 			// The history changed while the snapshot was downloading: the
 			// merge has unpublished items, so upload it as a merge does.
-			up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_download_merge_upload")
+			up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_download_merge_upload", account)
 			if err != nil {
 				return res, err
 			}
 			res.Uploaded = up
-			s.persistAfterUpload(ctx, up, &d.Manifest, fp)
+			if err := s.persistAfterUpload(ctx, up, &d.Manifest, fp, account); err != nil {
+				return res, err
+			}
 			break
+		}
+		if s.accountChanged(account) {
+			return res, ErrSessionChanged
 		}
 		s.PersistSyncState(dr.Fingerprint, snapshotState(dr, d.Manifest, s.cfg.Now().UTC()))
 
 	case Merge:
-		if err := s.mergeAndApply(ctx, d.Manifest, d.LocalFingerprint, progress, reason); err != nil {
+		if err := s.mergeAndApply(ctx, d.Manifest, d.LocalFingerprint, progress, reason, account); err != nil {
 			return res, err
 		}
-		up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_merge_upload")
+		up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_merge_upload", account)
 		if err != nil {
 			return res, err
 		}
 		res.Uploaded = up
-		s.persistAfterUpload(ctx, up, &d.Manifest, fp)
+		if err := s.persistAfterUpload(ctx, up, &d.Manifest, fp, account); err != nil {
+			return res, err
+		}
 
 	default: // Upload
-		up, fp, err := s.uploadWithFingerprint(ctx, progress, reason)
+		up, fp, err := s.uploadWithFingerprint(ctx, progress, reason, account)
 		if err != nil {
 			return res, err
 		}
 		res.Uploaded = up
-		s.persistAfterUpload(ctx, up, &d.Manifest, fp)
+		if err := s.persistAfterUpload(ctx, up, &d.Manifest, fp, account); err != nil {
+			return res, err
+		}
 	}
 	return res, nil
 }
@@ -93,11 +109,14 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.UploadResult, error) {
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
-	up, fp, err := s.uploadWithFingerprint(ctx, nil, "local_mutation")
+	account := s.currentAccount()
+	up, fp, err := s.uploadWithFingerprint(ctx, nil, "local_mutation", account)
 	if err != nil {
 		return nil, err
 	}
-	s.persistAfterUpload(ctx, up, nil, fp)
+	if err := s.persistAfterUpload(ctx, up, nil, fp, account); err != nil {
+		return nil, err
+	}
 	return up, nil
 }
 
@@ -106,10 +125,15 @@ func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.Uplo
 // items that went into it. The manifest is used only when it still describes
 // that upload: another device may have uploaded in between, and remembering
 // its version next to this history would lose both changes.
-func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadResult, fallback *ManifestInfo, fp string) {
+func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadResult, fallback *ManifestInfo, fp, account string) error {
+	if s.accountChanged(account) {
+		// The upload went to the old account; the new session must not record
+		// it as its own state.
+		return ErrSessionChanged
+	}
 	if m, err := s.ManifestInfo(ctx); err == nil && uploadIsInManifest(up, m) {
 		s.PersistSyncState(fp, m)
-		return
+		return nil
 	}
 	now := s.cfg.Now().UTC()
 	switch {
@@ -121,6 +145,7 @@ func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadRe
 	default:
 		s.PersistSyncState(fp, ManifestInfo{UpdatedAt: &now})
 	}
+	return nil
 }
 
 // uploadIsInManifest says the server's manifest describes the snapshot this

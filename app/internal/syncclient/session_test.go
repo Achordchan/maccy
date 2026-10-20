@@ -2,6 +2,7 @@ package syncclient
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -236,5 +237,22 @@ func waitUntil(t *testing.T, what string, ok func() bool) {
 			t.Fatalf("timed out waiting for %s", what)
 		}
 		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func TestAccountIDReadsTheTokenSubject(t *testing.T) {
+	jwt := func(payload string) string {
+		return "header." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + ".signature"
+	}
+	if got := AccountID(jwt(`{"sub":"user-a","email":"a@example.com"}`)); got != "user-a" {
+		t.Errorf("subject: %q", got)
+	}
+	if got := AccountID(jwt(`{"email":"b@example.com"}`)); got != "b@example.com" {
+		t.Errorf("email fallback: %q", got)
+	}
+	for _, token := range []string{"", "opaque", "a.b", "header.not-base64!.signature"} {
+		if got := AccountID(token); got != "" {
+			t.Errorf("%q: %q", token, got)
+		}
 	}
 }
