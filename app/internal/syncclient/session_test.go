@@ -289,3 +289,27 @@ func TestWatchReconcilesAfterConnecting(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// A server that answers 200 and hangs up at once must not cause a tight
+// reconnect loop.
+func TestWatchBacksOffOnImmediateCleanEOF(t *testing.T) {
+	var connects atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync/events" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		connects.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	New(srv.URL).Watch(ctx, &fakeTokens{token: "t"}, WatchOptions{
+		InitialDelay: 20 * time.Millisecond, MaxDelay: 40 * time.Millisecond,
+	}, func() {})
+	if n := connects.Load(); n > 30 {
+		t.Errorf("connections %d: a clean EOF reconnected without a delay", n)
+	}
+}

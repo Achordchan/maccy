@@ -173,6 +173,7 @@ func (c *Client) Watch(ctx context.Context, ts TokenSource, opts WatchOptions, o
 		}
 	}
 	for ctx.Err() == nil {
+		started := time.Now()
 		token, err := ts.AccessToken(ctx)
 		if err != nil || strings.TrimSpace(token) == "" {
 			if !wait(delay) {
@@ -190,8 +191,17 @@ func (c *Client) Watch(ctx context.Context, ts TokenSource, opts WatchOptions, o
 				continue
 			}
 		case err == nil:
-			// The server closed the stream: listen again at once.
-			delay = opts.InitialDelay
+			// A clean EOF. A stream that lasted is a healthy connection: go
+			// back at once. One that closed at once is a server or proxy
+			// that keeps saying 200 and hanging up: back off like a failure.
+			if time.Since(started) >= 30*time.Second {
+				delay = opts.InitialDelay
+				continue
+			}
+			if !wait(delay) {
+				return
+			}
+			delay = min(delay*2, opts.MaxDelay)
 			continue
 		}
 		if !wait(delay) {

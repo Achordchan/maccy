@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1115,14 +1116,29 @@ func rollbackItems(before, applied, current []model.Item) []model.Item {
 	for _, it := range applied {
 		appliedIDs[strings.ToLower(it.ID)] = true
 	}
+	appliedByID := make(map[string]model.Item, len(applied))
+	for _, it := range applied {
+		appliedByID[strings.ToLower(it.ID)] = it
+	}
 	beforeIDs := make(map[string]bool, len(before))
 	out := make([]model.Item, 0, len(before)+len(current))
 	for _, it := range before {
 		id := strings.ToLower(it.ID)
 		beforeIDs[id] = true
 		if cur, ok := currentByID[id]; ok {
-			// Keep the user's edits to an item that also existed before.
-			it.Note, it.Pinned, it.CopyCount = cur.Note, cur.Pinned, cur.CopyCount
+			// Only a field changed after the mutation was applied is the
+			// user's edit; the rest goes back to what it was before.
+			if ap, applied := appliedByID[id]; applied {
+				if !sameNote(cur.Note, ap.Note) {
+					it.Note = cur.Note
+				}
+				if cur.Pinned != ap.Pinned {
+					it.Pinned = cur.Pinned
+				}
+				if cur.CopyCount != ap.CopyCount {
+					it.CopyCount = cur.CopyCount
+				}
+			}
 		}
 		out = append(out, it)
 	}
@@ -1132,7 +1148,28 @@ func rollbackItems(before, applied, current []model.Item) []model.Item {
 			out = append(out, it)
 		}
 	}
-	return MergeItems(out, nil)
+	// Sort only: MergeItems would fold duplicate items of a history that does
+	// not merge them.
+	sortItems(out)
+	return out
+}
+
+func sameNote(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// sortItems is the order MergeItems gives: newest first, then by id.
+func sortItems(items []model.Item) {
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if !a.CapturedAt.Equal(b.CapturedAt.Time) {
+			return a.CapturedAt.After(b.CapturedAt.Time)
+		}
+		return strings.ToLower(a.ID) < strings.ToLower(b.ID)
+	})
 }
 
 // cleanupContext bounds the rollback of a failed operation; it is not the

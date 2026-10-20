@@ -131,6 +131,13 @@ func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.Uplo
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
 	account := s.currentAccount()
+	if account == "" {
+		// A refresh-only session learns its account here, before the upload,
+		// so the state that follows is checked against the same account.
+		if token, err := s.connection(ctx); err == nil {
+			account = syncclient.AccountID(token)
+		}
+	}
 	if err := s.checkBound(account); err != nil {
 		return nil, err
 	}

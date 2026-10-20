@@ -1642,3 +1642,55 @@ func TestPersistAfterDownloadKeepsAMergedRestorePending(t *testing.T) {
 		t.Errorf("fingerprint %q: the merged restore was recorded as synchronized", got)
 	}
 }
+
+// A failed download must not copy the downloaded note/copy count over the
+// local item when the user did not edit it meanwhile.
+func TestRollbackRestoresMetadataThatWasNotEdited(t *testing.T) {
+	const id = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	remote := textItemAt(id, "remote")
+	remote.Note, remote.CopyCount = model.Ptr("remote note"), 9
+	local := textItemAt(id, "local")
+	local.Note, local.CopyCount = model.Ptr("local note"), 1
+	h := &unitHistory{items: []model.Item{local}}
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{remote}))
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	syn.cfg.Flush = func(context.Context) error { return errors.New("disk full") }
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+		t.Fatal("the failed flush stopped nothing")
+	}
+	if len(h.items) != 1 {
+		t.Fatalf("history %+v", h.items)
+	}
+	got := h.items[0]
+	if model.Str(got.Note) != "local note" || got.CopyCount != 1 || model.Str(got.Text) != "local" {
+		t.Errorf("the failed download changed the local metadata: %+v", got)
+	}
+}
+
+// A history that does not merge duplicates keeps them when a failed
+// operation is rolled back.
+func TestRollbackKeepsDuplicateItems(t *testing.T) {
+	hash := "same-content"
+	a := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "same")
+	b := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "same")
+	a.ContentHash, b.ContentHash = &hash, &hash
+	b.CopyCount = 4
+	h := &unitHistory{items: []model.Item{a, b}}
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{textItemAt("16fd2706-8baf-433b-82eb-8c7fada847da", "remote")}))
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	syn.cfg.Flush = func(context.Context) error { return errors.New("disk full") }
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+		t.Fatal("the failed flush stopped nothing")
+	}
+	if len(h.items) != 2 {
+		t.Fatalf("the duplicates were folded during rollback: %+v", h.items)
+	}
+	counts := map[int32]bool{h.items[0].CopyCount: true, h.items[1].CopyCount: true}
+	if !counts[1] || !counts[4] {
+		t.Errorf("copy counts changed: %+v", h.items)
+	}
+}
