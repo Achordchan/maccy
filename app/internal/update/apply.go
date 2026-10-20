@@ -296,7 +296,9 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 		return err
 	}
 	for _, e := range entries {
-		backup, err := insideRoot(p.BackupDir, e.rel)
+		// replaced and deleted files go to separate folders: a package may replace
+		// "_deleted/x" and delete "x", and neither backup may take the other's place
+		backup, err := insideRoot(p.BackupDir, filepath.Join("replaced", e.rel))
 		if err != nil {
 			return err
 		}
@@ -348,7 +350,7 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 		if !fileExists(dest) {
 			continue
 		}
-		backup, err := insideRoot(p.BackupDir, filepath.Join("_deleted", rel))
+		backup, err := insideRoot(p.BackupDir, filepath.Join("deleted", rel))
 		if err != nil {
 			return err
 		}

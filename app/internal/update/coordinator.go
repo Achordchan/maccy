@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -317,14 +318,42 @@ func (c *Coordinator) installDirWritable() bool {
 	if strings.TrimSpace(c.Exe) == "" {
 		return true
 	}
-	f, err := os.CreateTemp(filepath.Dir(c.Exe), ".klip-write-test-*")
+	dir := filepath.Dir(c.Exe)
+	f, err := os.CreateTemp(dir, ".klip-write-test-*")
 	if err != nil {
 		return false
 	}
 	name := f.Name()
 	f.Close()
 	_ = os.Remove(name)
-	return true
+	// Adding files is allowed; replacing the ones that are there may not be (a
+	// read-only attribute): the helper cannot overwrite those, and by then the
+	// program has exited. The installer deals with them.
+	writable := true
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, rerr := filepath.Rel(dir, path)
+		if rerr != nil || rel == "." {
+			return nil
+		}
+		if IsProtected(rel) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if info, ierr := d.Info(); ierr == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o200 == 0 {
+			writable = false
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return writable
 }
 
 func firstNonEmpty(v ...string) string {

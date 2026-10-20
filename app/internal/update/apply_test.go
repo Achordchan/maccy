@@ -109,7 +109,7 @@ func TestApplyReplacesFilesAndKeepsData(t *testing.T) {
 		t.Error("a file that no list names was removed")
 	}
 	// The old program is in the backup.
-	if got := read(t, filepath.Join(r.plan.BackupDir, "maccy.exe")); got != "OLD EXE" {
+	if got := read(t, filepath.Join(r.plan.BackupDir, "replaced", "maccy.exe")); got != "OLD EXE" {
 		t.Errorf("backup = %q", got)
 	}
 	// The list is remembered; the program is started again.
@@ -179,7 +179,7 @@ func TestApplyRemovesWhatThePreviousPackageHadAndLegacyFiles(t *testing.T) {
 		}
 	}
 	// What was removed can be put back from the backup.
-	if got := read(t, filepath.Join(r.plan.BackupDir, "_deleted", "old-plugin.dll")); got != "OLD PLUGIN" {
+	if got := read(t, filepath.Join(r.plan.BackupDir, "deleted", "old-plugin.dll")); got != "OLD PLUGIN" {
 		t.Errorf("deleted backup = %q", got)
 	}
 	// The legacy list is done: it is not kept.
@@ -774,5 +774,57 @@ func TestApplyTellsWhenTheOldVersionCouldNotBeRestored(t *testing.T) {
 	}
 	if len(r.alerts) != 1 || !strings.Contains(r.alerts[0], "没能完全恢复") || strings.Contains(r.alerts[0], "已恢复旧版本") {
 		t.Fatalf("an incomplete recovery must not be called a recovery: %v", r.alerts)
+	}
+}
+
+func TestReplacedAndDeletedBackupsDoNotShareAPlace(t *testing.T) {
+	files := map[string]string{}
+	for k, v := range newPkg {
+		files[k] = v
+	}
+	files["_deleted/plugin.dll"] = "NEW" // the package replaces this one...
+	r := newRig(t, files, nil)
+	write(t, filepath.Join(r.install, "_deleted", "plugin.dll"), "OLD REPLACED")
+	write(t, filepath.Join(r.install, "plugin.dll"), "OLD DELETED") // ...and the earlier package's plugin.dll goes
+	prev := PackageManifest{AppID: "maccy", Version: "1.0.10", Runtime: "win-x64", Files: []PackageFile{{Path: "plugin.dll"}}}
+	b, _ := json.Marshal(prev)
+	write(t, r.plan.InstalledManifest, string(b))
+	if err := RunPlan(r.plan, r.hooks()); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(r.plan.BackupDir, "replaced", "_deleted", "plugin.dll")); got != "OLD REPLACED" {
+		t.Errorf("replaced backup = %q", got)
+	}
+	if got := read(t, filepath.Join(r.plan.BackupDir, "deleted", "plugin.dll")); got != "OLD DELETED" {
+		t.Errorf("deleted backup = %q", got)
+	}
+}
+
+func TestReadOnlyFileInTheInstallDirMeansTheInstallerIsUsed(t *testing.T) {
+	r := newCoord(t, "1.0.10")
+	dir := filepath.Dir(r.exe)
+	ro := filepath.Join(dir, "sqlite.dll")
+	write(t, ro, "DLL")
+	if !r.c.installDirWritable() {
+		t.Fatal("a folder of writable files is writable")
+	}
+	if err := os.Chmod(ro, 0o444); err != nil {
+		t.Skip("cannot make the file read-only")
+	}
+	defer os.Chmod(ro, 0o644)
+	if f, err := os.OpenFile(ro, os.O_WRONLY, 0); err == nil {
+		f.Close()
+		t.Skip("read-only files are writable anyway (root?)")
+	}
+	if r.c.installDirWritable() {
+		t.Fatal("the helper cannot replace a read-only file: the installer must be used")
+	}
+	// The user's own data is not the update's to replace.
+	_ = os.Chmod(ro, 0o644)
+	write(t, filepath.Join(dir, "history.json"), "[]")
+	_ = os.Chmod(filepath.Join(dir, "history.json"), 0o444)
+	defer os.Chmod(filepath.Join(dir, "history.json"), 0o644)
+	if !r.c.installDirWritable() {
+		t.Fatal("a read-only data file is not in the update's way")
 	}
 }
