@@ -120,8 +120,17 @@ func tool(name string) *exec.Cmd {
 	return c
 }
 
+// pbcopy puts text on the clipboard as another program would; only macOS has
+// the tool, elsewhere the adapter itself does it (the other side of each test
+// still goes through the real clipboard).
 func pbcopy(t *testing.T, s string) {
 	t.Helper()
+	if runtime.GOOS != "darwin" {
+		if err := (Clipboard{}).WriteText(s); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	c := tool("pbcopy")
 	c.Stdin = strings.NewReader(s)
 	if err := c.Run(); err != nil {
@@ -131,6 +140,9 @@ func pbcopy(t *testing.T, s string) {
 
 func pbpaste(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS != "darwin" {
+		return (Clipboard{}).ReadText()
+	}
 	out, err := tool("pbpaste").Output()
 	if err != nil {
 		t.Fatal(err)

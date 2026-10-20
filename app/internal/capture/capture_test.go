@@ -35,10 +35,17 @@ type fakeClip struct {
 	wroteImage []byte
 	wroteWith  string
 	reads      int
+	onRead     func() // runs inside ReadText, as a write that comes during a read
 }
 
-func (c *fakeClip) Formats() []string            { return c.formats }
-func (c *fakeClip) ReadText() string             { c.reads++; return c.text }
+func (c *fakeClip) Formats() []string { return c.formats }
+func (c *fakeClip) ReadText() string {
+	c.reads++
+	if c.onRead != nil {
+		c.onRead()
+	}
+	return c.text
+}
 func (c *fakeClip) ReadFiles() ([]string, error) { c.reads++; return c.files, nil }
 func (c *fakeClip) ReadImage() []byte            { c.reads++; return c.image }
 func (c *fakeClip) WriteText(s string) error     { c.wroteText = &s; return nil }
@@ -526,5 +533,18 @@ func TestSpecialFilesAreNotCopied(t *testing.T) {
 	}
 	if err := copyFile("/dev/zero", filepath.Join(t.TempDir(), "x")); err == nil {
 		t.Error("a device must not be copied")
+	}
+}
+
+func TestApplyDuringCaptureIsNotCaptured(t *testing.T) {
+	r := newRig(t)
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "applied"
+	r.clip.onRead = func() { // Apply runs while Capture is reading
+		r.clip.onRead = nil
+		_ = r.s.Apply(model.Item{Kind: model.KindText, Text: model.Ptr("applied")})
+	}
+	r.s.Capture(context.Background())
+	if r.h.Len() != 0 {
+		t.Fatal("what Apply wrote during the read must not become an item")
 	}
 }

@@ -81,6 +81,8 @@ type Service struct {
 	allowed     map[string]bool
 	lastOwnWrit atomic.Int64
 	ownSeq      atomic.Int64 // counter after our last write, plus 2; 0 is none
+	applying    atomic.Int32 // Apply calls in progress
+	writeGen    atomic.Int64 // moves at the start and the end of every Apply
 }
 
 // New returns a Service with the defaults of ClipboardCaptureService: all
@@ -115,8 +117,11 @@ func (s *Service) MarkWriteByUs() {
 
 // markWritten is called when the write is done: the counter then stands where
 // our own change left it.
-func (s *Service) markWritten() {
+func (s *Service) markWritten(verify func() bool) {
 	s.lastOwnWrit.Store(s.Now().UnixNano())
+	if verify != nil && !verify() {
+		return // somebody copied in between: what is there is not ours
+	}
 	if s.Seq != nil {
 		if n := s.Seq(); n >= 0 {
 			s.ownSeq.Store(n + 2)
@@ -124,14 +129,19 @@ func (s *Service) markWritten() {
 	}
 }
 
+// ownSeqTTL is how long the counter after our write is trusted.
+const ownSeqTTL = 5 * time.Second
+
 // isOwnChange says whether the clipboard is as our last write left it, or the
 // write is too recent to tell.
 func (s *Service) isOwnChange() bool {
 	if s.Seq != nil {
 		if own := s.ownSeq.Load(); own != 0 {
-			if n := s.Seq(); n >= 0 {
+			if n := s.Seq(); n >= 0 && s.Now().UnixNano()-s.lastOwnWrit.Load() < int64(ownSeqTTL) {
 				// The counter knows: still where our write left it is ours,
-				// anywhere else somebody else copied, window or not.
+				// anywhere else somebody else copied, window or not. That
+				// holds only for a while, so that a copy that slipped in
+				// next to the write cannot hide later captures for ever.
 				return n == own-2
 			}
 		}
@@ -193,7 +203,8 @@ func has(set map[string]bool, names []string) bool {
 // Text comes first, then files, then images; the first that yields something
 // is the item.
 func (s *Service) Capture(ctx context.Context) error {
-	if s.isOwnChange() {
+	gen := s.writeGen.Load()
+	if s.applying.Load() > 0 || s.isOwnChange() {
 		return nil
 	}
 	formats := s.Clipboard.Formats()
@@ -206,6 +217,9 @@ func (s *Service) Capture(ctx context.Context) error {
 		app = s.ForegroundApp()
 	}
 	add := func(it model.Item) {
+		if s.interfered(gen) {
+			return // an Apply wrote while we read: this is our own content
+		}
 		now := model.Time{Time: s.Now()}
 		it.CapturedAt, it.FirstCapturedAt = now, &now
 		if app != nil {
@@ -470,13 +484,32 @@ func newGUID() string {
 
 // Apply puts an item back on the clipboard (ClipboardApplyService). Content
 // that is gone is not an error: nothing is written.
+//
+// A Capture that is reading while this writes would take the written content
+// for a copy, so Capture drops what it read when an Apply ran in the
+// meantime (see interfered). It does not wait for Apply: both call the
+// clipboard, which hops to the main thread, and a lock held across that could
+// deadlock with a caller that is on it.
 func (s *Service) Apply(it model.Item) error {
+	s.applying.Add(1)
+	s.writeGen.Add(1)
+	defer func() { s.writeGen.Add(1); s.applying.Add(-1) }()
 	s.MarkWriteByUs()
 	wrote, err := s.write(it)
 	if wrote && err == nil {
-		s.markWritten() // only a write that happened can be recognised as ours
+		var verify func() bool
+		if it.Kind == model.KindText {
+			want := model.Str(it.Text)
+			verify = func() bool { return s.Clipboard.ReadText() == want }
+		}
+		s.markWritten(verify) // only a write that happened can be recognised as ours
 	}
 	return err
+}
+
+// interfered says whether an Apply ran, or is running, since gen was read.
+func (s *Service) interfered(gen int64) bool {
+	return s.applying.Load() > 0 || s.writeGen.Load() != gen
 }
 
 // write puts the item on the clipboard and says whether it wrote anything.
