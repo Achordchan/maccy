@@ -590,3 +590,17 @@ func TestPathThroughALinkIsRefused(t *testing.T) {
 		t.Fatalf("a plain new path: %v", err)
 	}
 }
+
+func TestPackageWithAnUnsafeLegacyNameIsRefusedBeforeTheHelperRuns(t *testing.T) {
+	files := map[string]string{"maccy.exe": "EXE"}
+	for _, bad := range []string{"../old.dll", "..\\old.dll", "/etc/x", "C:/x.dll"} {
+		z := zipOf(t, "1.0.11", "win-x64", files, func(m *PackageManifest) { m.LegacyFiles = []string{bad} })
+		if err := prepare(t, "1.0.11", z); err == nil {
+			t.Errorf("legacy name %q was accepted", bad)
+		}
+	}
+	z := zipOf(t, "1.0.11", "win-x64", files, func(m *PackageManifest) { m.LegacyFiles = []string{"maccy.dll", "runtimes/win-x64/x.dll"} })
+	if err := prepare(t, "1.0.11", z); err != nil {
+		t.Errorf("ordinary legacy names: %v", err)
+	}
+}

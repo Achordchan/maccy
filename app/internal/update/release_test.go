@@ -236,3 +236,68 @@ func TestPackageIntoTheSameFolderTwiceDoesNotContainItself(t *testing.T) {
 		}
 	}
 }
+
+func TestPackagesOfDifferentVersionsInOneFolderDoNotNest(t *testing.T) {
+	tool := releaseTool(t)
+	pub := t.TempDir()
+	write(t, filepath.Join(pub, "maccy.exe"), "EXE")
+	for _, v := range []string{"1.0.11", "1.0.12"} {
+		if res, err := exec.Command("python3", tool, "package", "--version", v, "--publish-dir", pub, "--out-dir", pub).CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", v, err, res)
+		}
+	}
+	zr, err := zip.OpenReader(filepath.Join(pub, "maccy-1.0.12-win-x64.zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		if strings.HasSuffix(f.Name, ".zip") {
+			t.Fatalf("the package of 1.0.12 holds %s", f.Name)
+		}
+	}
+}
+
+func TestBuildDoesNotClearAFolderThatIsNotItsOwn(t *testing.T) {
+	tool := releaseTool(t)
+	repo := filepath.Dir(filepath.Dir(tool))
+	script := `
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import release_go
+try:
+    release_go.check_disposable(Path(sys.argv[2]))
+except RuntimeError as e:
+    print("REFUSED")
+else:
+    print("ALLOWED")
+`
+	check := func(dir string) string {
+		out, err := exec.Command("python3", "-c", script, filepath.Dir(tool), dir).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if check(repo) != "REFUSED" || check(filepath.Dir(repo)) != "REFUSED" {
+		t.Error("the checkout, or a folder around it, was offered for clearing")
+	}
+	other := t.TempDir()
+	write(t, filepath.Join(other, "notes.txt"), "mine")
+	if check(other) != "REFUSED" {
+		t.Error("a folder of somebody's files without a build in it was offered for clearing")
+	}
+	inst := t.TempDir()
+	write(t, filepath.Join(inst, "maccy.exe"), "EXE")
+	write(t, filepath.Join(inst, "history.json"), "[]")
+	if check(inst) != "REFUSED" {
+		t.Error("an installation with the user's data was offered for clearing")
+	}
+	build := t.TempDir()
+	write(t, filepath.Join(build, "maccy.exe"), "EXE")
+	write(t, filepath.Join(build, "mygo-sqlite3.dll"), "DLL")
+	if check(build) != "ALLOWED" || check(filepath.Join(build, "none")) != "ALLOWED" {
+		t.Error("the leftover of a build, or an empty folder, should be fine")
+	}
+}

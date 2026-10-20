@@ -98,6 +98,28 @@ def fetch_sqlite(runtime: str, dest_dir: Path, cache: Path) -> Path:
     return dest
 
 
+def check_disposable(publish_dir: Path) -> None:
+    """build clears the publish folder first. Refuse a folder that is not the
+    leftover of an earlier build: this checkout or any folder around it, a
+    folder with a repository or the user's data in it, or one that holds
+    anything else than what a build makes."""
+    pub = publish_dir.resolve()
+    repo = REPO.resolve()
+    if pub == repo or pub in repo.parents:
+        raise RuntimeError(f"refusing to clear {pub}: it is, or holds, this checkout")
+    if pub == Path(pub.anchor) or pub == Path.home():
+        raise RuntimeError(f"refusing to clear {pub}")
+    entries = list(pub.rglob("*"))
+    if not entries:
+        return
+    if not (pub / "maccy.exe").is_file():
+        raise RuntimeError(f"refusing to clear {pub}: it holds files but no maccy.exe from an earlier build")
+    for path in entries:
+        rel = path.relative_to(pub).as_posix()
+        if path.name == ".git" or ".git" in path.relative_to(pub).parts or is_protected(rel):
+            raise RuntimeError(f"refusing to clear {pub}: {rel} is not part of a build")
+
+
 def build_publish(version: str, runtime: str, publish_dir: Path) -> None:
     """maccy.exe (a Windows GUI program with icon and version) and the SQLite
     library, in publish_dir."""
@@ -105,6 +127,7 @@ def build_publish(version: str, runtime: str, publish_dir: Path) -> None:
         raise ValueError("runtime must be one of " + ", ".join(GO_ARCH))
     arch = GO_ARCH[runtime]
     if publish_dir.exists():
+        check_disposable(publish_dir)
         shutil.rmtree(publish_dir)
     publish_dir.mkdir(parents=True)
 
@@ -127,6 +150,9 @@ def build_publish(version: str, runtime: str, publish_dir: Path) -> None:
 # ---- package -------------------------------------------------------------
 
 
+GENERATED_PACKAGE = re.compile(r"maccy-[^/]+-(?:" + "|".join(re.escape(r) for r in GO_ARCH) + r")\.zip")
+
+
 def package_file_list(publish_dir: Path, exclude: Path | None = None) -> list[dict]:
     files = []
     for path in sorted(publish_dir.rglob("*")):
@@ -135,6 +161,8 @@ def package_file_list(publish_dir: Path, exclude: Path | None = None) -> list[di
         rel = path.relative_to(publish_dir).as_posix()
         if rel == "maccy-package.json" or (exclude is not None and path.resolve() == exclude.resolve()):
             continue
+        if GENERATED_PACKAGE.fullmatch(rel):
+            continue  # a package of an earlier version, left in the folder it was made from
         if is_protected(rel):
             raise RuntimeError("publish folder holds user data, not for a package: " + rel)
         files.append({"path": rel, "sha256": sha256_file(path), "size": path.stat().st_size})

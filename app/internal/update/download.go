@@ -394,5 +394,12 @@ func ValidatePackage(info Info, staging string, m *PackageManifest) error {
 	if !hasExe {
 		return errors.New("package missing " + ExeName)
 	}
+	// The files to remove are checked now too: a bad name found while applying
+	// would come after the program has exited and the new files are in place.
+	for _, old := range m.LegacyFiles {
+		if _, err := NormalizePath(old); err != nil {
+			return err
+		}
+	}
 	return nil
 }
