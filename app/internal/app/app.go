@@ -98,6 +98,7 @@ type App struct {
 	retrying          atomic.Bool        // the loop that tries the first sync again is running
 	loginWanted       atomic.Bool        // a sync for a new sign-in is owed (one was running when it was asked for)
 	initialOK         atomic.Bool        // a background sync has gone through
+	failStreak        atomic.Int32       // background syncs that failed in a row since the initial one
 	stopWatch         context.CancelFunc // ends the event stream of the current account
 }
 
@@ -512,6 +513,7 @@ func (a *App) AccountChanged(signedIn bool) {
 	if signedIn {
 		a.loginWanted.Store(true)
 		a.initialOK.Store(false)
+		a.failStreak.Store(0)
 		a.Auto.Trigger(a.acct(), "login", false)
 		if started {
 			a.retryStartup(ctx) // and again later if that sync does not go through
@@ -582,6 +584,25 @@ func (a *App) syncDone(reason string, manual bool, err error) {
 	// A sync that began before the account changed says nothing about the new
 	// account: it neither counts as its first sync nor settles what it is owed.
 	current := a.runGen.Load() == a.acctGen.Load()
+	switch {
+	case err == nil:
+		a.failStreak.Store(0)
+	case !manual && !changed && !remote && current && a.initialOK.Load() && !errors.Is(err, syncer.ErrNotLoggedIn):
+		// A sync after the first one (a copied item, a remote event) failed and
+		// nothing else is pending, so nothing would ask again until the next
+		// copy: try again later, further apart each time it fails.
+		n := a.failStreak.Add(1)
+		base := 30 * time.Second
+		if a.cfg.StartupRetry > 0 {
+			base = a.cfg.StartupRetry
+		}
+		wait := base << min(n-1, 4) // 30 s ... 8 min
+		time.AfterFunc(wait, func() {
+			if ctx := a.acct(); ctx.Err() == nil {
+				a.Auto.OnHistoryChanged(ctx)
+			}
+		})
+	}
 	if err == nil && !manual && current {
 		a.initialOK.Store(true)
 	}

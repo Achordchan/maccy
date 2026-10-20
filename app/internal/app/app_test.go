@@ -503,3 +503,28 @@ func TestAccountChangeCancelsTheSyncOfTheOldAccount(t *testing.T) {
 		t.Fatal("the sync of the old account was left running")
 	}
 }
+
+func TestFailedLaterSyncIsTriedAgain(t *testing.T) {
+	a, err := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()}, Clipboard: &fakeClip{}, ChangeSeq: (&fakeClip{}).seq.Load,
+		Interval: 5 * time.Millisecond, BaseURL: "http://127.0.0.1:1", Logf: t.Logf,
+		StartupRetry: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runs atomic.Int32
+	a.Auto.CanSync = func() bool { return true }
+	a.Auto.Debounce = 5 * time.Millisecond
+	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
+		if runs.Add(1) == 2 {
+			return errors.New("offline") // the upload of a copied item finds no network
+		}
+		return nil
+	}
+	a.Start()
+	defer a.Stop()
+	waitFor(t, "initial sync counted", func() bool { return a.initialOK.Load() })
+	a.Auto.Trigger(a.acct(), "auto", false)
+	waitFor(t, "the failed sync is tried again", func() bool { return runs.Load() >= 3 })
+}

@@ -497,3 +497,22 @@ func TestCheckpointsWithoutKnownOwnerAreNotAdopted(t *testing.T) {
 		t.Fatal("a login adopted checkpoints whose owner is unknown")
 	}
 }
+
+func TestPasswordUpdatedThatCannotBeSavedSaysSo(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := settings.Open(filepath.Join(dir, "settings.json"))
+	s := &Service{Client: syncclient.New("http://127.0.0.1:1"), Store: m}
+	_ = m.Update(func(st *model.Settings) { st.AuthRefreshToken = model.Ptr("r") })
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skip("cannot make the folder read-only")
+	}
+	defer os.Chmod(dir, 0o755)
+	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
+		f.Close()
+		t.Skip("the folder is writable anyway")
+	}
+	r := s.passwordUpdated("a@example.com", s.epoch.Load())
+	if !r.OK || !strings.Contains(r.Message, "无法保存设置") {
+		t.Fatalf("the password changed, but the unsaved session must be reported: %+v", r)
+	}
+}

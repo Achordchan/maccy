@@ -439,8 +439,7 @@ func (s *Service) ResetPassword(ctx context.Context, email, code, pw, confirm st
 	if err := s.Client.ResetPassword(ctx, email, code, pw); err != nil {
 		return s.failure(err, "找回密码失败", "找回密码已取消")
 	}
-	s.afterPasswordUpdated(email, startEpoch)
-	return Result{OK: true, Message: "密码已更新，请使用新密码重新登录"}
+	return s.passwordUpdated(email, startEpoch)
 }
 
 // ChangePassword sets a new password for the signed-in user.
@@ -465,25 +464,24 @@ func (s *Service) ChangePassword(ctx context.Context, typedEmail, code, pw, conf
 	if err := s.Client.ChangePassword(ctx, token, code, pw); err != nil {
 		return s.failure(err, "修改密码失败", "修改密码已取消")
 	}
-	s.afterPasswordUpdated(email, startEpoch)
-	return Result{OK: true, Message: "密码已更新，请使用新密码重新登录"}
+	return s.passwordUpdated(email, startEpoch)
 }
 
 // afterPasswordUpdated is ClearAuthAfterPasswordUpdated: the old session is
 // no good, the address stays for the next sign-in. It ends the session the
 // request started in (refresh is its refresh token, "" for a reset made while
 // signed out); if somebody else is signed in by now, that one is left alone.
-func (s *Service) afterPasswordUpdated(email string, epoch int64) {
+func (s *Service) afterPasswordUpdated(email string, epoch int64) error {
 	s.sessMu.Lock()
 	defer s.sessMu.Unlock()
 	if s.epoch.Load() != epoch {
-		return // somebody signed in or out since: not the login whose password changed
+		return nil // somebody signed in or out since: not the login whose password changed
 	}
 	s.epoch.Add(1)
 	s.beforeChange()
 	defer s.afterChange()
 	who := strings.TrimSpace(email)
-	_ = s.Store.Update(func(m *model.Settings) {
+	return s.Store.Update(func(m *model.Settings) {
 		// The address is remembered for the next sign-in, but the checkpoints are
 		// somebody's: if they are another account's, the address taking their
 		// place must not make them look like its own.
@@ -498,6 +496,16 @@ func (s *Service) afterPasswordUpdated(email string, epoch int64) {
 		m.AuthUserEmail = &email
 		syncclient.ClearAuthSession(m, false)
 	})
+}
+
+// passwordUpdated is the result of a password change or reset that the server
+// accepted: the password is changed whatever happens to the local session, so
+// a failure to save the cleared session is told apart from a failed change.
+func (s *Service) passwordUpdated(email string, epoch int64) Result {
+	if err := s.afterPasswordUpdated(email, epoch); err != nil {
+		return Result{OK: true, Message: "密码已更新，但无法保存设置，重启后可能仍是旧的登录状态，请重新登录：" + err.Error()}
+	}
+	return Result{OK: true, Message: "密码已更新，请使用新密码重新登录"}
 }
 
 // Subscription is what the cloud tab shows about the plan.
