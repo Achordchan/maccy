@@ -37,7 +37,7 @@ func Load(l paths.Layout) ([]model.Item, error) {
 	}
 	// An interrupted cache replacement is undone before Normalize decides
 	// that an item has no content.
-	snapshot.RecoverPayloads(l)
+	snapshot.RecoverPayloads(l, items)
 	out := make([]model.Item, 0, len(items))
 	for _, it := range items {
 		if n, ok := Normalize(l, it); ok {

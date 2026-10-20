@@ -308,11 +308,11 @@ func TestRecoverPayloadsRollsBackAnUncommittedReplacement(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(backup, "0000_old.txt"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{{Target: target, Backup: backup}}); err != nil {
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{{Target: target, Backup: backup}}, ""); err != nil {
 		t.Fatal(err)
 	}
 
-	RecoverPayloads(l)
+	RecoverPayloads(l, nil)
 
 	if b, err := os.ReadFile(filepath.Join(target, "0000_old.txt")); err != nil || string(b) != "old" {
 		t.Errorf("the old payload was not restored: %q %v", b, err)
@@ -356,5 +356,79 @@ func TestEmptyFileRoundTrip(t *testing.T) {
 	st, err := os.Stat(res.Items[0].FilePaths[0])
 	if err != nil || st.Size() != 0 {
 		t.Errorf("empty file: %v %v", st, err)
+	}
+}
+
+// A schema 1 snapshot carries the file bytes inline, including an empty BLOB.
+func TestReadSchema1EmptyInlineFile(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	path := filepath.Join(t.TempDir(), "snapshot.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	exec := func(q string, args ...any) {
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
+	exec(`CREATE TABLE settings (json TEXT NOT NULL)`)
+	exec(`CREATE TABLE items (position INTEGER NOT NULL, id TEXT PRIMARY KEY, kind INTEGER NOT NULL, capturedAt TEXT NOT NULL, approxBytes INTEGER NOT NULL, text TEXT, filePathsJson TEXT, pinned INTEGER NOT NULL, copyCount INTEGER NOT NULL, firstCapturedAt TEXT, note TEXT, contentHash TEXT, sourceAppName TEXT, sourceAppPath TEXT)`)
+	exec(`CREATE TABLE item_files (itemId TEXT NOT NULL, idx INTEGER NOT NULL, fileName TEXT NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY(itemId, idx))`)
+	exec(`INSERT INTO meta VALUES ('schema','1')`)
+	exec(`INSERT INTO items VALUES (0,?,2,'2026-05-30T12:00:00.0000000+00:00',0,NULL,NULL,0,1,NULL,NULL,NULL,NULL,NULL)`, id)
+	exec(`INSERT INTO item_files VALUES (?,0,'empty.txt',?)`, id, []byte{})
+	l := paths.Layout{Root: t.TempDir()}
+	res, err := Read(ctx, l, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 1 || len(res.Items[0].FilePaths) != 1 {
+		t.Fatalf("%+v", res.Items)
+	}
+	st, err := os.Stat(res.Items[0].FilePaths[0])
+	if err != nil || st.Size() != 0 {
+		t.Errorf("empty inline file: %v %v", st, err)
+	}
+}
+
+// When the history that the journal describes is already saved, recovery
+// keeps the new cache and only deletes the backup.
+func TestRecoverPayloadsKeepsACommittedReplacement(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	target := filepath.Join(l.Files(), "16fd27068baf433b82eb8c7fada847da")
+	backup := target + ".old-deadbeef"
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newFile := filepath.Join(target, "0000_new.txt")
+	if err := os.WriteFile(newFile, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "0000_old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items := []model.Item{{
+		ID: "16fd2706-8baf-433b-82eb-8c7fada847da", Kind: model.KindFileList,
+		FilePaths: []string{newFile}, CopyCount: 1,
+	}}
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{{Target: target, Backup: backup}}, historyDigest(items)); err != nil {
+		t.Fatal(err)
+	}
+	RecoverPayloads(l, items)
+
+	if b, err := os.ReadFile(newFile); err != nil || string(b) != "new" {
+		t.Errorf("the saved replacement was rolled back: %q %v", b, err)
+	}
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Error("the backup was left behind")
+	}
+	if _, err := os.Stat(payloadJournalPath(l)); !os.IsNotExist(err) {
+		t.Error("the journal was left behind")
 	}
 }

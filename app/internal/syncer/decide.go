@@ -161,13 +161,19 @@ func Decide(manifest ManifestInfo, localFingerprint string, localCount int, loca
 }
 
 func sameRemoteSnapshot(lastVersion, remoteVersion, lastSha, remoteSha string) bool {
-	if lastVersion != remoteVersion {
-		return false
+	if lastVersion == remoteVersion {
+		if lastSha == "" || remoteSha == "" {
+			return true
+		}
+		return strings.EqualFold(lastSha, remoteSha)
 	}
-	if lastSha == "" || remoteSha == "" {
+	// A download whose manifest could not be matched records the snapshot
+	// hash as the version: it still names the same server file.
+	if len(lastVersion) == 64 && lastSha != "" && remoteSha != "" &&
+		strings.EqualFold(lastVersion, lastSha) && strings.EqualFold(lastSha, remoteSha) {
 		return true
 	}
-	return strings.EqualFold(lastSha, remoteSha)
+	return false
 }
 
 // isRemoteRollback says that the server's snapshot is older (by more than two

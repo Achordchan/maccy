@@ -1904,3 +1904,25 @@ func TestDownloadMergeKeepsSharedCopyCounts(t *testing.T) {
 		}
 	}
 }
+
+// A hash used as the version marker of a download still matches the server
+// snapshot it names.
+func TestDecideRecognizesADownloadHashMarker(t *testing.T) {
+	sha := strings.Repeat("a", 64)
+	manifest := ManifestInfo{Version: "v2", SnapshotSHA256: sha, UpdatedAt: tp(t, "2026-05-30T12:00:00+00:00")}
+	s := model.DefaultSettings()
+	s.SyncLastLocalFingerprint = model.Ptr("old-fp")
+	s.SyncLastRemoteVersion = &sha
+	s.SyncLastRemoteSha256 = &sha
+	s.SyncLastRemoteUpdatedAt = model.Ptr("2026-05-30T12:00:00.0000000+00:00")
+
+	d := Decide(manifest, "new-fp", 2, tp(t, "2026-05-30T13:00:00+00:00"), s)
+	if d.Direction != Upload || d.Reason != "local_changed_only" {
+		t.Errorf("marker with a local change: %+v", d)
+	}
+	s.SyncLastLocalFingerprint = model.Ptr("new-fp")
+	d = Decide(manifest, "new-fp", 2, tp(t, "2026-05-30T13:00:00+00:00"), s)
+	if d.Direction != None || d.Reason != "state_matched" {
+		t.Errorf("marker with the same history: %+v", d)
+	}
+}

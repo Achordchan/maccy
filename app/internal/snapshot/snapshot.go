@@ -540,7 +540,7 @@ func (s *importStaging) cleanup() {
 // the images folder.
 func (s *importStaging) addImage(n int, img imageRecord, ensure EnsureBlob) (string, error) {
 	data := img.bytes
-	if len(data) == 0 {
+	if !img.inline && len(data) == 0 {
 		if strings.TrimSpace(img.sha256) == "" {
 			return "", errors.New("snapshot image blob missing")
 		}
@@ -596,7 +596,7 @@ func (s *importStaging) addFiles(n int, it model.Item, files []fileRecord, ensur
 }
 
 func writeFileRecord(l paths.Layout, dest string, f fileRecord, ensure EnsureBlob) error {
-	if len(f.bytes) > 0 {
+	if f.inline {
 		return os.WriteFile(dest, f.bytes, 0o600)
 	}
 	if strings.TrimSpace(f.sha256) == "" {
@@ -728,17 +728,29 @@ type payloadJournalEntry struct {
 
 type payloadJournal struct {
 	Entries []payloadJournalEntry `json:"entries"`
+	// After is the digest of the history that ApplyPayloads is installing:
+	// on startup it tells a committed replacement from an interrupted one.
+	After string `json:"after"`
+}
+
+func historyDigest(items []model.Item) string {
+	b, err := json.Marshal(items)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func payloadJournalPath(l paths.Layout) string {
 	return filepath.Join(l.Root, "sync", "payload-journal.json")
 }
 
-func writePayloadJournal(path string, entries []payloadJournalEntry) error {
+func writePayloadJournal(path string, entries []payloadJournalEntry, after string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	b, err := json.Marshal(payloadJournal{Entries: entries})
+	b, err := json.Marshal(payloadJournal{Entries: entries, After: after})
 	if err != nil {
 		return err
 	}
@@ -753,7 +765,7 @@ func writePayloadJournal(path string, entries []payloadJournalEntry) error {
 // RecoverPayloads rolls back cache-folder replacements whose journal says
 // they were never committed. It runs before the history is normalized, so an
 // item whose files only exist under a .old-* backup is not dropped.
-func RecoverPayloads(l paths.Layout) {
+func RecoverPayloads(l paths.Layout, items []model.Item) {
 	path := payloadJournalPath(l)
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -764,8 +776,13 @@ func RecoverPayloads(l paths.Layout) {
 		_ = os.Remove(path)
 		return
 	}
+	committed := j.After != "" && historyDigest(items) == j.After
 	for _, e := range j.Entries {
 		if e.Target == "" || e.Backup == "" {
+			continue
+		}
+		if committed {
+			_ = os.RemoveAll(e.Backup)
 			continue
 		}
 		if _, err := os.Stat(e.Backup); err != nil {
@@ -862,7 +879,7 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 		}
 		backup := dest + ".old-" + newGUIDN()
 		applied.entries = append(applied.entries, payloadJournalEntry{Target: dest, Backup: backup})
-		if err := writePayloadJournal(applied.journal, applied.entries); err != nil {
+		if err := writePayloadJournal(applied.journal, applied.entries, historyDigest(out)); err != nil {
 			rollback()
 			return nil, nil, err
 		}
@@ -961,6 +978,9 @@ type imageRecord struct {
 	fileName string
 	sha256   string
 	bytes    []byte
+	// inline says the snapshot carried the bytes (schema 1 always, schema 2
+	// when the BLOB is present), even when they are empty.
+	inline bool
 }
 
 type fileRecord struct {
@@ -968,6 +988,7 @@ type fileRecord struct {
 	name   string
 	sha256 string
 	bytes  []byte
+	inline bool
 }
 
 func readImage(ctx context.Context, db *sqlite.DB, id string, schema int) (imageRecord, error) {
@@ -984,9 +1005,11 @@ func readImage(ctx context.Context, db *sqlite.DB, id string, schema int) (image
 		return imageRecord{}, errors.New("snapshot image payload missing")
 	}
 	if schema >= 2 {
-		return imageRecord{fileName: cellString(r, 0), sha256: cellString(r, 1), bytes: cellBytes(r, 3)}, nil
+		data, inline := cellBlob(r, 3)
+		return imageRecord{fileName: cellString(r, 0), sha256: cellString(r, 1), bytes: data, inline: inline}, nil
 	}
-	return imageRecord{fileName: cellString(r, 0), bytes: cellBytes(r, 1)}, nil
+	data, _ := cellBlob(r, 1)
+	return imageRecord{fileName: cellString(r, 0), bytes: data, inline: true}, nil
 }
 
 func readFiles(ctx context.Context, db *sqlite.DB, id string, schema int) ([]fileRecord, error) {
@@ -1002,9 +1025,11 @@ func readFiles(ctx context.Context, db *sqlite.DB, id string, schema int) ([]fil
 	for _, r := range rows.Values {
 		f := fileRecord{idx: int(cellInt(r, 0)), name: cellString(r, 1)}
 		if schema >= 2 {
-			f.sha256, f.bytes = cellString(r, 2), cellBytes(r, 4)
+			f.sha256 = cellString(r, 2)
+			f.bytes, f.inline = cellBlob(r, 4)
 		} else {
-			f.bytes = cellBytes(r, 2)
+			f.bytes, _ = cellBlob(r, 2)
+			f.inline = true
 		}
 		out = append(out, f)
 	}
@@ -1151,13 +1176,20 @@ func cellInt(row []any, i int) int64 {
 }
 
 func cellBytes(row []any, i int) []byte {
+	data, _ := cellBlob(row, i)
+	return data
+}
+
+// cellBlob says whether the column is present: an empty BLOB is content, a
+// NULL is not.
+func cellBlob(row []any, i int) ([]byte, bool) {
 	switch v := cell(row, i).(type) {
 	case []byte:
-		return v
+		return v, true
 	case string:
-		return []byte(v)
+		return []byte(v), true
 	}
-	return nil
+	return nil, false
 }
 
 func boolInt(b bool) int {

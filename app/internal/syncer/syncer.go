@@ -1062,7 +1062,7 @@ func (s *Syncer) mutateHistory(ctx context.Context, f func([]model.Item) ([]mode
 // files the history still names is current (its backup is deleted); a folder
 // whose history names files that are missing is restored from its backup.
 func (s *Syncer) recoverPayloadDirs() {
-	snapshot.RecoverPayloads(s.cfg.Layout)
+	snapshot.RecoverPayloads(s.cfg.Layout, s.cfg.History.Items())
 	dir := s.cfg.Layout.Files()
 	ents, err := os.ReadDir(dir)
 	if err != nil {
