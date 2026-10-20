@@ -32,6 +32,7 @@ type Model struct {
 	Prefs   *prefs.Controller
 	Account *account.Service
 	Host    Host
+	subGen  int // moves whenever the subscription shown stops being the current one
 	// Post runs f on the UI thread (Window.Update). Tests may run it at once.
 	Post func(f func())
 	// Redraw asks for a frame (any goroutine); may be nil.
@@ -102,6 +103,7 @@ func (m *Model) Open() {
 	m.refreshAccount()
 	m.closeDialogs()
 	m.sub = account.None("未登录")
+	m.subGen++
 	if m.signedIn {
 		m.loadSubscription()
 	}
@@ -135,9 +137,14 @@ func (m *Model) async(work func(ctx context.Context) (done func())) {
 
 func (m *Model) loadSubscription() {
 	m.sub = account.Loading()
+	m.subGen++
+	gen := m.subGen // an answer that comes after the account changed is not for this screen
 	m.async(func(ctx context.Context) func() {
 		s := m.Account.Subscription(ctx)
 		return func() {
+			if gen != m.subGen {
+				return
+			}
 			m.sub = s
 			m.refreshAccount() // a token the server refused signs the user out
 		}
@@ -174,6 +181,7 @@ func (m *Model) signOut() {
 	r := m.Account.SignOut()
 	m.refreshAccount()
 	m.sub = account.None("未登录")
+	m.subGen++
 	m.toast(r.Message)
 	m.Host.AccountChanged(false)
 }
@@ -276,6 +284,7 @@ func (m *Model) submitPassword() {
 				m.closeDialogs()
 				m.refreshAccount()
 				m.sub = account.None("未登录")
+				m.subGen++
 				m.Host.AccountChanged(false)
 			}
 		}
@@ -288,6 +297,7 @@ func (m *Model) redeemCard() {
 	}
 	m.redeemBusy = true
 	code := m.redeem
+	gen := m.subGen
 	m.async(func(ctx context.Context) func() {
 		r := m.Account.Redeem(ctx, code)
 		var s account.Subscription
@@ -299,7 +309,9 @@ func (m *Model) redeemCard() {
 			m.toast(r.Message)
 			if r.OK {
 				m.redeem = ""
-				m.sub = s
+				if gen == m.subGen { // still the account the card was redeemed for
+					m.sub = s
+				}
 				// A card may be what the sign-in's first sync was waiting
 				// for (no subscription): sync now, as after a sign-in.
 				m.Host.AccountChanged(true)

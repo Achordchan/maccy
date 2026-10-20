@@ -1,7 +1,12 @@
 package panel
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/png"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -410,5 +415,35 @@ func TestUpdateButtonShowsOnlyWhenThereIsAnUpdate(t *testing.T) {
 	}
 	if r.ho.updates != 1 {
 		t.Fatal("not opened")
+	}
+}
+
+func TestThumbnailsAreSmallAndMadeInTheBackground(t *testing.T) {
+	big := image.NewRGBA(image.Rect(0, 0, 1600, 900))
+	for i := range big.Pix {
+		big.Pix[i] = 200
+	}
+	path := filepath.Join(t.TempDir(), "big.png")
+	var b bytes.Buffer
+	_ = png.Encode(&b, big)
+	if err := os.WriteFile(path, b.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{}, 1)
+	var c thumbCache
+	if c.get(path, func() { done <- struct{}{} }) != nil {
+		t.Fatal("the first look must not wait for the picture")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the thumbnail was never made")
+	}
+	bm := c.get(path, nil)
+	if bm == nil {
+		t.Fatal("no thumbnail")
+	}
+	if w, h := bm.Size(); w > thumbSize || h > thumbSize || w < 10 {
+		t.Fatalf("thumbnail is %dx%d, want it cut down to fit %d", w, h, thumbSize)
 	}
 }

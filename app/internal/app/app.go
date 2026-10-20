@@ -76,13 +76,14 @@ type App struct {
 	Prefs     *prefs.Controller
 	Updates   *update.Coordinator
 
-	mu      sync.Mutex
-	status  string
-	cancel  context.CancelFunc
-	done    sync.WaitGroup
-	started bool
-	ctx     context.Context // lives as long as the program, once started
-	syncing atomic.Int32    // syncs running, background or asked for
+	mu        sync.Mutex
+	status    string
+	cancel    context.CancelFunc
+	done      sync.WaitGroup
+	started   bool
+	ctx       context.Context    // lives as long as the program, once started
+	syncing   atomic.Int32       // syncs running, background or asked for
+	stopWatch context.CancelFunc // ends the event stream of the current account
 }
 
 // New reads the settings and the history and connects the parts. A settings
@@ -220,20 +221,9 @@ func (a *App) Start() {
 			a.cfg.Logf("capture: %v", err)
 		}
 	}, Retry: a.Capture.FoundNothing}
-	a.done.Add(2)
+	a.done.Add(1)
 	go func() { defer a.done.Done(); w.Run(ctx) }()
-	go func() {
-		defer a.done.Done()
-		sess := &syncclient.Session{
-			Client: syncclient.New(a.cfg.BaseURL),
-			Settings: syncclient.Settings{
-				Get:    a.Settings.Get,
-				Update: func(f func(*model.Settings)) { _ = a.Settings.Update(f) },
-			},
-			BaseURL: a.cfg.BaseURL,
-		}
-		sess.Client.Watch(ctx, sess, syncclient.WatchOptions{}, func() { a.Auto.OnRemoteUpdated(ctx) })
-	}()
+	a.watchRemote(ctx)
 	a.Auto.Startup(ctx)
 
 	// What earlier updates left, and what the .NET program left; then the
@@ -277,6 +267,33 @@ func (a *App) Start() {
 // running (it is a quit callback), so waiting for ever could be waiting for
 // ourselves.
 const stopWait = 3 * time.Second
+
+// watchRemote listens for uploads from other devices. The stream belongs to
+// the signed-in account, so it has a context of its own, ended and started
+// again when the account changes (the old connection would go on telling
+// about the old account).
+func (a *App) watchRemote(ctx context.Context) {
+	wctx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
+	if a.stopWatch != nil {
+		a.stopWatch()
+	}
+	a.stopWatch = cancel
+	a.mu.Unlock()
+	a.done.Add(1)
+	go func() {
+		defer a.done.Done()
+		sess := &syncclient.Session{
+			Client: syncclient.New(a.cfg.BaseURL),
+			Settings: syncclient.Settings{
+				Get:    a.Settings.Get,
+				Update: func(f func(*model.Settings)) { _ = a.Settings.Update(f) },
+			},
+			BaseURL: a.cfg.BaseURL,
+		}
+		sess.Client.Watch(wctx, sess, syncclient.WatchOptions{}, func() { a.Auto.OnRemoteUpdated(ctx) })
+	}()
+}
 
 // Stop ends the background work and writes the history.
 func (a *App) Stop() {
@@ -340,6 +357,12 @@ func (a *App) SyncNow() {
 // AccountChanged is for the preferences window: after a sign-in the history
 // is synchronized at once, as the C# client does.
 func (a *App) AccountChanged(signedIn bool) {
+	a.mu.Lock()
+	ctx, started := a.ctx, a.started
+	a.mu.Unlock()
+	if started {
+		a.watchRemote(ctx) // the stream of the old account is dropped, a new one opened
+	}
 	if signedIn {
 		a.Auto.Trigger(a.lifetime(), "login", false)
 	}

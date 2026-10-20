@@ -167,7 +167,7 @@ func (m *Model) row(c *ui.Context, i int) *action {
 	btn := ui.ButtonBase(c).Padding(6, 10).Gap(10).AlignItems(ui.Center).Radius(8).Background(bg)
 	btn = btn.Children(func() {
 		if it.Kind == model.KindImage {
-			if bm := m.thumbs.get(model.Str(it.ImageFilePath)); bm != nil {
+			if bm := m.thumbs.get(model.Str(it.ImageFilePath), m.Redraw); bm != nil {
 				ui.Image(c, bm).Size(36, 36)
 			}
 		}

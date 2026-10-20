@@ -163,8 +163,10 @@ func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 			return "", ctx.Err()
 		}
 		var ae *syncclient.APIError
-		if !errors.As(err, &ae) {
-			return "", err // no answer: not a reason to sign out
+		if !errors.As(err, &ae) || !refused(ae.StatusCode) {
+			// No answer, or a server that is busy or failing (5xx, 429):
+			// not a reason to sign out.
+			return "", err
 		}
 		s.clearSession(refresh, access)
 		return "", nil
@@ -194,6 +196,12 @@ func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	return model.Str(s.Store.Get().AuthAccessToken), nil
+}
+
+// refused says whether an HTTP status is the server turning the token down
+// (as against being unwell).
+func refused(status int) bool {
+	return status == 400 || status == 401 || status == 403
 }
 
 // clearSession signs out, but only the session that was found wanting: if the

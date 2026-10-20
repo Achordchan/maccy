@@ -274,8 +274,10 @@ func TestSignInRegisterAndOut(t *testing.T) {
 	if !r.has("已退出登录") || !r.has("登录") || r.set.Get().AuthRefreshToken != nil {
 		t.Fatalf("after sign out: %q", r.tt.Texts())
 	}
-	if n := len(r.host.accountEvents); n != 2 || r.host.accountEvents[1] {
-		t.Fatalf("host events %v", r.host.accountEvents)
+	// register (in), redeem (in: the card may be what the first sync was
+	// waiting for), sign out (out)
+	if ev := r.host.accountEvents; len(ev) != 3 || !ev[0] || !ev[1] || ev[2] {
+		t.Fatalf("host events %v", ev)
 	}
 
 	// Wrong password; Enter in the password box signs in.
