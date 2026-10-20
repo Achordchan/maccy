@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -513,5 +514,17 @@ func TestMatchesCSharpSource(t *testing.T) {
 	text, files, images := strings.Index(src, "if (CaptureText &&"), strings.Index(src, "if (CaptureFiles)"), strings.Index(src, "if (CaptureImages)")
 	if !(text > 0 && text < files && files < images) {
 		t.Error("the order of the kinds changed in C#")
+	}
+}
+
+func TestSpecialFilesAreNotCopied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no device files")
+	}
+	if isFile("/dev/null") {
+		t.Error("a device is not a file")
+	}
+	if err := copyFile("/dev/zero", filepath.Join(t.TempDir(), "x")); err == nil {
+		t.Error("a device must not be copied")
 	}
 }

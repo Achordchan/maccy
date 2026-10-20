@@ -430,12 +430,17 @@ func fileSize(p string) int64 {
 	return st.Size()
 }
 
+// isFile is true for a regular file: a device (/dev/zero) or a pipe would
+// never end, or never answer, when it is read or copied.
 func isFile(p string) bool {
 	st, err := os.Stat(p)
-	return err == nil && !st.IsDir()
+	return err == nil && st.Mode().IsRegular()
 }
 
 func copyFile(src, dst string) error {
+	if !isFile(src) {
+		return errors.New("capture: not a regular file: " + src)
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
