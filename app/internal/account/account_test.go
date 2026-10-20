@@ -516,3 +516,26 @@ func TestPasswordUpdatedThatCannotBeSavedSaysSo(t *testing.T) {
 		t.Fatalf("the password changed, but the unsaved session must be reported: %+v", r)
 	}
 }
+
+func TestSignOutThatCannotBeSavedDoesNotRelabelTheCheckpoints(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := settings.Open(filepath.Join(dir, "settings.json"))
+	s := &Service{Client: syncclient.New("http://127.0.0.1:1"), Store: m, AccountFile: filepath.Join(dir, "sync", "account.txt")}
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a", RefreshToken: "ra", Email: "a@example.com"}, "a@example.com")
+	_ = m.Update(func(st *model.Settings) { st.SyncLastRemoteVersion = model.Ptr("a-state") })
+	s.SignOut()              // the disk: no address, A's checkpoints, a record saying A
+	_ = os.Chmod(dir, 0o500) // settings.json can no longer be replaced; sync/ still can be written
+	defer os.Chmod(dir, 0o755)
+	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
+		f.Close()
+		t.Skip("writable anyway (root?)")
+	}
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "b", RefreshToken: "rb", Email: "b@example.com"}, "b@example.com") // not saved
+	if r := s.SignOut(); r.OK {
+		t.Fatal("the sign-out was not saved")
+	}
+	s2 := &Service{AccountFile: s.AccountFile} // a later run
+	if got := s2.syncAccount(); got != "a@example.com" {
+		t.Fatalf("the record says %q, but the checkpoints on disk are A's", got)
+	}
+}

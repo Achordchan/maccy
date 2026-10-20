@@ -242,15 +242,23 @@ func (s *Service) SignOut() Result {
 	s.epoch.Add(1)
 	s.beforeChange()
 	defer s.afterChange()
-	// The sync state belongs to the account that is leaving: say so before the
-	// address is forgotten (a login from 1.0.10 has no record of it yet).
-	if e := strings.TrimSpace(model.Str(s.Store.Get().AuthUserEmail)); e != "" {
-		s.setSyncAccount(e)
-	}
+	// The sync state belongs to the account that is leaving; the address is
+	// forgotten by this, so the record of whose it is has to be there (a login
+	// from 1.0.10 has none yet). It is written after the settings, as in
+	// storeTokens: if they could not be saved the file still holds the old
+	// address and the old checkpoints, and a record naming the account of this
+	// run would give those checkpoints to the wrong one.
+	leaving := strings.TrimSpace(model.Str(s.Store.Get().AuthUserEmail))
 	if err := s.Store.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, true) }); err != nil {
+		if leaving != "" {
+			s.lastAccount = leaving // this run knows; the disk is not told
+		}
 		// The tokens are gone from memory but the file still has them: after
 		// a restart the user would be signed in again.
 		return fail("已退出，但无法保存设置，重启后可能仍是登录状态：" + err.Error())
+	}
+	if leaving != "" {
+		s.setSyncAccount(leaving)
 	}
 	return Result{OK: true, Message: "已退出登录"}
 }
