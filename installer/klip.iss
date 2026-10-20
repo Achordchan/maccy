@@ -1,7 +1,9 @@
 #define MyAppName "Klip"
 #define MyAppPublisher "Achord Chan"
 #define MyAppExeName "maccy.exe"
-#define MyPublishDir SourcePath + "..\artifacts\publish\win-x64"
+#ifndef MyPublishDir
+  #define MyPublishDir SourcePath + "..\artifacts\publish\win-x64"
+#endif
 #define MyExePath MyPublishDir + "\\" + MyAppExeName
 #if !FileExists(MyExePath)
   #error "Published EXE not found: " + MyExePath + " (run: python tools/release_go.py build --version <x.y.z>)"

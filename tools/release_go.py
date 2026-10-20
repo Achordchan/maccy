@@ -195,11 +195,15 @@ def create_package(publish_dir: Path, output_dir: Path, *, version: str, runtime
 # ---- the whole release ---------------------------------------------------
 
 
-def build_installer(version: str, runtime: str, iscc_arg: str | None) -> Path:
+def build_installer(version: str, runtime: str, iscc_arg: str | None, publish_dir: Path) -> Path:
+    """The installer of the program built in publish_dir. The script is for
+    64-bit Intel/AMD Windows (there are no 32-bit users to serve)."""
+    if runtime != "win-x64":
+        raise ValueError(f"the installer is for win-x64 only, not {runtime}")
     iss = REPO / "installer" / "klip.iss"
     iscc = base._find_iscc(iscc_arg or None)
     base._set_iss_version(iss, version)
-    run([str(iscc), str(iss)], cwd=REPO)
+    run([str(iscc), f"/DMyPublishDir={publish_dir.resolve()}", str(iss)], cwd=REPO)
     out = REPO / "artifacts" / "installer" / f"maccy-{version}-setup.exe"
     if not out.exists():
         raise FileNotFoundError(str(out))
@@ -213,13 +217,18 @@ def cmd_release(a: argparse.Namespace) -> int:
         notes = Path(a.notes_file).read_text(encoding="utf-8")
     notes = notes.replace("\r\n", "\n").rstrip("\n")
     manifest = Path(a.manifest)
-    publish_dir = REPO / "artifacts" / "publish" / a.runtime
+    # Where the downloads will be: needed before anything is built, as the
+    # manifest is rewritten with it. Gitee fills it in itself when publishing.
+    base_url = a.base_url or base._infer_base_url_from_manifest(manifest)
+    if not a.publish_gitee and not base_url:
+        raise ValueError("give --base-url (the manifest has none to take it from), or use --publish-gitee")
+    publish_dir = (REPO / "artifacts" / "publish" / a.runtime).resolve()
     installer_dir = REPO / "artifacts" / "installer"
 
     print(f"[1/5] build the program ({a.runtime})")
     build_publish(version, a.runtime, publish_dir)
     print("[2/5] installer (Inno Setup)")
-    installer = build_installer(version, a.runtime, a.iscc)
+    installer = build_installer(version, a.runtime, a.iscc, publish_dir)
     print("[3/5] light-update package")
     package = create_package(publish_dir, installer_dir, version=version, runtime=a.runtime, legacy_from=a.legacy_from)
     sha, size = sha256_file(installer), installer.stat().st_size
@@ -243,7 +252,7 @@ def cmd_release(a: argparse.Namespace) -> int:
 
     print("[5/5] manifest")
     base._update_manifest(manifest, version=version, mandatory=a.mandatory, notes=notes,
-                          base_url=a.base_url or "https://gitee.com", sha256=sha, size=size, installer_url=installer_url,
+                          base_url=base_url or "https://gitee.com", sha256=sha, size=size, installer_url=installer_url,
                           package_sha256=psha, package_size=psize, package_runtime=a.runtime, package_url=package_url)
     if a.publish_gitee:
         base._git(REPO, ["add", str(manifest)])
@@ -293,11 +302,11 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     version = base._validate_version(a.version)
     if a.cmd == "build":
-        build_publish(version, a.runtime, Path(a.publish_dir) if a.publish_dir else REPO / "artifacts" / "publish" / a.runtime)
+        build_publish(version, a.runtime, (Path(a.publish_dir) if a.publish_dir else REPO / "artifacts" / "publish" / a.runtime).resolve())
         return 0
     if a.cmd == "package":
-        pub = Path(a.publish_dir) if a.publish_dir else REPO / "artifacts" / "publish" / a.runtime
-        out = Path(a.out_dir) if a.out_dir else REPO / "artifacts" / "installer"
+        pub = (Path(a.publish_dir) if a.publish_dir else REPO / "artifacts" / "publish" / a.runtime).resolve()
+        out = (Path(a.out_dir) if a.out_dir else REPO / "artifacts" / "installer").resolve()
         p = create_package(pub, out, version=version, runtime=a.runtime, legacy_from=a.legacy_from or None)
         print(json.dumps({"path": str(p), "sha256": sha256_file(p), "size": p.stat().st_size}))
         return 0

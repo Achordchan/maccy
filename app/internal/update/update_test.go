@@ -538,3 +538,17 @@ func TestDuplicateEntriesAreRefused(t *testing.T) {
 		t.Fatal("a name twice in one zip was unpacked (the second would replace the first)")
 	}
 }
+
+func TestPackageListingTheSameFileTwiceIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "maccy.exe"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum, _ := SHA256File(filepath.Join(dir, "maccy.exe"))
+	m := &PackageManifest{AppID: "maccy", Version: "1.0.11", Runtime: "win-x64",
+		Files: []PackageFile{{Path: "maccy.exe", SHA256: sum, Size: 1}, {Path: "MACCY.EXE", SHA256: sum, Size: 1}}}
+	err := ValidatePackage(Info{Version: "1.0.11", PackageRuntime: "win-x64"}, dir, m)
+	if err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Fatalf("%v", err)
+	}
+}

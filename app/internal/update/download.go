@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Progress is told how much of a download is in; total is 0 when unknown.
@@ -107,7 +108,17 @@ func (c *Client) download(ctx context.Context, url, target, wantSHA string, want
 	_ = os.Remove(temp)
 	_, err := retry(ctx, 3, c.downloadPause, func(int) (struct{}, error) {
 		_ = os.Remove(temp)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		// A transfer that stops for a while is given up and tried again: the
+		// timer is pushed back at every piece that arrives.
+		actx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		idle := c.DownloadIdle
+		if idle <= 0 {
+			idle = 60 * time.Second
+		}
+		watchdog := time.AfterFunc(idle, cancel)
+		defer watchdog.Stop()
+		req, err := http.NewRequestWithContext(actx, http.MethodGet, url, nil)
 		if err != nil {
 			return struct{}{}, err
 		}
@@ -133,6 +144,7 @@ func (c *Client) download(ctx context.Context, url, target, wantSHA string, want
 		for {
 			n, rerr := resp.Body.Read(buf)
 			if n > 0 {
+				watchdog.Reset(idle)
 				if _, werr := out.Write(buf[:n]); werr != nil {
 					return struct{}{}, werr
 				}
@@ -305,6 +317,7 @@ func ValidatePackage(info Info, staging string, m *PackageManifest) error {
 		return errors.New("package file list is empty")
 	}
 	hasExe := false
+	seen := map[string]string{}
 	for _, f := range m.Files {
 		rel, err := NormalizePath(f.Path)
 		if err != nil {
@@ -313,6 +326,13 @@ func ValidatePackage(info Info, staging string, m *PackageManifest) error {
 		if IsProtected(rel) {
 			return errors.New("package contains protected data path: " + f.Path)
 		}
+		// Two entries that name the same file (Windows ignores case and slash
+		// direction) would be copied over each other.
+		k := strings.ToLower(strings.ReplaceAll(rel, "\\", "/"))
+		if prev, dup := seen[k]; dup {
+			return errors.New("package lists the same file twice: " + prev + " and " + f.Path)
+		}
+		seen[k] = f.Path
 		if strings.EqualFold(strings.ReplaceAll(rel, "\\", "/"), ExeName) {
 			hasExe = true
 		}

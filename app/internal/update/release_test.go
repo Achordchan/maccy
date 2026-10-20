@@ -163,3 +163,15 @@ release._update_manifest(Path(sys.argv[1]), version="1.0.11", mandatory=False, n
 		}
 	}
 }
+
+func TestReleaseToolNeedsADownloadAddress(t *testing.T) {
+	tool := releaseTool(t)
+	manifest := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(manifest, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := exec.Command("python3", tool, "release", "--version", "1.0.11", "--manifest", manifest).CombinedOutput()
+	if err == nil || !strings.Contains(string(res), "--base-url") {
+		t.Fatalf("a release with no place to be downloaded from must stop before building: %v %s", err, res)
+	}
+}

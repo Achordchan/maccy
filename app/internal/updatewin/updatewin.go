@@ -92,7 +92,13 @@ func (m *Model) View(c *ui.Context) {
 				if st.Info != nil && ui.Button(c, "重试").Clicked() {
 					m.apply()
 				}
-				if ui.PrimaryButton(c, "关闭").Clicked() {
+				if st.Info != nil && st.Info.Mandatory {
+					// A mandatory update has no way out but the update and
+					// leaving the program.
+					if ui.PrimaryButton(c, "退出").Clicked() {
+						m.Host.Quit()
+					}
+				} else if ui.PrimaryButton(c, "关闭").Clicked() {
 					m.dismiss()
 				}
 			})

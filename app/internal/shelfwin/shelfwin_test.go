@@ -229,8 +229,11 @@ func TestViewOneFile(t *testing.T) {
 	if !r.tt.HasText("notes.txt") || !r.tt.HasText("TXT") {
 		t.Fatalf("%q", r.tt.Texts())
 	}
-	r.m.ToggleExpanded()
+	r.click("展开") // the way a user gets to the details of a single file
 	r.frame()
+	if !r.m.Expanded {
+		t.Fatal("the control did not open the shelf")
+	}
 	for _, s := range []string{"收起", "10 B", "notes.txt", "列表"} {
 		if !r.tt.HasText(s) {
 			t.Fatalf("missing %q: %q", s, r.tt.Texts())

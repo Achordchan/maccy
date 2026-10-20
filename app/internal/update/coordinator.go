@@ -113,25 +113,47 @@ func (c *Coordinator) Refresh(ctx context.Context) {
 	res := c.Client.Check(ctx, nil)
 	switch res.Status {
 	case UpdateAvailable:
-		c.set(func(s *State) { *s = State{Phase: Available, Info: res.Info} })
+		c.set(func(s *State) {
+			if !c.applying { // an update under way is not for a quiet check to overwrite
+				*s = State{Phase: Available, Info: res.Info}
+			}
+		})
 	case UpToDate:
-		c.set(func(s *State) { *s = State{} })
+		c.set(func(s *State) {
+			if !c.applying {
+				*s = State{}
+			}
+		})
 	}
 }
 
 // Check is the user asking: it moves through Checking to UpToDateNow,
 // Available or Problem, with the texts of the C# window.
 func (c *Coordinator) Check(ctx context.Context) {
-	c.mu.Lock()
-	if c.applying {
+	waited := false
+	for {
+		c.mu.Lock()
+		if c.applying {
+			c.mu.Unlock()
+			c.set(func(s *State) { s.Message = "更新正在进行中，请稍后..." })
+			return
+		}
+		if !c.busy {
+			break // the lock is held: this check is the one that runs
+		}
 		c.mu.Unlock()
-		c.set(func(s *State) { s.Message = "更新正在进行中，请稍后..." })
-		return
-	}
-	if c.busy {
-		c.mu.Unlock()
-		c.set(func(s *State) { s.Phase, s.Message = Checking, "已有检查正在进行，稍后继续..." })
-		return
+		// A check is under way (the quiet one at start, say): wait for it to
+		// end and then make our own, so that the window gets an answer of its
+		// own and is not left "checking" for a request that has ended.
+		if !waited {
+			waited = true
+			c.set(func(s *State) { s.Phase, s.Message = Checking, "已有检查正在进行，稍后继续..." })
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 	c.busy = true
 	c.mu.Unlock()

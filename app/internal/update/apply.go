@@ -138,26 +138,57 @@ func RunPlan(p Plan, h Hooks) error {
 	}
 
 	var rollback []rollbackItem
+	// What the last package left as its list of files: put back too if this
+	// one has to be undone.
+	prevList, prevListErr := os.ReadFile(p.InstalledManifest)
+	undo := func() {
+		for i := len(rollback) - 1; i >= 0; i-- {
+			it := rollback[i]
+			var rerr error
+			if it.existed {
+				if rerr = os.MkdirAll(filepath.Dir(it.path), 0o755); rerr == nil {
+					rerr = copyFile(it.backup, it.path)
+				}
+			} else if _, serr := os.Stat(it.path); serr == nil {
+				rerr = os.Remove(it.path)
+			}
+			if rerr != nil {
+				lg.say("rollback failed: " + rerr.Error())
+			}
+		}
+		if p.InstalledManifest != "" {
+			var rerr error
+			if prevListErr == nil {
+				rerr = os.WriteFile(p.InstalledManifest, prevList, 0o644)
+			} else if errors.Is(prevListErr, os.ErrNotExist) {
+				if err := os.Remove(p.InstalledManifest); err != nil && !errors.Is(err, os.ErrNotExist) {
+					rerr = err
+				}
+			}
+			if rerr != nil {
+				lg.say("rollback of the file list failed: " + rerr.Error())
+			}
+		}
+	}
 	err := applyFiles(p, h, lg, &rollback)
 	if err == nil {
 		lg.say("light update applied")
-		return h.Launch(filepath.Join(p.InstallDir, ExeName))
+		if lerr := h.Launch(filepath.Join(p.InstallDir, ExeName)); lerr != nil {
+			// The new program will not start (a virus scanner may have taken
+			// it): that is a failed update, and the old files come back.
+			lg.say("failed to start the new program: " + lerr.Error())
+			err = lerr
+			undo()
+			h.Alert("Klip 更新失败", "新版本无法启动："+lerr.Error()+"\n\n已恢复旧版本。日志："+p.LogPath)
+			if exe := filepath.Join(p.InstallDir, ExeName); fileExists(exe) {
+				_ = h.Launch(exe)
+			}
+			return err
+		}
+		return nil
 	}
 	lg.say("failed: " + err.Error())
-	for i := len(rollback) - 1; i >= 0; i-- {
-		it := rollback[i]
-		var rerr error
-		if it.existed {
-			if rerr = os.MkdirAll(filepath.Dir(it.path), 0o755); rerr == nil {
-				rerr = copyFile(it.backup, it.path)
-			}
-		} else if _, serr := os.Stat(it.path); serr == nil {
-			rerr = os.Remove(it.path)
-		}
-		if rerr != nil {
-			lg.say("rollback failed: " + rerr.Error())
-		}
-	}
+	undo()
 	h.Alert("Klip 更新失败", "轻量更新失败，已尝试回滚。日志："+p.LogPath)
 	if exe := filepath.Join(p.InstallDir, ExeName); fileExists(exe) {
 		_ = h.Launch(exe)

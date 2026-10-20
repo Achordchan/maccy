@@ -65,6 +65,9 @@ func (m *Model) compact(c *ui.Context) {
 		case 1:
 			m.icon(c, m.Items[0], 56)
 			ui.Text(c, m.Items[0].Name).SingleLine().Ellipsis("…").MaxWidth(190)
+			if ui.Button(c, "展开").Clicked() { // the details and the choice of grid or list
+				m.ToggleExpanded()
+			}
 		default:
 			// A stack: the newest file and how many there are.
 			last := m.Items[len(m.Items)-1]

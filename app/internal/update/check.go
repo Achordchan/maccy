@@ -86,14 +86,26 @@ type Client struct {
 	ManifestTimeout time.Duration // 8 s for each try
 	ManifestPause   func(attempt int) time.Duration
 	DownloadPause   func(attempt int) time.Duration
+	// DownloadIdle is how long a download may be silent before it is given
+	// up (60 s unless set).
+	DownloadIdle time.Duration
 }
 
 func (c *Client) http() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return http.DefaultClient
+	return defaultHTTP
 }
+
+// defaultHTTP waits for the answer to a request for at most 30 s; how long a
+// transfer may take is limited by the callers (a manifest try has its own
+// timeout, a download an idle timer).
+var defaultHTTP = func() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = 30 * time.Second
+	return &http.Client{Transport: t}
+}()
 
 func (c *Client) runtime() string {
 	if c.Runtime != "" {

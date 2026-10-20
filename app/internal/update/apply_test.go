@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,6 +122,34 @@ func TestApplyReplacesFilesAndKeepsData(t *testing.T) {
 	log := read(t, r.plan.LogPath)
 	if !strings.Contains(log, "[2026-06-01T12:00:00] waiting for app exit") || !strings.Contains(log, "light update applied") {
 		t.Errorf("log: %s", log)
+	}
+}
+
+func TestApplyIsUndoneWhenTheNewProgramWillNotStart(t *testing.T) {
+	r := newRig(t, newPkg, nil)
+	prev := `{"appId":"maccy","version":"1.0.10","runtime":"win-x64","files":[{"path":"maccy.exe"}]}`
+	write(t, r.plan.InstalledManifest, prev)
+	h := r.hooks()
+	starts := 0
+	h.Launch = func(p string) error {
+		starts++
+		if starts == 1 {
+			return errors.New("blocked by the virus scanner")
+		}
+		r.launched = append(r.launched, p)
+		return nil
+	}
+	if err := RunPlan(r.plan, h); err == nil {
+		t.Fatal("a program that cannot start is a failed update")
+	}
+	if got := read(t, filepath.Join(r.install, "maccy.exe")); got != "OLD EXE" {
+		t.Errorf("the old program must be back: %q", got)
+	}
+	if got := read(t, r.plan.InstalledManifest); got != prev {
+		t.Errorf("the old file list must be back: %q", got)
+	}
+	if len(r.alerts) != 1 || len(r.launched) != 1 {
+		t.Errorf("alerts %v, the old program started %v", r.alerts, r.launched)
 	}
 }
 
@@ -555,5 +585,72 @@ func TestCleanOld(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(r.c.Root, filepath.FromSlash(kept))); err != nil {
 			t.Errorf("%s removed", kept)
 		}
+	}
+}
+
+func TestManualCheckWaitsForTheQuietOneAndThenAnswers(t *testing.T) {
+	r := newCoord(t, "1.0.10")
+	r.publish(t, "1.0.11", nil, true)
+	r.c.mu.Lock()
+	r.c.busy = true // the check at start is still running
+	r.c.mu.Unlock()
+	done := make(chan struct{})
+	go func() { r.c.Check(context.Background()); close(done) }()
+	time.Sleep(120 * time.Millisecond)
+	if r.c.State().Phase != Checking {
+		t.Fatalf("while it waits the window says so: %+v", r.c.State())
+	}
+	r.c.mu.Lock()
+	r.c.busy = false // the quiet one ended, with nothing to say
+	r.c.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the manual check never ran")
+	}
+	if st := r.c.State(); st.Phase != Available {
+		t.Fatalf("the window must get an answer of its own: %+v", st)
+	}
+}
+
+func TestQuietCheckDoesNotOverwriteAnUpdateUnderWay(t *testing.T) {
+	r := newCoord(t, "1.0.10")
+	r.publish(t, "1.0.11", nil, true)
+	r.c.Refresh(context.Background())
+	r.c.mu.Lock()
+	r.c.applying = true
+	r.c.state.Phase = Downloading
+	r.c.mu.Unlock()
+	r.c.Refresh(context.Background())
+	r.c.mu.Lock()
+	r.c.applying = false
+	r.c.mu.Unlock()
+	if r.c.State().Phase != Downloading {
+		t.Fatalf("a quiet check overwrote the download: %+v", r.c.State())
+	}
+}
+
+func TestStalledDownloadIsGivenUp(t *testing.T) {
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		_, _ = w.Write([]byte("start"))
+		w.(http.Flusher).Flush()
+		<-stop // and then nothing more
+	}))
+	defer srv.Close()
+	defer close(stop)
+	c := &Client{DownloadIdle: 150 * time.Millisecond, DownloadPause: func(int) time.Duration { return 0 }}
+	done := make(chan error, 1)
+	go func() {
+		done <- c.download(context.Background(), srv.URL, filepath.Join(t.TempDir(), "f.bin"), "", 1000, nil)
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a download that stalls cannot succeed")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a stalled download waited for ever")
 	}
 }
