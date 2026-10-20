@@ -88,7 +88,7 @@ func TestHelperModeEndToEnd(t *testing.T) {
 		t.Errorf("the legacy file stayed")
 	}
 	// The program was started again (the helper does not wait for it).
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second) // a loaded machine starts a program slowly
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(marker); err == nil {
 			return

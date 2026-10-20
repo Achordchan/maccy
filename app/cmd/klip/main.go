@@ -53,7 +53,8 @@ type program struct {
 	shelf   *shelf.Service
 	layout  paths.Layout
 
-	quitting atomic.Bool // set when the program is quitting, see OnBeforeQuit
+	mandatoryShown atomic.Bool // the window for a mandatory update was put up
+	quitting       atomic.Bool // set when the program is quitting, see OnBeforeQuit
 }
 
 func main() {
@@ -96,7 +97,10 @@ func (p *program) ready() {
 		ChangeSeq:  platform.ChangeSeq,
 		Autostart:  platform.Autostart(),
 		Quit:       func() { mygo.App.Quit() },
-		Changed:    func() { p.redraw() },
+		Changed: func() {
+			p.redraw()
+			p.gateMandatory()
+		},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -233,6 +237,35 @@ func applyTheme(v string) {
 	}
 }
 
+// mandatoryPending says whether a mandatory update is known: until it is
+// installed (or the program quit) the rest of the program stays shut, and the
+// update window is what shows.
+func (p *program) mandatoryPending() bool {
+	if p.app == nil || p.app.Updates == nil {
+		return false
+	}
+	i := p.app.Updates.Available()
+	if i == nil || !i.Mandatory {
+		return false
+	}
+	p.showUpdate()
+	return true
+}
+
+// gateMandatory is called when the state of the program changed: a mandatory
+// update found by the quiet check puts its window up at once. Any goroutine.
+func (p *program) gateMandatory() {
+	if p.app == nil || p.app.Updates == nil {
+		return
+	}
+	if i := p.app.Updates.Available(); i != nil && i.Mandatory && p.mandatoryShown.CompareAndSwap(false, true) {
+		mygo.RunOnMain(func() {
+			p.win.Hide()
+			p.showUpdate()
+		})
+	}
+}
+
 // showUpdate opens the update window: it shows what the coordinator knows.
 func (p *program) showUpdate() {
 	if p.updWin == nil {
@@ -273,6 +306,9 @@ func (p *program) checkUpdates() {
 // showPrefs opens the preferences window, made on first use and then only
 // hidden when closed.
 func (p *program) showPrefs() {
+	if p.mandatoryPending() {
+		return
+	}
 	if p.prefsWin == nil {
 		p.prefs = prefswin.New(p.app.Prefs, p.app.Account, prefsHost{p})
 		p.prefs.Post = func(f func()) { p.prefsWin.Update(f) }
@@ -299,6 +335,9 @@ func (p *program) showPrefs() {
 }
 
 func (p *program) show() {
+	if p.mandatoryPending() {
+		return // the update window is up: nothing else until it is dealt with
+	}
 	d := mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint())
 	w, h := p.win.Size()
 	p.win.SetPosition(d.WorkArea.X+(d.WorkArea.Width-w)/2, d.WorkArea.Y+(d.WorkArea.Height-h)/3)

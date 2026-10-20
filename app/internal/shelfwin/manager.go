@@ -64,6 +64,7 @@ func (mg *Manager) Spawn() {
 			Height:        CompactSize,
 			Content:       ui.View(m.View),
 		})
+		m.Post = func(f func()) { win.Update(f) }
 		h := &host{mgr: mg, m: m, win: win}
 		m.Host = h
 		win.OnClose(func(e *mygo.CloseEvent) { mg.forget(m) })

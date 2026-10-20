@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 	"time"
 
 	"klip/internal/model"
@@ -54,21 +53,34 @@ func (s *Session) AccessToken(ctx context.Context) (string, error) {
 // refreshMu lets one refresh at a time use the refresh token: the server
 // revokes it when it is used, so a second request with the same token would be
 // refused and could sign the user out of a session that was just renewed.
-var refreshMu sync.Mutex
+var refreshSem = make(chan struct{}, 1)
+
+// refreshTimeout bounds one refresh request, and so how long the lock is held.
+const refreshTimeout = 30 * time.Second
 
 // LockRefresh takes the refresh lock that Session.Refresh takes; whoever else
 // refreshes the stored tokens (the account window) holds it too, and looks at
-// the stored tokens again after getting it.
-func LockRefresh() (unlock func()) {
-	refreshMu.Lock()
-	return refreshMu.Unlock
+// the stored tokens again after getting it. Waiting for it ends with ctx.
+func LockRefresh(ctx context.Context) (unlock func(), err error) {
+	select {
+	case refreshSem <- struct{}{}:
+		return func() { <-refreshSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // Refresh trades the refresh token for new tokens and stores them. A refusal
 // from the server signs the user out (the tokens are cleared) and says
 // false; a network error leaves everything as it is and returns the error.
 func (s *Session) Refresh(ctx context.Context) (bool, error) {
-	defer LockRefresh()()
+	ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	defer cancel()
+	unlock, lerr := LockRefresh(ctx)
+	if lerr != nil {
+		return false, lerr
+	}
+	defer unlock()
 	cur := s.Settings.Get()
 	refresh := strings.TrimSpace(model.Str(cur.AuthRefreshToken))
 	if refresh == "" {

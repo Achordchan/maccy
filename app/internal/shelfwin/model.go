@@ -61,7 +61,10 @@ type Model struct {
 	// draggingOut is true while files are dragged from this window, so that
 	// they are not dropped on it again.
 	draggingOut bool
-	dragOver    bool
+	// Post runs a function on the UI thread (and draws a frame); nil means the
+	// file information is read at once, as the tests do.
+	Post     func(func())
+	dragOver bool
 }
 
 // New returns an empty shelf.
@@ -85,12 +88,24 @@ func (m *Model) AddFiles(paths []string) {
 			name = p
 		}
 		it := Item{Path: p, Name: name}
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			it.Size = st.Size()
-			it.Width, it.Height = imageSize(p)
-		}
-		if m.IconOf != nil {
-			it.Icon = m.IconOf(p)
+		if m.Post == nil {
+			m.fill(&it)
+		} else {
+			// The size, the picture size and the icon ask the file system, which
+			// may be a network share that does not answer: the item is on the
+			// shelf at once and gets them when they come.
+			go func(path string) {
+				var meta Item
+				meta.Path = path
+				m.fill(&meta)
+				m.Post(func() {
+					for i := range m.Items {
+						if m.Items[i].Path == path {
+							m.Items[i].Size, m.Items[i].Width, m.Items[i].Height, m.Items[i].Icon = meta.Size, meta.Width, meta.Height, meta.Icon
+						}
+					}
+				})
+			}(p)
 		}
 		m.Items = append(m.Items, it)
 		added = true
@@ -102,6 +117,17 @@ func (m *Model) AddFiles(paths []string) {
 	if len(m.Items) > 1 {
 		m.Grid = false
 		m.setExpanded(true)
+	}
+}
+
+// fill reads what the file system says about the file of it.
+func (m *Model) fill(it *Item) {
+	if st, err := os.Stat(it.Path); err == nil && !st.IsDir() {
+		it.Size = st.Size()
+		it.Width, it.Height = imageSize(it.Path)
+	}
+	if m.IconOf != nil {
+		it.Icon = m.IconOf(it.Path)
 	}
 }
 

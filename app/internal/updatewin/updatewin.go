@@ -89,7 +89,7 @@ func (m *Model) View(c *ui.Context) {
 			ui.Text(c, st.Message).Wrap()
 			m.spacer(c)
 			m.buttons(c, func() {
-				if st.Info != nil && ui.Button(c, "重试").Clicked() {
+				if st.Info != nil && !st.Check && ui.Button(c, "重试").Clicked() {
 					m.apply()
 				}
 				if st.Info != nil && st.Info.Mandatory {

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"klip/internal/model"
@@ -24,6 +25,10 @@ type Store interface {
 
 // Service talks to the server for the signed-in user.
 type Service struct {
+	// epoch moves whenever a sign-in begins or ends. It names a login across the
+	// renewals of its tokens, which a refresh token does not.
+	epoch atomic.Int64
+
 	Client *syncclient.Client
 	Store  Store
 	// Now is time.Now unless a test sets it.
@@ -76,6 +81,7 @@ func (s *Service) StatusText() string {
 }
 
 func (s *Service) storeTokens(t syncclient.TokenSet, fallbackEmail string) error {
+	s.epoch.Add(1)
 	email := t.Email
 	if strings.TrimSpace(email) == "" {
 		email = fallbackEmail
@@ -131,6 +137,7 @@ func (s *Service) enter(ctx context.Context, email, password, okMsg, failMsg, ca
 
 // SignOut forgets the tokens and the address.
 func (s *Service) SignOut() Result {
+	s.epoch.Add(1)
 	if err := s.Store.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, true) }); err != nil {
 		// The tokens are gone from memory but the file still has them: after
 		// a restart the user would be signed in again.
@@ -149,7 +156,11 @@ func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 	// bounded: a server that never answers must not hold up every other renewal.
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	defer syncclient.LockRefresh()()
+	unlock, lerr := syncclient.LockRefresh(ctx)
+	if lerr != nil {
+		return "", lerr
+	}
+	defer unlock()
 	cur := s.Store.Get()
 	access := strings.TrimSpace(model.Str(cur.AuthAccessToken))
 	if access != "" && cur.AuthExpiresAtUnixMs > s.now().UnixMilli()+30_000 {
@@ -309,7 +320,7 @@ func validateNewPassword(email, code, pw, confirm string) string {
 // ResetPassword sets a new password with the code from the mail, for a user
 // who is not signed in.
 func (s *Service) ResetPassword(ctx context.Context, email, code, pw, confirm string) Result {
-	startRefresh := strings.TrimSpace(model.Str(s.Store.Get().AuthRefreshToken))
+	startEpoch := s.epoch.Load()
 	email = strings.TrimSpace(email)
 	if msg := validateNewPassword(email, code, pw, confirm); msg != "" {
 		return fail(msg)
@@ -319,13 +330,13 @@ func (s *Service) ResetPassword(ctx context.Context, email, code, pw, confirm st
 	if err := s.Client.ResetPassword(ctx, email, code, pw); err != nil {
 		return s.failure(err, "找回密码失败", "找回密码已取消")
 	}
-	s.afterPasswordUpdated(email, startRefresh)
+	s.afterPasswordUpdated(email, startEpoch)
 	return Result{OK: true, Message: "密码已更新，请使用新密码重新登录"}
 }
 
 // ChangePassword sets a new password for the signed-in user.
 func (s *Service) ChangePassword(ctx context.Context, typedEmail, code, pw, confirm string) Result {
-	startRefresh := strings.TrimSpace(model.Str(s.Store.Get().AuthRefreshToken))
+	startEpoch := s.epoch.Load()
 	email := strings.TrimSpace(model.Str(s.Store.Get().AuthUserEmail))
 	if email == "" {
 		email = strings.TrimSpace(typedEmail)
@@ -342,13 +353,10 @@ func (s *Service) ChangePassword(ctx context.Context, typedEmail, code, pw, conf
 	if err != nil {
 		return s.failure(err, "修改密码失败", "修改密码已取消")
 	}
-	// EnsureAccessToken may have renewed the tokens: the session that changes
-	// the password is the one that holds them now.
-	startRefresh = strings.TrimSpace(model.Str(s.Store.Get().AuthRefreshToken))
 	if err := s.Client.ChangePassword(ctx, token, code, pw); err != nil {
 		return s.failure(err, "修改密码失败", "修改密码已取消")
 	}
-	s.afterPasswordUpdated(email, startRefresh)
+	s.afterPasswordUpdated(email, startEpoch)
 	return Result{OK: true, Message: "密码已更新，请使用新密码重新登录"}
 }
 
@@ -356,12 +364,12 @@ func (s *Service) ChangePassword(ctx context.Context, typedEmail, code, pw, conf
 // no good, the address stays for the next sign-in. It ends the session the
 // request started in (refresh is its refresh token, "" for a reset made while
 // signed out); if somebody else is signed in by now, that one is left alone.
-func (s *Service) afterPasswordUpdated(email, refresh string) {
+func (s *Service) afterPasswordUpdated(email string, epoch int64) {
+	if s.epoch.Load() != epoch {
+		return // somebody signed in or out since: not the login whose password changed
+	}
+	s.epoch.Add(1)
 	_ = s.Store.Update(func(m *model.Settings) {
-		cur := strings.TrimSpace(model.Str(m.AuthRefreshToken))
-		if cur != "" && cur != strings.TrimSpace(refresh) {
-			return // another session since: not the one whose password changed
-		}
 		m.AuthUserEmail = &email
 		syncclient.ClearAuthSession(m, false)
 	})

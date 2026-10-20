@@ -30,8 +30,11 @@ type State struct {
 	Phase   Phase
 	Info    *Info
 	Message string
-	Read    int64
-	Total   int64
+	// Check says that a Problem came from looking for a version, not from
+	// installing one (so there is nothing to retry but the look).
+	Check bool
+	Read  int64
+	Total int64
 }
 
 // Coordinator is UpdateCoordinator without the windows: it keeps the newest
@@ -159,13 +162,20 @@ func (c *Coordinator) Check(ctx context.Context) {
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); c.busy = false; c.mu.Unlock() }()
 
-	c.set(func(s *State) { *s = State{Phase: Checking, Message: "正在连接更新服务器，请稍候..."} })
+	c.mu.Lock()
+	known := c.state.Info // an update found before stays known if this look fails
+	c.mu.Unlock()
+	c.set(func(s *State) {
+		*s = State{Phase: Checking, Message: "正在连接更新服务器，请稍候...", Info: known}
+	})
 	res := c.Client.Check(ctx, func(m string) { c.set(func(s *State) { s.Message = m }) })
 	switch res.Status {
 	case UpToDate:
 		c.set(func(s *State) { *s = State{Phase: UpToDateNow, Message: "当前已经是最新版本。"} })
 	case Failed:
-		c.set(func(s *State) { *s = State{Phase: Problem, Message: "检查更新失败：" + res.Error} })
+		c.set(func(s *State) {
+			*s = State{Phase: Problem, Message: "检查更新失败：" + res.Error, Info: known, Check: true}
+		})
 	default:
 		c.set(func(s *State) { *s = State{Phase: Available, Info: res.Info} })
 	}

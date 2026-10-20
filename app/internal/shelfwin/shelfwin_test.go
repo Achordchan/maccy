@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
@@ -316,5 +317,26 @@ func TestSourceMatchesCSharp(t *testing.T) {
 		if !strings.Contains(string(view), s) {
 			t.Errorf("ShelfWindow.axaml.cs no longer contains %s", s)
 		}
+	}
+}
+
+func TestDroppedFilesAppearAtOnceAndGetTheirDetailsLater(t *testing.T) {
+	dir := t.TempDir()
+	p := file(t, dir, "big.bin", 123)
+	m := New(nil)
+	posted := make(chan func(), 4)
+	m.Post = func(f func()) { posted <- f }
+	m.AddFiles([]string{p})
+	if len(m.Items) != 1 || m.Items[0].Size != 0 {
+		t.Fatalf("the item is there at once, without details: %+v", m.Items)
+	}
+	select {
+	case f := <-posted:
+		f()
+	case <-time.After(5 * time.Second):
+		t.Fatal("the details never came")
+	}
+	if m.Items[0].Size != 123 {
+		t.Fatalf("size = %d", m.Items[0].Size)
 	}
 }

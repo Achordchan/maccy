@@ -686,3 +686,19 @@ func TestCleanOldLeavesAnUpdateUnderWayAlone(t *testing.T) {
 		t.Fatal("with no update under way the old files go")
 	}
 }
+
+func TestFailedRecheckKeepsTheKnownUpdate(t *testing.T) {
+	r := newCoord(t, "1.0.10")
+	r.publish(t, "1.0.11", nil, true)
+	r.c.Check(context.Background())
+	r.s.manifest.Store([]byte(nil)) // the server stops answering
+	r.c.Check(context.Background())
+	st := r.c.State()
+	if st.Phase != Problem || !st.Check || r.c.Available() == nil {
+		t.Fatalf("a failed look must not make the known update unknown: %+v", st)
+	}
+	r.c.Dismiss()
+	if r.c.State().Phase != Available {
+		t.Fatalf("closing the message goes back to the update: %+v", r.c.State())
+	}
+}
