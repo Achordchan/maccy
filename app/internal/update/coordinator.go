@@ -56,6 +56,9 @@ type Coordinator struct {
 	// Now is time.Now unless a test sets it.
 	Now func() time.Time
 
+	// fsMu keeps the cleaning of old files and the preparing of an update from
+	// working in the same folders at once.
+	fsMu     sync.Mutex
 	mu       sync.Mutex
 	state    State
 	busy     bool
@@ -193,6 +196,10 @@ func (c *Coordinator) Apply(ctx context.Context) {
 	}
 	c.set(func(s *State) { s.Phase, s.Read, s.Total, s.Message = Downloading, 0, 0, "" })
 
+	// The folders this uses are the ones CleanOld empties: not both at once.
+	c.fsMu.Lock()
+	defer c.fsMu.Unlock()
+
 	notice := ""
 	if info.HasSupportedPackage(c.Client.runtime()) {
 		prep, err := c.Client.DownloadPackage(ctx, *info, c.Root, progress)
@@ -326,6 +333,8 @@ func (c *Coordinator) launchPlan(plan Plan, version string) error {
 // CleanOld removes what earlier updates left that is of no more use: the
 // helper copies of the program and the unpacked packages. Backups stay.
 func (c *Coordinator) CleanOld() {
+	c.fsMu.Lock()
+	defer c.fsMu.Unlock()
 	_ = os.RemoveAll(filepath.Join(c.Root, "helper"))
 	_ = os.RemoveAll(filepath.Join(c.Root, "staging"))
 }

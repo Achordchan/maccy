@@ -79,15 +79,17 @@ type App struct {
 	Prefs     *prefs.Controller
 	Updates   *update.Coordinator
 
-	mu        sync.Mutex
-	status    string
-	cancel    context.CancelFunc
-	done      sync.WaitGroup
-	started   bool
-	ctx       context.Context    // lives as long as the program, once started
-	syncing   atomic.Int32       // syncs running, background or asked for
-	initialOK atomic.Bool        // a background sync has gone through
-	stopWatch context.CancelFunc // ends the event stream of the current account
+	mu          sync.Mutex
+	status      string
+	cancel      context.CancelFunc
+	done        sync.WaitGroup
+	started     bool
+	ctx         context.Context    // lives as long as the program, once started
+	syncing     atomic.Int32       // syncs running, background or asked for
+	retrying    atomic.Bool        // the loop that tries the first sync again is running
+	loginWanted atomic.Bool        // a sync for a new sign-in is owed (one was running when it was asked for)
+	initialOK   atomic.Bool        // a background sync has gone through
+	stopWatch   context.CancelFunc // ends the event stream of the current account
 }
 
 // New reads the settings and the history and connects the parts. A settings
@@ -278,9 +280,13 @@ const stopWait = 3 * time.Second
 // only starts after it, and a program started offline would otherwise wait for
 // another device to speak first.
 func (a *App) retryStartup(ctx context.Context) {
+	if !a.retrying.CompareAndSwap(false, true) {
+		return // one loop is enough
+	}
 	a.done.Add(1)
 	go func() {
 		defer a.done.Done()
+		defer a.retrying.Store(false)
 		wait := 30 * time.Second
 		if a.cfg.StartupRetry > 0 {
 			wait = a.cfg.StartupRetry
@@ -396,7 +402,12 @@ func (a *App) AccountChanged(signedIn bool) {
 		a.watchRemote(ctx) // the stream of the old account is dropped, a new one opened
 	}
 	if signedIn {
+		a.loginWanted.Store(true)
+		a.initialOK.Store(false)
 		a.Auto.Trigger(a.lifetime(), "login", false)
+		if started {
+			a.retryStartup(ctx) // and again later if that sync does not go through
+		}
 	}
 	a.changed()
 }
@@ -418,6 +429,14 @@ func (a *App) setStatus(s string) {
 func (a *App) syncDone(reason string, manual bool, err error) {
 	if err == nil && !manual {
 		a.initialOK.Store(true)
+	}
+	if reason == "login" {
+		a.loginWanted.Store(false)
+	} else if a.loginWanted.Load() {
+		// The sync for the new sign-in was asked for while this one ran and was
+		// turned away. The runner is still marked busy until this returns, so
+		// ask again a moment later.
+		time.AfterFunc(100*time.Millisecond, func() { a.Auto.Trigger(a.lifetime(), "login", false) })
 	}
 	switch {
 	case err == nil:

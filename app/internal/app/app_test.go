@@ -384,3 +384,38 @@ func TestFirstSyncIsTriedAgainUntilItGoesThrough(t *testing.T) {
 		t.Fatalf("%d syncs: once one has gone through, the retries stop", n)
 	}
 }
+
+func TestLoginSyncAskedForDuringASyncIsNotLost(t *testing.T) {
+	a, err := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()}, Clipboard: &fakeClip{}, ChangeSeq: (&fakeClip{}).seq.Load,
+		Interval: 5 * time.Millisecond, BaseURL: "http://127.0.0.1:1", Logf: t.Logf,
+		StartupRetry: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var reasons []string
+	a.Auto.CanSync = func() bool { return true }
+	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
+		mu.Lock()
+		reasons = append(reasons, reason)
+		first := len(reasons) == 1
+		mu.Unlock()
+		if first {
+			<-release // a long sync of the old account
+		}
+		return nil
+	}
+	a.Start()
+	defer a.Stop()
+	waitFor(t, "first sync running", func() bool { mu.Lock(); defer mu.Unlock(); return len(reasons) == 1 })
+	a.AccountChanged(true) // a new sign-in while that runs: its sync is turned away
+	close(release)
+	waitFor(t, "login sync after it", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(reasons) >= 2 && reasons[len(reasons)-1] == "login"
+	})
+}
