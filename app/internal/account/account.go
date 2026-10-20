@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +37,11 @@ type Service struct {
 	// BeforeLoginChange is called, with sessMu held, just before the stored login
 	// is replaced or ended; work that belongs to the old login should be stopped
 	// there, not after (may be nil).
+	// AccountFile is where the account that the sync state is about is written
+	// down (a file of its own: the settings are exchanged with the C# client and
+	// other devices as they are, and take no new fields). Empty keeps it in memory.
+	AccountFile       string
+	lastAccount       string
 	BeforeLoginChange func()
 	// AfterLoginChange is called, with sessMu held, once the stored login has
 	// been replaced or ended (may be nil).
@@ -97,6 +104,23 @@ func (s *Service) afterChange() {
 	}
 }
 
+func (s *Service) syncAccount() string {
+	if s.AccountFile != "" {
+		if b, err := os.ReadFile(s.AccountFile); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return s.lastAccount
+}
+
+func (s *Service) setSyncAccount(email string) {
+	s.lastAccount = email
+	if s.AccountFile != "" {
+		_ = os.MkdirAll(filepath.Dir(s.AccountFile), 0o700)
+		_ = os.WriteFile(s.AccountFile, []byte(email), 0o600)
+	}
+}
+
 func (s *Service) beforeChange() {
 	if s.BeforeLoginChange != nil {
 		s.BeforeLoginChange()
@@ -127,13 +151,17 @@ func (s *Service) storeTokensAt(t syncclient.TokenSet, fallbackEmail string, epo
 	}
 	defer s.afterChange()
 	return s.Store.Update(func(m *model.Settings) {
-		if prev := strings.TrimSpace(model.Str(m.AuthUserEmail)); !strings.EqualFold(prev, strings.TrimSpace(email)) {
-			// Somebody else's account: what was remembered of the last sync is
-			// about another server-side history, and would make the first
-			// sync here look like a rollback or a one-sided change.
+		// The sync state is about one account; it is kept through a sign-out and a
+		// sign-in to the same one, and dropped when the account is another.
+		prev := s.syncAccount()
+		if prev == "" {
+			prev = strings.TrimSpace(model.Str(m.AuthUserEmail))
+		}
+		if prev != "" && !strings.EqualFold(prev, strings.TrimSpace(email)) {
 			m.SyncLastLocalFingerprint, m.SyncLastRemoteVersion = nil, nil
 			m.SyncLastRemoteUpdatedAt, m.SyncLastRemoteSha256 = nil, nil
 		}
+		s.setSyncAccount(strings.TrimSpace(email))
 		m.AuthAccessToken = &t.AccessToken
 		m.AuthRefreshToken = &t.RefreshToken
 		m.AuthIdToken = &t.IDToken

@@ -127,13 +127,13 @@ def build_publish(version: str, runtime: str, publish_dir: Path) -> None:
 # ---- package -------------------------------------------------------------
 
 
-def package_file_list(publish_dir: Path) -> list[dict]:
+def package_file_list(publish_dir: Path, exclude: Path | None = None) -> list[dict]:
     files = []
     for path in sorted(publish_dir.rglob("*")):
         if not path.is_file():
             continue
         rel = path.relative_to(publish_dir).as_posix()
-        if rel == "maccy-package.json":
+        if rel == "maccy-package.json" or (exclude is not None and path.resolve() == exclude.resolve()):
             continue
         if is_protected(rel):
             raise RuntimeError("publish folder holds user data, not for a package: " + rel)
@@ -180,14 +180,16 @@ def legacy_files_from(source: str, new_paths: set[str]) -> list[str]:
 
 def create_package(publish_dir: Path, output_dir: Path, *, version: str, runtime: str,
                    legacy_from: str | None = None) -> Path:
-    files = package_file_list(publish_dir)
+    package = output_dir / f"maccy-{version}-{runtime}.zip"
+    # The archive being made may sit in the folder it is made from (and a
+    # second run finds the first one's result there): it is not one of its own files.
+    files = package_file_list(publish_dir, exclude=package)
     manifest: dict = {"appId": "maccy", "version": version, "runtime": runtime, "files": files}
     if legacy_from:
         legacy = legacy_files_from(legacy_from, {f["path"] for f in files})
         if legacy:
             manifest["legacyFiles"] = legacy
     output_dir.mkdir(parents=True, exist_ok=True)
-    package = output_dir / f"maccy-{version}-{runtime}.zip"
     if package.exists():
         package.unlink()
     with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:

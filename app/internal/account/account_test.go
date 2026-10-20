@@ -387,3 +387,14 @@ func TestSignInAnsweredAfterALoginChangeIsRefused(t *testing.T) {
 		t.Fatalf("a late answer was stored: %v %+v", err, m.Get())
 	}
 }
+
+func TestSameAccountAfterASignOutKeepsItsSyncState(t *testing.T) {
+	s, m := newService(t, "http://127.0.0.1:1")
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a1", RefreshToken: "r1", Email: "one@example.com"}, "one@example.com")
+	_ = m.Update(func(st *model.Settings) { st.SyncLastRemoteVersion = model.Ptr("v1") })
+	s.SignOut() // the address is forgotten, the state of the sync is not
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a1b", RefreshToken: "r1b", Email: "One@Example.com"}, "one@example.com")
+	if model.Str(m.Get().SyncLastRemoteVersion) != "v1" {
+		t.Fatal("signing back in to the same account lost the sync state")
+	}
+}

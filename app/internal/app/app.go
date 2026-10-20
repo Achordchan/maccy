@@ -189,7 +189,7 @@ func New(cfg Config) (*App, error) {
 		return run(ctx, reason, manual)
 	}
 
-	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings, BeforeLoginChange: a.endAccountWork, AfterLoginChange: a.beginAccountWork}
+	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings, AccountFile: filepath.Join(cfg.Layout.Root, "sync", "account.txt"), BeforeLoginChange: a.endAccountWork, AfterLoginChange: a.beginAccountWork}
 	if cfg.Autostart == nil {
 		cfg.Autostart = autostart.Default()
 	}
@@ -337,7 +337,14 @@ func (a *App) retryStartup(ctx context.Context) {
 	a.done.Add(1)
 	go func() {
 		defer a.done.Done()
-		defer a.retrying.Store(false)
+		defer func() {
+			a.retrying.Store(false)
+			// A sign-in may have asked for a loop while this one was ending: look
+			// again after letting go, so that one of the two is always left.
+			if ctx.Err() == nil && !a.initialOK.Load() {
+				a.retryStartup(ctx)
+			}
+		}()
 		wait := 30 * time.Second
 		if a.cfg.StartupRetry > 0 {
 			wait = a.cfg.StartupRetry

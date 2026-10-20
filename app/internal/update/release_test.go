@@ -215,3 +215,24 @@ release_go.write_legacy_delete(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4])
 		}
 	}
 }
+
+func TestPackageIntoTheSameFolderTwiceDoesNotContainItself(t *testing.T) {
+	tool := releaseTool(t)
+	pub := t.TempDir()
+	write(t, filepath.Join(pub, "maccy.exe"), "EXE")
+	for i := 0; i < 2; i++ {
+		if res, err := exec.Command("python3", tool, "package", "--version", "1.0.11", "--publish-dir", pub, "--out-dir", pub).CombinedOutput(); err != nil {
+			t.Fatalf("run %d: %v\n%s", i, err, res)
+		}
+	}
+	zr, err := zip.OpenReader(filepath.Join(pub, "maccy-1.0.11-win-x64.zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		if strings.HasSuffix(f.Name, ".zip") {
+			t.Fatalf("the package holds %s", f.Name)
+		}
+	}
+}
