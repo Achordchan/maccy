@@ -171,6 +171,7 @@ func TestUploadIsInManifest(t *testing.T) {
 		want bool
 	}{
 		{"version", &syncclient.UploadResult{Version: "v2"}, ManifestInfo{Version: "v2"}, true},
+		{"same version, other sha", &syncclient.UploadResult{Version: "v2", SHA256: "abc"}, ManifestInfo{Version: "v2", SnapshotSHA256: "def"}, false},
 		{"another version", &syncclient.UploadResult{Version: "v2"}, ManifestInfo{Version: "v3"}, false},
 		{"sha", &syncclient.UploadResult{SHA256: "ABC"}, ManifestInfo{SnapshotSHA256: "abc"}, true},
 		{"another sha", &syncclient.UploadResult{SHA256: "abc"}, ManifestInfo{SnapshotSHA256: "def"}, false},

@@ -506,3 +506,34 @@ func TestRecoverPayloadsRequiresTheInstalledFiles(t *testing.T) {
 		t.Errorf("the backup was not restored: %q %v", b, err)
 	}
 }
+
+// An imported item whose cache lost one of its files must fail the export
+// instead of publishing a partial item.
+func TestExportRejectsAnIncompleteCache(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	l := paths.Layout{Root: t.TempDir()}
+	dir := filepath.Join(l.Files(), strings.ReplaceAll(id, "-", "")+"-abc")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := filepath.Join(dir, "0000_a.txt")
+	b := filepath.Join(dir, "0001_b.txt")
+	if err := os.WriteFile(a, []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := model.Item{
+		ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()},
+		FilePaths: []string{a, b}, CopyCount: 1,
+	}
+	if err := os.Remove(b); err != nil {
+		t.Fatal(err)
+	}
+	snap := filepath.Join(t.TempDir(), "snapshot.sqlite")
+	if _, err := Export(ctx, l, snap, []model.Item{item}, model.DefaultSettings()); err == nil ||
+		!strings.Contains(err.Error(), "payload missing") {
+		t.Errorf("an item with a missing file was exported: %v", err)
+	}
+}

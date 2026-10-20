@@ -284,6 +284,23 @@ func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]B
 		}
 	}
 	files := cachedFiles(dir)
+	if len(it.FilePaths) > 0 && within(l.Files(), filepath.Dir(filepath.Clean(it.FilePaths[0]))) {
+		// An imported item names its files in FilePaths: the cache must still
+		// hold all of them, or the export would publish a partial item.
+		have := make(map[string]bool, len(files))
+		for _, f := range files {
+			have[f.name] = true
+		}
+		for _, p := range it.FilePaths {
+			name := filepath.Base(filepath.Clean(p))
+			if _, cut := indexPrefix(name); cut > 0 {
+				name = name[cut:]
+			}
+			if !have[name] {
+				return nil, errors.New("snapshot: local file payload missing")
+			}
+		}
+	}
 	if len(files) == 0 {
 		var srcs []string
 		for _, p := range it.FilePaths {

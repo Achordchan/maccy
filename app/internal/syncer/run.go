@@ -210,7 +210,17 @@ func uploadIsInManifest(up *syncclient.UploadResult, m ManifestInfo) bool {
 		return false
 	}
 	if v := strings.TrimSpace(up.Version); v != "" {
-		return v == strings.TrimSpace(m.Version)
+		if v != strings.TrimSpace(m.Version) {
+			return false
+		}
+		// A version can be reused (timestamp-based): the hash must agree too
+		// when both sides provide one.
+		sha := strings.TrimSpace(up.SHA256)
+		remote := strings.TrimSpace(m.SnapshotSHA256)
+		if sha != "" && remote != "" {
+			return strings.EqualFold(sha, remote)
+		}
+		return true
 	}
 	if sha := strings.TrimSpace(up.SHA256); sha != "" {
 		return strings.EqualFold(sha, strings.TrimSpace(m.SnapshotSHA256))
