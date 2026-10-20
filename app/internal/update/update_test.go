@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -571,5 +572,21 @@ func TestWindowsAliasesOfProtectedFilesAreRefused(t *testing.T) {
 		if _, err := NormalizePath(p); err != nil {
 			t.Errorf("%q: %v", p, err)
 		}
+	}
+}
+
+func TestPathThroughALinkIsRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("links need rights here")
+	}
+	root, outside := t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "plugins")); err != nil {
+		t.Skip("no symlinks")
+	}
+	if _, err := insideRoot(root, filepath.Join("plugins", "x.dll")); err == nil {
+		t.Fatal("a write below a link would land outside the folder")
+	}
+	if _, err := insideRoot(root, filepath.Join("fresh", "x.dll")); err != nil {
+		t.Fatalf("a plain new path: %v", err)
 	}
 }

@@ -32,6 +32,10 @@ type Service struct {
 	// sessMu makes a change of login (sign-in, sign-out, the clearing that follows
 	// a password change) and the check of epoch that goes before it one step.
 	sessMu sync.Mutex
+	// BeforeLoginChange is called, with sessMu held, just before the stored login
+	// is replaced or ended; work that belongs to the old login should be stopped
+	// there, not after (may be nil).
+	BeforeLoginChange func()
 
 	Client *syncclient.Client
 	Store  Store
@@ -84,6 +88,12 @@ func (s *Service) StatusText() string {
 	return "已登录"
 }
 
+func (s *Service) beforeChange() {
+	if s.BeforeLoginChange != nil {
+		s.BeforeLoginChange()
+	}
+}
+
 // errSuperseded: something that ends or replaces the login (a sign-out, a
 // password reset) happened while this sign-in was being answered.
 var errSuperseded = errors.New("account: superseded")
@@ -101,6 +111,7 @@ func (s *Service) storeTokensAt(t syncclient.TokenSet, fallbackEmail string, epo
 		return errSuperseded
 	}
 	s.epoch.Add(1)
+	s.beforeChange()
 	email := t.Email
 	if strings.TrimSpace(email) == "" {
 		email = fallbackEmail
@@ -170,6 +181,7 @@ func (s *Service) SignOut() Result {
 	s.sessMu.Lock()
 	defer s.sessMu.Unlock()
 	s.epoch.Add(1)
+	s.beforeChange()
 	if err := s.Store.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, true) }); err != nil {
 		// The tokens are gone from memory but the file still has them: after
 		// a restart the user would be signed in again.
@@ -403,6 +415,7 @@ func (s *Service) afterPasswordUpdated(email string, epoch int64) {
 		return // somebody signed in or out since: not the login whose password changed
 	}
 	s.epoch.Add(1)
+	s.beforeChange()
 	_ = s.Store.Update(func(m *model.Settings) {
 		m.AuthUserEmail = &email
 		syncclient.ClearAuthSession(m, false)

@@ -153,8 +153,15 @@ func New(cfg Config) (*App, error) {
 	a.Syncer = syncer.New(syncer.Config{
 		Layout: cfg.Layout,
 		Settings: syncclient.Settings{
-			Get:    a.Settings.Get,
-			Update: func(f func(*model.Settings)) { _ = a.Settings.Update(f) },
+			Get: a.Settings.Get,
+			// The record of a sync belongs to the account it ran for: one that
+			// outlives a change of account does not write into the new one's.
+			Update: func(f func(*model.Settings)) {
+				if a.runActive.Load() && a.runGen.Load() != a.acctGen.Load() {
+					return
+				}
+				_ = a.Settings.Update(f)
+			},
 		},
 		History:          a.History,
 		Flush:            a.Persister.Flush,
@@ -176,7 +183,7 @@ func New(cfg Config) (*App, error) {
 		return run(ctx, reason, manual)
 	}
 
-	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings}
+	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings, BeforeLoginChange: a.endAccountWork}
 	if cfg.Autostart == nil {
 		cfg.Autostart = autostart.Default()
 	}
@@ -451,16 +458,25 @@ func (a *App) SyncNow() {
 	a.Auto.Trigger(a.acct(), "manual", true)
 }
 
+// endAccountWork is called by the account service just before it replaces or
+// ends the login: what the old account was doing (a sync, the event stream's
+// callbacks) is stopped before the new tokens are in place, and a sync that
+// still manages to finish is known to be of the old account.
+func (a *App) endAccountWork() {
+	a.acctGen.Add(1)
+	a.mu.Lock()
+	if a.started {
+		a.acctCancel()
+		a.acctCtx, a.acctCancel = context.WithCancel(a.ctx)
+	}
+	a.mu.Unlock()
+}
+
 // AccountChanged is for the preferences window: after a sign-in the history
 // is synchronized at once, as the C# client does.
 func (a *App) AccountChanged(signedIn bool) {
-	a.acctGen.Add(1)
 	a.mu.Lock()
 	ctx, started := a.ctx, a.started
-	if started {
-		a.acctCancel() // what the old account was doing stops
-		a.acctCtx, a.acctCancel = context.WithCancel(ctx)
-	}
 	a.mu.Unlock()
 	if started {
 		a.watchRemote(ctx) // the stream of the old account is dropped, a new one opened

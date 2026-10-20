@@ -102,6 +102,19 @@ func insideRoot(root, rel string) (string, error) {
 	if !strings.HasPrefix(strings.ToLower(full), strings.ToLower(prefix)) {
 		return "", errors.New("package path escapes root: " + rel)
 	}
+	// Spelling inside the root is not enough: a link or a junction on the way
+	// would carry the write somewhere else (the user's data, another folder).
+	cur := r
+	for _, part := range strings.Split(strings.TrimPrefix(full[len(r):], string(filepath.Separator)), string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		st, err := os.Lstat(cur)
+		if err != nil {
+			break // from here on nothing exists yet
+		}
+		if st.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			return "", errors.New("package path goes through a link: " + rel)
+		}
+	}
 	return full, nil
 }
 

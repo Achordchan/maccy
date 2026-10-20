@@ -37,10 +37,13 @@ func waitExit(pid int) {
 	procWait.Call(h, infinite)
 }
 
-// launch starts a program, detached and without a console window.
+// launch starts a program, detached and without a console window. Its own
+// windows are left as the program wants them: this starts the installer
+// wizard too, and a window hidden by the start-up information (SW_HIDE) would
+// leave it running where nobody can see it.
 func launch(path string) error {
 	cmd := exec.Command(path)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow | detachedProcess}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow | detachedProcess}
 	return cmd.Start()
 }
 
