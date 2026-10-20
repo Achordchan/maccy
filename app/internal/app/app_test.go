@@ -457,3 +457,41 @@ func TestChangeDuringASyncIsSyncedAfterIt(t *testing.T) {
 		return len(reasons) >= 2
 	})
 }
+
+func TestAccountChangeCancelsTheSyncOfTheOldAccount(t *testing.T) {
+	a, err := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()}, Clipboard: &fakeClip{}, ChangeSeq: (&fakeClip{}).seq.Load,
+		Interval: 5 * time.Millisecond, BaseURL: "http://127.0.0.1:1", Logf: t.Logf,
+		StartupRetry: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan context.Context, 1)
+	a.Auto.CanSync = func() bool { return true }
+	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
+		a.syncing.Add(1)
+		a.runActive.Store(true)
+		a.runGen.Store(a.acctGen.Load())
+		select {
+		case started <- ctx:
+		default:
+		}
+		<-ctx.Done() // a long sync of the old account, until it is told to stop
+		return ctx.Err()
+	}
+	a.Start()
+	defer a.Stop()
+	var ctx context.Context
+	select {
+	case ctx = <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no sync started")
+	}
+	a.AccountChanged(true)
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sync of the old account was left running")
+	}
+}

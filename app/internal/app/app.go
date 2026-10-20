@@ -84,9 +84,12 @@ type App struct {
 	cancel            context.CancelFunc
 	done              sync.WaitGroup
 	started           bool
-	ctx               context.Context    // lives as long as the program, once started
-	syncing           atomic.Int32       // syncs running, background or asked for
-	runActive         atomic.Bool        // a sync counted in syncing is between Run and syncDone
+	ctx               context.Context // lives as long as the program, once started
+	syncing           atomic.Int32    // syncs running, background or asked for
+	runActive         atomic.Bool     // a sync counted in syncing is between Run and syncDone
+	remoteDuringSync  atomic.Bool     // another device uploaded while a sync ran
+	acctCtx           context.Context
+	acctCancel        context.CancelFunc
 	changedDuringSync atomic.Bool        // the history changed while a sync ran
 	acctGen           atomic.Int64       // moves when the account changes
 	runGen            atomic.Int64       // the account generation the running sync started under
@@ -215,6 +218,7 @@ func (a *App) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	a.ctx = ctx
+	a.acctCtx, a.acctCancel = context.WithCancel(ctx)
 	a.mu.Unlock()
 
 	// A change of the history is a reason to sync, a moment later.
@@ -228,7 +232,7 @@ func (a *App) Start() {
 			}
 			return
 		}
-		a.Auto.OnHistoryChanged(ctx)
+		a.Auto.OnHistoryChanged(a.acct())
 	})
 
 	// A capture that gave way to an Apply, or could not read a busy
@@ -246,7 +250,7 @@ func (a *App) Start() {
 	a.done.Add(1)
 	go func() { defer a.done.Done(); w.Run(ctx) }()
 	a.watchRemote(ctx)
-	a.Auto.Startup(ctx)
+	a.Auto.Startup(a.acct())
 	a.retryStartup(ctx)
 
 	// What earlier updates left, and what the .NET program left; then the
@@ -316,7 +320,7 @@ func (a *App) retryStartup(ctx context.Context) {
 			if a.initialOK.Load() {
 				return
 			}
-			a.Auto.Trigger(ctx, "startup", false)
+			a.Auto.Trigger(a.acct(), "startup", false)
 			wait = min(wait*2, 10*time.Minute)
 		}
 	}()
@@ -345,7 +349,14 @@ func (a *App) watchRemote(ctx context.Context) {
 			},
 			BaseURL: a.cfg.BaseURL,
 		}
-		sess.Client.Watch(wctx, sess, syncclient.WatchOptions{}, func() { a.Auto.OnRemoteUpdated(ctx) })
+		sess.Client.Watch(wctx, sess, syncclient.WatchOptions{}, func() {
+			if a.syncing.Load() > 0 {
+				// The runner would turn it away; it is kept for when this one ends.
+				a.remoteDuringSync.Store(true)
+				return
+			}
+			a.Auto.OnRemoteUpdated(a.acct())
+		})
 	}()
 }
 
@@ -378,13 +389,14 @@ func (a *App) Stop() {
 	}
 }
 
-// lifetime is the context of work that belongs to the program: the one made at
-// Start, else Background (before Start there is nothing to cancel).
-func (a *App) lifetime() context.Context {
+// acct is the context of the work that belongs to the account signed in now: it
+// ends when the account changes, which stops a sync of the old account before
+// it can put its history into the new one's place.
+func (a *App) acct() context.Context {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.ctx != nil {
-		return a.ctx
+	if a.acctCtx != nil {
+		return a.acctCtx
 	}
 	return context.Background()
 }
@@ -405,7 +417,7 @@ func (a *App) SyncNow() {
 	// Only the syncs started in the background count towards "the first sync
 	// is done" (MainWindowViewModel does the same: !manual); a manual one
 	// that succeeds leaves history-triggered syncing to the next background one.
-	a.Auto.Trigger(a.lifetime(), "manual", true)
+	a.Auto.Trigger(a.acct(), "manual", true)
 }
 
 // AccountChanged is for the preferences window: after a sign-in the history
@@ -414,6 +426,10 @@ func (a *App) AccountChanged(signedIn bool) {
 	a.acctGen.Add(1)
 	a.mu.Lock()
 	ctx, started := a.ctx, a.started
+	if started {
+		a.acctCancel() // what the old account was doing stops
+		a.acctCtx, a.acctCancel = context.WithCancel(ctx)
+	}
 	a.mu.Unlock()
 	if started {
 		a.watchRemote(ctx) // the stream of the old account is dropped, a new one opened
@@ -421,7 +437,7 @@ func (a *App) AccountChanged(signedIn bool) {
 	if signedIn {
 		a.loginWanted.Store(true)
 		a.initialOK.Store(false)
-		a.Auto.Trigger(a.lifetime(), "login", false)
+		a.Auto.Trigger(a.acct(), "login", false)
 		if started {
 			a.retryStartup(ctx) // and again later if that sync does not go through
 		}
@@ -462,8 +478,21 @@ func (a *App) syncDone(reason string, manual bool, err error) {
 			a.changedDuringSync.Store(false)
 		}
 		time.AfterFunc(wait, func() {
-			if ctx := a.lifetime(); ctx.Err() == nil {
+			if ctx := a.acct(); ctx.Err() == nil {
 				a.Auto.OnHistoryChanged(ctx)
+			}
+		})
+	}
+	if a.remoteDuringSync.Load() {
+		wait := 150 * time.Millisecond
+		if err != nil {
+			wait = 30 * time.Second
+		} else {
+			a.remoteDuringSync.Store(false)
+		}
+		time.AfterFunc(wait, func() {
+			if ctx := a.acct(); ctx.Err() == nil {
+				a.Auto.OnRemoteUpdated(ctx)
 			}
 		})
 	}
@@ -480,7 +509,7 @@ func (a *App) syncDone(reason string, manual bool, err error) {
 		// turned away. The runner is still marked busy until this returns, so
 		// ask again a moment later.
 		time.AfterFunc(100*time.Millisecond, func() {
-			if ctx := a.lifetime(); ctx.Err() == nil {
+			if ctx := a.acct(); ctx.Err() == nil {
 				a.Auto.Trigger(ctx, "login", false)
 			}
 		})

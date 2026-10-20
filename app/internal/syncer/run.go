@@ -84,7 +84,12 @@ func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.Uplo
 // remember is the server's manifest as it is now; when it cannot be fetched,
 // what the upload answered, or the manifest the decision was made on.
 func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadResult, fallback *ManifestInfo) {
-	fp := s.Fingerprint()
+	// The history as it was uploaded, not as it is: an item copied since is
+	// not on the server, and must still count as a change to send.
+	fp, _ := s.uploadFP.Load().(string)
+	if fp == "" {
+		fp = s.Fingerprint()
+	}
 	if m, err := s.ManifestInfo(ctx); err == nil && (m.UpdatedAt != nil || m.Version != "") {
 		s.PersistSyncState(fp, m)
 		return

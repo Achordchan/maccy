@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"klip/internal/model"
@@ -24,6 +25,10 @@ type Syncer struct {
 	cfg     Config
 	session *syncclient.Session
 	gate    sync.Mutex
+	// uploadFP is the fingerprint of the history that the last upload took its
+	// snapshot from, which is what the server has; the history may have moved
+	// on by the time the state is written down.
+	uploadFP atomic.Value
 }
 
 // New returns a Syncer. cfg.Client, Settings, History, Layout and BaseURL are
@@ -231,6 +236,7 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason str
 	defer tryDelete(path)
 
 	items := s.cfg.History.Items()
+	s.uploadFP.Store(Fingerprint(items))
 	st := s.settings()
 	s.timing("upload", "snapshot_source_ready", started, fmt.Sprintf("%s;items=%d", reason, len(items)))
 

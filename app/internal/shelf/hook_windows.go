@@ -5,6 +5,7 @@ package shelf
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -45,6 +46,8 @@ type mouseEvent struct {
 
 var (
 	hookEvents chan mouseEvent
+	// hookOverflow is set when a button event did not fit in the queue.
+	hookOverflow atomic.Bool
 	hookHandle uintptr
 	hookOnce   sync.Once
 	hookProc   uintptr
@@ -75,6 +78,9 @@ func lowLevelMouseProc(nCode, wParam, lParam uintptr) uintptr {
 			select {
 			case hookEvents <- mouseEvent{kind: int(wParam)}:
 			default:
+				// It could not be queued: say so, and the consumer will not
+				// trust what it believes about the button (see below).
+				hookOverflow.Store(true)
 			}
 		}
 	}
@@ -132,6 +138,12 @@ func StartHook(ev Events) (stop func(), err error) {
 			case <-quit:
 				return
 			case m := <-hookEvents:
+				if hookOverflow.Swap(false) && ev.LeftUp != nil {
+					// A press or release was lost when the queue was full: take the
+					// button as up, so that a missed release cannot leave the gesture
+					// thinking it is held while the mouse moves on.
+					ev.LeftUp()
+				}
 				switch m.kind {
 				case wmMouseMove:
 					if ev.Move != nil {
