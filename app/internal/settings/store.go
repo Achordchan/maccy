@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 
 	"klip/internal/model"
 )
@@ -50,10 +52,32 @@ func ignoreMissing(err error) error {
 	return err
 }
 
+type saveState struct {
+	mu      sync.Mutex
+	written uint64
+}
+
+var (
+	saveSeq    atomic.Uint64
+	saveStates sync.Map // absolute path -> *saveState
+)
+
 func writeAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
+	}
+	key := path
+	if abs, err := filepath.Abs(path); err == nil {
+		key = abs
+	}
+	stateAny, _ := saveStates.LoadOrStore(key, &saveState{})
+	state := stateAny.(*saveState)
+	seq := saveSeq.Add(1)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if seq <= state.written {
+		return nil // a newer save of these settings already committed
 	}
 	// The file holds the access and the refresh token: the folder and the
 	// file are for this user only, also when an older version created them
@@ -80,6 +104,7 @@ func writeAtomic(path string, data []byte) error {
 		os.Remove(tmp)
 		return err
 	}
+	state.written = seq
 	// The rename gives the file the mode of the temporary one, but make sure
 	// again: the path may be on a file system that keeps the old mode.
 	_ = os.Chmod(path, 0o600)

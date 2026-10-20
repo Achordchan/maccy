@@ -1495,14 +1495,22 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 	}
 
 	merged := MergeItems(filteredRemote, filteredLocal)
+	localByID = make(map[string]model.Item, len(filteredLocal))
+	for _, it := range filteredLocal {
+		localByID[strings.ToLower(it.ID)] = it
+	}
+	remoteByID = make(map[string]model.Item, len(filteredRemote))
+	for _, it := range filteredRemote {
+		remoteByID[strings.ToLower(it.ID)] = it
+	}
 	for i := range merged {
 		best, found := int32(0), false
-		for _, it := range remote {
+		for _, it := range filteredRemote {
 			if sameMergeIdentity(merged[i], it) {
 				best, found = max(best, it.CopyCount), true
 			}
 		}
-		for _, it := range local {
+		for _, it := range filteredLocal {
 			if sameMergeIdentity(merged[i], it) {
 				best, found = max(best, it.CopyCount), true
 			}
@@ -1515,9 +1523,9 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 	// A field the user changed during the download keeps the local value; an
 	// unchanged field takes the downloaded value (which may be a remote edit).
 	for i := range merged {
-		l, lok := findIdentity(local, merged[i])
+		l, lok := findIdentity(filteredLocal, merged[i])
 		b, bok := findIdentity(baseline, merged[i])
-		r, rok := findIdentity(remote, merged[i])
+		r, rok := findIdentity(filteredRemote, merged[i])
 		if !lok || !bok {
 			continue
 		}
@@ -1590,13 +1598,28 @@ func rollbackItems(before, applied, current []model.Item, limitPruned map[string
 				if cur.CopyCount != ap.CopyCount {
 					it.CopyCount = cur.CopyCount
 				}
+				if cur.CapturedAt.After(ap.CapturedAt.Time) {
+					it.CapturedAt = cur.CapturedAt
+					if cur.FirstCapturedAt != nil {
+						it.FirstCapturedAt = cur.FirstCapturedAt
+					}
+				}
 			}
 		}
 		out = append(out, it)
 	}
 	for _, it := range current {
 		id := strings.ToLower(it.ID)
-		if !appliedIDs[id] && !beforeIDs[id] {
+		if ap, applied := appliedByID[id]; applied {
+			// A recapture of a just-imported item updates the same id: keep
+			// the user's content instead of dropping it with the import. An
+			// item that existed before is restored above, with its edits.
+			if !beforeIDs[id] && !sameCaptureState(it, ap) {
+				out = append(out, it)
+			}
+			continue
+		}
+		if !beforeIDs[id] {
 			out = append(out, it)
 		}
 	}
@@ -1604,6 +1627,23 @@ func rollbackItems(before, applied, current []model.Item, limitPruned map[string
 	// not merge them.
 	sortItems(out)
 	return out
+}
+
+// sameCaptureState says a current item is still the imported item, not a
+// recapture that happened while the flush was failing.
+func sameCaptureState(a, b model.Item) bool {
+	if !a.CapturedAt.Equal(b.CapturedAt.Time) || a.CopyCount != b.CopyCount || a.Pinned != b.Pinned ||
+		!sameNote(a.Note, b.Note) || model.Str(a.Text) != model.Str(b.Text) ||
+		model.Str(a.ContentHash) != model.Str(b.ContentHash) ||
+		model.Str(a.ImageFilePath) != model.Str(b.ImageFilePath) || len(a.FilePaths) != len(b.FilePaths) {
+		return false
+	}
+	for i := range a.FilePaths {
+		if a.FilePaths[i] != b.FilePaths[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func sameNote(a, b *string) bool {

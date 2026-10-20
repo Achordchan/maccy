@@ -2611,3 +2611,39 @@ func TestRecoverPendingMergeRequiresProofForSameIDs(t *testing.T) {
 		t.Errorf("state was recovered for an unsaved metadata-only merge: %+v", s)
 	}
 }
+
+// A deleted duplicate must not contribute its count or metadata to the
+// surviving one.
+func TestDownloadMergeIgnoresDeletedDuplicateMetadata(t *testing.T) {
+	const (
+		a = "0f8fad5b-d9cb-469f-a165-70867728950e"
+		b = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	)
+	hash := "H"
+	baseA := textItemAt(a, "same")
+	baseA.ContentHash, baseA.CopyCount = &hash, 100
+	baseA.Note = model.Ptr("deleted note")
+	baseB := textItemAt(b, "same")
+	baseB.ContentHash, baseB.CopyCount = &hash, 1
+	remote := []model.Item{baseA, baseB}
+	local := []model.Item{baseB}
+	out := MergeForDownload(remote, local, []model.Item{baseA, baseB})
+	if len(out) != 1 {
+		t.Fatalf("%+v", out)
+	}
+	if out[0].CopyCount != 1 || model.Str(out[0].Note) != "" {
+		t.Errorf("the deleted duplicate leaked into the survivor: %+v", out[0])
+	}
+}
+
+// A recapture of an item that only the failed import added is kept.
+func TestRollbackKeepsARecaptureOfAnImportedItem(t *testing.T) {
+	imported := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "imported")
+	recaptured := imported
+	recaptured.CopyCount = 2
+	recaptured.CapturedAt = model.Time{Time: time.Now().Add(time.Second)}
+	out := rollbackItems(nil, []model.Item{imported}, []model.Item{recaptured}, nil)
+	if len(out) != 1 || out[0].ID != imported.ID || out[0].CopyCount != 2 {
+		t.Errorf("the recapture was dropped: %+v", out)
+	}
+}
