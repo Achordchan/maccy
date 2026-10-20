@@ -1229,16 +1229,42 @@ func sameMergeIdentity(a, b model.Item) bool {
 // is the larger one, not the sum.
 func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 	merged := MergeItems(remote, local)
-	// A deletion made while the snapshot was downloading is a local change
-	// too: do not let the remote copy bring the item back.
 	localIDs := make(map[string]bool, len(local))
+	localByID := make(map[string]model.Item, len(local))
 	for _, it := range local {
-		localIDs[strings.ToLower(it.ID)] = true
+		id := strings.ToLower(it.ID)
+		localIDs[id] = true
+		localByID[id] = it
 	}
-	deleted := map[string]bool{}
+	baseIDs := make(map[string]bool, len(baseline))
+	baseByID := make(map[string]model.Item, len(baseline))
 	for _, it := range baseline {
 		id := strings.ToLower(strings.TrimSpace(it.ID))
-		if id != "" && id != emptyGUID && !localIDs[id] {
+		if id == "" || id == emptyGUID {
+			continue
+		}
+		baseIDs[id] = true
+		baseByID[id] = it
+	}
+	remoteIDs := make(map[string]bool, len(remote))
+	remoteByID := make(map[string]model.Item, len(remote))
+	for _, it := range remote {
+		id := strings.ToLower(it.ID)
+		remoteIDs[id] = true
+		remoteByID[id] = it
+	}
+	// A deletion made while the snapshot was downloading is a local change
+	// too: do not let the remote copy bring the item back.
+	deleted := map[string]bool{}
+	for id := range baseIDs {
+		if !localIDs[id] {
+			deleted[id] = true
+		}
+	}
+	// The remote side may have deleted an item too: an unchanged local item
+	// that is gone remotely stays deleted.
+	for id := range baseIDs {
+		if localIDs[id] && !remoteIDs[id] {
 			deleted[id] = true
 		}
 	}
@@ -1250,6 +1276,21 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 			}
 		}
 		merged = kept
+	}
+	// Metadata edits made during the download win over the downloaded value.
+	for i := range merged {
+		id := strings.ToLower(merged[i].ID)
+		l, lok := localByID[id]
+		b, bok := baseByID[id]
+		if !lok || !bok {
+			continue
+		}
+		if !sameNote(l.Note, b.Note) {
+			merged[i].Note = l.Note
+		}
+		if l.Pinned != b.Pinned {
+			merged[i].Pinned = l.Pinned
+		}
 	}
 	for i := range merged {
 		best, found := int32(0), false

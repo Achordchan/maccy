@@ -564,3 +564,26 @@ func TestExportRejectsAMissingDuplicateBasename(t *testing.T) {
 		t.Errorf("an item with one of two same-named files was exported: %v", err)
 	}
 }
+
+// A migrated item's canonical cache must still hold as many files as the item
+// lists; a partial cache must not export.
+func TestExportRejectsAPartialMigratedCache(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	l := paths.Layout{Root: t.TempDir()}
+	dir := filepath.Join(l.Files(), strings.ReplaceAll(id, "-", ""))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "0000_a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := model.Item{
+		ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()},
+		FilePaths: []string{"/docs/a.txt", "/docs/b.txt"}, CopyCount: 1,
+	}
+	snap := filepath.Join(t.TempDir(), "snapshot.sqlite")
+	if _, err := Export(ctx, l, snap, []model.Item{item}, model.DefaultSettings()); err == nil ||
+		!strings.Contains(err.Error(), "payload missing") {
+		t.Errorf("a migrated item with a partial cache was exported: %v", err)
+	}
+}

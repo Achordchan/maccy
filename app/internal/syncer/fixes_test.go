@@ -2199,3 +2199,35 @@ func TestDownloadMergeKeepsAConcurrentDeletion(t *testing.T) {
 		t.Fatalf("history %+v: the deleted item came back", h.items)
 	}
 }
+
+// A remote deletion is kept when the local copy was unchanged, even though a
+// capture triggered a download-time merge.
+func TestDownloadMergeKeepsARemoteDeletion(t *testing.T) {
+	x := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "x")
+	captured := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "captured")
+	remote := []model.Item{textItemAt("16fd2706-8baf-433b-82eb-8c7fada847da", "y")}
+	out := MergeForDownload(remote, []model.Item{captured, x}, []model.Item{x})
+	for _, it := range out {
+		if it.ID == x.ID {
+			t.Errorf("the remotely deleted item came back: %+v", out)
+		}
+	}
+}
+
+// A note/pin edit made during a download beats the downloaded metadata.
+func TestDownloadMergeKeepsMetadataEdits(t *testing.T) {
+	const id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+	base := textItemAt(id, "x")
+	base.Pinned, base.Note = true, model.Ptr("note")
+	local := base
+	local.Pinned, local.Note = false, nil
+	remote := base
+	remote.Note = model.Ptr("remote note")
+	out := MergeForDownload([]model.Item{remote}, []model.Item{local}, []model.Item{base})
+	if len(out) != 1 {
+		t.Fatalf("%+v", out)
+	}
+	if out[0].Pinned || out[0].Note != nil {
+		t.Errorf("the download undid the edit: %+v", out[0])
+	}
+}
