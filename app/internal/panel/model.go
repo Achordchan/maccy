@@ -20,6 +20,8 @@ type Host interface {
 	Hide()
 	// SyncNow starts a sync the user asked for.
 	SyncNow()
+	// ShowPrefs opens the preferences window.
+	ShowPrefs()
 	// Quit ends the program.
 	Quit()
 }

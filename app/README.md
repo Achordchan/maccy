@@ -11,6 +11,10 @@
 | `internal/snapshot` | 同步快照（SQLite，schema 2，兼容读 schema 1）的导出与导入 |
 | `internal/history`（服务） | 剪贴板历史列表（C# `ClipboardHistoryService` + `ClipboardPersistenceService`）：去重合并、置顶、备注、拖动排序、按条数/体积清理、被移出的条目的图片和文件缓存一起删除、`ReplaceAll`、防抖保存 `history.json` |
 | `internal/platform` | 系统相关的部分：MyGo 剪贴板接到 `capture.Clipboard`、剪贴板变化轮询（`Watcher`）、变化计数器、前台应用识别 |
+| `internal/account` | 账号：登录、注册、退出、验证码（找回/修改密码）、订阅状态、卡密兑换；返回的文字就是 C# 弹出的那句 |
+| `internal/autostart` | 开机启动：Windows 注册表值 `maccy`（与 1.0.10 同一条），Linux 的 XDG 条目；macOS 用 MyGo 的登录项（`platform.Autostart`） |
+| `internal/prefs` | 偏好设置的规则：勾选和数字怎么写进设置、怎么校正、打开窗口时修什么 |
+| `internal/prefswin` | 偏好设置窗口（通用 / 内容 / 货架 / 云同步 + 密码对话框） |
 | `internal/panel` | 主面板的界面（MyGo 原生 UI）：搜索、列表、置顶、备注、删除、点击应用；对着 `history.Service`，不依赖窗口，用 `ui.NewTester` 测 |
 | `internal/app` | 把各部分接成一个不带窗口的程序：设置、历史及其文件、捕获、同步（启动时、服务器事件、历史变化后）、状态文字 |
 | `cmd/klip` | 程序入口：托盘、全局快捷键 `Ctrl+Alt+2`、面板窗口 |
@@ -138,7 +142,7 @@ KLIP_NAS_PYTHON=/tmp/nasvenv/bin/python go test ./...   # 加上对真实 nas-ag
 ## 平台适配（internal/platform）
 
 - **`Clipboard`**：`capture.Clipboard` 的 MyGo 实现。MyGo 把每次剪贴板调用切到主线程，所以可以在轮询协程里用，但必须等应用就绪（`App.WhenReady`）之后。写图片时如果给了文件路径，同一条目里同时提供 PNG 和文件（粘贴到文件夹得到文件，粘贴到编辑器得到图片）。
-- **`Watcher` + `ChangeSeq`**：每 400 毫秒问一次变化计数器（macOS：`NSPasteboard.changeCount`；Windows：`GetClipboardSequenceNumber`），数字变了才调 `OnChange`。第一次只记数，所以启动前剪贴板里的内容不会被收进来（与 C# 一致）。没有计数器的平台（Linux）每次都看，靠捕获规则丢掉与最新一条相同的内容。C# 用的是 `AddClipboardFormatListener` 的事件；Go 这边用轮询，延迟最多 400 毫秒，空闲约 0.03% CPU（阶段 1 实测）。
+- **`Watcher` + `ChangeSeq`**：每 400 毫秒问一次变化计数器（macOS：`NSPasteboard.changeCount`；Windows：`GetClipboardSequenceNumber`），数字变了才调 `OnChange`。第一次只记数，所以启动前剪贴板里的内容不会被收进来（与 C# 一致）。**一次看不到不等于没有**：很多程序（`pbcopy` 就是）先声明再写入，计数器只在第一步变，两步之间去看，看到的是空的或上一次的内容，之后再没有通知；所以这一次什么也没收到（`capture.Service.FoundNothing`），就隔 30、60、120、250、500 毫秒再看，直到收到东西或计数器又变（这个问题是真实剪贴板测试连续复制时偶发漏收发现的，现在 `TestRealRapidCopies` 连续 40 轮、整组跑 10 次都不漏）。没有计数器的平台（Linux）每次都看，靠捕获规则丢掉与最新一条相同的内容。C# 用的是 `AddClipboardFormatListener` 的事件；Go 这边用轮询，延迟最多 400 毫秒，空闲约 0.03% CPU（阶段 1 实测）。
 - **`ForegroundApp`**：来源应用。Windows 照 `TryGetForegroundApp`：前台窗口的进程，路径加不带扩展名的文件名；读不到路径的系统进程返回空（C# 会给出进程名，没有移植）。macOS 用 `NSWorkspace.frontmostApplication` 的本地化名称和 bundle 路径。Linux 返回空。
 
 ### 测试
@@ -186,3 +190,36 @@ cd app && KLIP_REAL_CLIPBOARD=1 go test -count=1 -race ./internal/platform/
 - 真实窗口只做了冒烟：编译出的程序启动、捕获了两次 `pbcopy`（含中文，来源应用识别为 Google Chrome）、历史写进磁盘；因为本机没有屏幕录制权限，**没有看到真实窗口、托盘图标、全局快捷键呼出**，需要人工在本机按 `Ctrl+Alt+2` 目视确认。面板画面用无窗口渲染看过（浅色和深色）。
 - Windows 和 Linux 只验证了能编译。
 - 启动时间和内存没有重测（阶段 1 的数字是 spike 的）。
+
+## 偏好设置与账号（internal/prefswin、prefs、account、autostart）
+
+**窗口**：托盘菜单“偏好设置…”、面板页脚的“设置”按钮或 `Cmd/Ctrl+,` 打开；四页，与 C# 的 `PreferencesWindow` 同样的项目：
+- 通用：开机启动、主题（跟随系统 / 深色 / 浅色，立即作用到所有窗口）、检查更新（更新模块做完前这一行不显示）。
+- 内容：合并重复内容、收藏项不计入上限、最大条目、最大容量（MB）、存储位置（打开数据目录）、捕获文本/图片/文件、文件后缀、单文件上限（MB）。
+- 货架：启用、触发键（Ctrl / Alt / Shift）。设置照存，但货架本身还没做，页面上写明了“目前只在 Windows 上可用”（也还没有）。
+- 云同步：登录状态；未登录时邮箱、密码、登录、注册、忘记密码；已登录时退出登录、修改密码；立即同步；订阅状态、套餐、存储占用、保留天数、超限状态、刷新；兑换卡密。
+- C# 的登录和注册就在这一页，不是单独的窗口，这里同样。找回/修改密码是一个对话框（邮箱或当前账号、验证码加 60 秒重发倒计时、新密码、确认）。
+
+**规则（照 C#）**：数字输入按键就写入，停 0.7 秒后才弹“设置已生效”；最大条目必须大于 0，否则忽略；单文件上限最小 1、最大不超过历史容量，校正后写回输入框且不弹提示；把历史容量改小会同时把单文件上限压下来；打开窗口时，空的或旧默认的文件后缀换成新默认，“开机启动”以系统里的实际状态为准；货架触发键为 `Disabled` 时显示为未启用。
+
+**开机启动**：Windows 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `maccy`，值是带引号的程序路径，与 1.0.10 一模一样，所以升级后用户原来的选择还在；两个版本互相开关的是同一条。因为 1.0.11 的程序文件名仍是 `maccy.exe`，原来的路径继续有效。
+
+**账号**：错误提示沿用 C# 的对照（`邮箱或密码不正确`、`验证码错误或已过期`、`邮件服务尚未配置，请联系管理员` 等）；兑换卡密失败时服务器回的是 JSON，和 C# 一样只显示“兑换失败”；登录或注册成功后立即同步一次（`app.AccountChanged`）；一个服务器说不认的访问令牌会让账号退出登录，邮箱保留。
+
+**测试**：
+- `account`：对着真实 nas-agent-py 走完注册 → 订阅 → 兑换卡密 → 退出 → 登录；错误密码、已注册邮箱、验证码流程（测试服务器没有邮件服务：已知邮箱得到“邮件服务尚未配置”，未知邮箱按它的设计假装已发送）；令牌续期与被拒；输入检查；字节数格式；错误文字对照。
+- `autostart`：注册表值名和值的格式（逐字节与 1.0.10 相同）、读 1.0.10 留下的值、空值、XDG 条目。
+- `prefs`：每个设置的写入和校正、打开时的修复。
+- `prefswin`（无窗口渲染）：四页内容、勾选写设置并提示、数字校正和延迟提示、重开读设置、登录/注册/退出/错误密码/回车登录、卡密兑换后刷新订阅、两个密码对话框和倒计时、已登录打开即读订阅。变异检查：新密码确认、单文件上限校正、值名 `maccy`、延迟提示、以系统为准都能被抓到。
+- `KLIP_SHOT=目录 go test -run TestShots ./internal/prefswin` 把每一页渲染成图片。
+- 这一阶段顺带修了一个真实的数据竞争：同步会更新设置，设置变化会改捕获选项，而捕获正在读它们（`-race` 在两设备测试里抓到）；现在每次捕获先取一份选项快照，有回归测试。
+
+**没有验证的**
+- Windows 注册表实现（`runkey_windows.go`）只验证了能编译；逻辑在假注册表上测过。macOS 的登录项要求打包好的应用（macOS 13 以后），`go run` 下会报错，窗口会把错误提示出来、设置保持原样。
+- 邮件验证码的完整流程（收到验证码 → 重置/修改成功）没有测，因为测试服务器没有邮件服务；只测了错误验证码被拒和输入检查。
+- 真实窗口里的点击、输入法、对话框、托盘菜单没有目视确认（没有屏幕录制权限）；无窗口渲染的画面看过（通用、内容、货架、云同步、对话框）。
+- “检查更新”、“货架”、开机启动后的“静默启动”（`WasOpenedAtLogin`）还没接。
+
+**这一阶段顺带修的另外两处**
+- 漏收：见上面“一次看不到不等于没有”。在此之前，两次间隔很短的复制有一定概率漏掉第二次（实测约四成的整组运行里出现），之前三次全过只是运气。
+- `ForegroundApp`（macOS）里创建的自动释放池必须在同一个线程上释放，而 goroutine 可能在两次原生调用之间换线程；现在在函数内固定到当前线程（`runtime.LockOSThread`），此前偶发的 SIGSEGV 没有再出现。

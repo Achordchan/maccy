@@ -100,12 +100,14 @@ type fakeHost struct {
 	applied []string
 	hidden  int
 	synced  int
+	prefs   int
 	quit    int
 }
 
 func (h *fakeHost) Apply(it model.Item) { h.applied = append(h.applied, model.Str(it.Text)) }
 func (h *fakeHost) Hide()               { h.hidden++ }
 func (h *fakeHost) SyncNow()            { h.synced++ }
+func (h *fakeHost) ShowPrefs()          { h.prefs++ }
 func (h *fakeHost) Quit()               { h.quit++ }
 
 type rig struct {
@@ -326,6 +328,13 @@ func TestViewButtons(t *testing.T) {
 	r.tt.Key(ui.Cmd, ui.KeyQ)
 	if r.ho.quit != 1 {
 		t.Fatal("quit shortcut")
+	}
+	if err := r.tt.Click("设置"); err != nil {
+		t.Fatal(err)
+	}
+	r.tt.Key(ui.Cmd, ui.KeyComma)
+	if r.ho.prefs != 2 {
+		t.Fatalf("preferences opened %d times, want 2 (button and Cmd+,)", r.ho.prefs)
 	}
 }
 

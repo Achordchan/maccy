@@ -28,6 +28,14 @@ type Watcher struct {
 	OnChange func()
 	// Fingerprint stands in for the counter when Seq is negative; may be nil.
 	Fingerprint func() string
+	// Retry, when set, is asked after each OnChange whether it took nothing.
+	// A program that fills the clipboard in two steps (declare, then write)
+	// moves the counter only for the first, and whoever looks in between sees
+	// nothing, or what was there before, and is never told about the data
+	// that follows. So a look that took nothing is repeated, at growing
+	// pauses, until one takes something, the counter moves (the regular tick
+	// takes it from there) or the delays are used up.
+	Retry func() bool
 
 	mu     sync.Mutex
 	last   int64
@@ -65,6 +73,7 @@ func (w *Watcher) Run(ctx context.Context) {
 			}
 			if moved && w.OnChange != nil {
 				w.OnChange()
+				w.settle(ctx, seq, s)
 			}
 		}
 	}
@@ -106,4 +115,29 @@ func (w *Watcher) contentMoved(fp string) bool {
 	}
 	w.lastFP = fp
 	return true
+}
+
+// retryDelays are the pauses of the repeated looks: about a second in all.
+var retryDelays = []time.Duration{30 * time.Millisecond, 60 * time.Millisecond, 120 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond}
+
+// settle repeats a look that took nothing (see Retry). With no counter (-1)
+// every tick looks anyway.
+func (w *Watcher) settle(ctx context.Context, seq func() int64, at int64) {
+	if w.Retry == nil || at < 0 {
+		return
+	}
+	for _, d := range retryDelays {
+		if !w.Retry() {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(d):
+		}
+		if seq() != at {
+			return // a real change: the next tick handles it
+		}
+		w.OnChange()
+	}
 }

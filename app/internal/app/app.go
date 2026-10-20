@@ -11,11 +11,14 @@ import (
 	"sync"
 	"time"
 
+	"klip/internal/account"
+	"klip/internal/autostart"
 	"klip/internal/capture"
 	"klip/internal/history"
 	"klip/internal/model"
 	"klip/internal/paths"
 	"klip/internal/platform"
+	"klip/internal/prefs"
 	"klip/internal/settings"
 	"klip/internal/syncclient"
 	"klip/internal/syncer"
@@ -33,6 +36,8 @@ type Config struct {
 	Interval  time.Duration
 	// BaseURL is the sync server: the official one unless a test sets it.
 	BaseURL string
+	// Autostart is the start at sign-in (autostart.Default when nil).
+	Autostart autostart.Service
 	// Changed is called, from any goroutine, when something the windows show
 	// changed (the sync status; history changes are seen through the history).
 	Changed func()
@@ -49,6 +54,8 @@ type App struct {
 	Capture   *capture.Service
 	Syncer    *syncer.Syncer
 	Auto      *syncer.Auto
+	Account   *account.Service
+	Prefs     *prefs.Controller
 
 	mu      sync.Mutex
 	status  string
@@ -103,6 +110,12 @@ func New(cfg Config) (*App, error) {
 		SuppressAutoSync: func(on bool) { a.Auto.Suppress(on) },
 	})
 	a.Auto = syncer.NewAuto(a.Syncer, a.syncDone)
+
+	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings}
+	if cfg.Autostart == nil {
+		cfg.Autostart = autostart.Default()
+	}
+	a.Prefs = &prefs.Controller{Settings: a.Settings, Autostart: cfg.Autostart}
 	return a, nil
 }
 
@@ -137,7 +150,7 @@ func (a *App) Start() {
 		if err := a.Capture.Capture(ctx); err != nil {
 			a.cfg.Logf("capture: %v", err)
 		}
-	}}
+	}, Retry: a.Capture.FoundNothing}
 	a.done.Add(2)
 	go func() { defer a.done.Done(); w.Run(ctx) }()
 	go func() {
@@ -183,6 +196,15 @@ func (a *App) Apply(it model.Item) {
 func (a *App) SyncNow() {
 	a.setStatus("同步中…")
 	a.Auto.Trigger(context.Background(), "manual", true)
+}
+
+// AccountChanged is for the preferences window: after a sign-in the history
+// is synchronized at once, as the C# client does.
+func (a *App) AccountChanged(signedIn bool) {
+	if signedIn {
+		a.Auto.Trigger(context.Background(), "login", false)
+	}
+	a.changed()
 }
 
 // SyncStatus is the text for the window's footer: how the last sync went.

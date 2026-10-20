@@ -274,3 +274,40 @@ func TestTwoDevicesThroughServer(t *testing.T) {
 		return len(g) == 2 && g[0] == "from device B"
 	})
 }
+
+// Signing in through the account service, then telling the app: it syncs at
+// once, without a restart.
+func TestSignInStartsSync(t *testing.T) {
+	srv := nastest.Start(t)
+	ctx := context.Background()
+	clip := &fakeClip{}
+	a := newApp(t, t.TempDir(), clip, srv.URL)
+	a.Start()
+	defer a.Stop()
+	time.Sleep(40 * time.Millisecond)
+	clip.copy("before signing in")
+	waitFor(t, "captured", func() bool { return len(texts(a)) == 1 })
+	if a.SyncStatus() != "" {
+		t.Fatalf("status while signed out: %q", a.SyncStatus())
+	}
+	if r := a.Account.Register(ctx, "new@example.com", "password1"); !r.OK {
+		t.Fatal(r)
+	}
+	srv.Admin("/admin/user/upgrade", map[string]any{"emailOrUserId": "new@example.com", "durationDays": 30, "tier": "Mini"})
+	a.AccountChanged(true)
+	waitFor(t, "synced", func() bool { return strings.HasPrefix(a.SyncStatus(), "已同步") })
+	m, err := syncclient.New(srv.URL).GetManifestJSON(ctx, model.Str(a.Settings.Get().AuthAccessToken))
+	if err != nil || m == "" {
+		t.Fatalf("nothing uploaded after sign-in: %q %v", m, err)
+	}
+}
+
+func TestPrefsAndAccountAreWired(t *testing.T) {
+	a := newApp(t, t.TempDir(), &fakeClip{}, "http://127.0.0.1:1")
+	if a.Account == nil || a.Prefs == nil {
+		t.Fatal("not wired")
+	}
+	if e := a.Prefs.SetMaxItems("7"); !e.Changed || a.History.Limits().MaxItems == nil || *a.History.Limits().MaxItems != 7 {
+		t.Fatalf("a setting changed in the preferences must reach the history: %+v", e)
+	}
+}

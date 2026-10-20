@@ -5,6 +5,7 @@ package main
 import (
 	_ "embed"
 	"log"
+	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -14,6 +15,7 @@ import (
 	"klip/internal/panel"
 	"klip/internal/paths"
 	"klip/internal/platform"
+	"klip/internal/prefswin"
 )
 
 //go:embed icon.png
@@ -27,6 +29,10 @@ type program struct {
 	model *panel.Model
 	win   *mygo.Window
 	tray  *mygo.Tray
+
+	prefs    *prefswin.Model
+	prefsWin *mygo.Window
+	layout   paths.Layout
 }
 
 func main() {
@@ -53,11 +59,15 @@ func (p *program) ready() {
 		Clipboard:  platform.Clipboard{},
 		Foreground: platform.ForegroundApp,
 		ChangeSeq:  platform.ChangeSeq,
+		Autostart:  platform.Autostart(),
 		Changed:    func() { p.redraw() },
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
+	p.layout = layout
+	applyTheme(p.app.Settings.Get().Theme)
+	p.app.Settings.OnChange(func(st model.Settings) { applyTheme(st.Theme) })
 	p.model = panel.New(p.app.History, host{p})
 	p.model.Status = p.app.SyncStatus
 	p.model.Redraw = p.redraw
@@ -101,6 +111,7 @@ func (p *program) ready() {
 		Menu: mygo.NewMenu([]*mygo.MenuItem{
 			{Label: "显示 Klip", Click: func(*mygo.MenuItem, *mygo.Window) { p.show() }},
 			{Label: "立即同步", Click: func(*mygo.MenuItem, *mygo.Window) { p.app.SyncNow() }},
+			{Label: "偏好设置…", Click: func(*mygo.MenuItem, *mygo.Window) { p.showPrefs() }},
 			mygo.Separator(),
 			{Role: mygo.RoleQuit},
 		}),
@@ -113,11 +124,52 @@ func (p *program) ready() {
 	p.app.Start()
 }
 
-// redraw asks the panel for a frame; any goroutine may call it.
+// redraw asks the visible windows for a frame; any goroutine may call it.
 func (p *program) redraw() {
 	if p.win != nil && p.win.IsVisible() {
 		p.win.Update(func() {})
 	}
+	if p.prefsWin != nil && p.prefsWin.IsVisible() {
+		p.prefsWin.Update(func() {})
+	}
+}
+
+// applyTheme sets the look of the windows from the setting: "System",
+// "Dark" or "Light".
+func applyTheme(v string) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "dark":
+		mygo.Theme.SetSource(mygo.ThemeDark)
+	case "light":
+		mygo.Theme.SetSource(mygo.ThemeLight)
+	default:
+		mygo.Theme.SetSource(mygo.ThemeSystem)
+	}
+}
+
+// showPrefs opens the preferences window, made on first use and then only
+// hidden when closed.
+func (p *program) showPrefs() {
+	if p.prefsWin == nil {
+		p.prefs = prefswin.New(p.app.Prefs, p.app.Account, prefsHost{p})
+		p.prefs.Post = func(f func()) { p.prefsWin.Update(f) }
+		p.prefs.Redraw = p.redraw
+		p.prefs.SyncStatus = p.app.SyncStatus
+		p.prefsWin = mygo.NewWindow(mygo.WindowOptions{
+			Title:   "Klip 偏好设置",
+			Width:   640,
+			Height:  640,
+			Content: ui.View(p.prefs.View),
+		})
+		p.prefsWin.OnClose(func(e *mygo.CloseEvent) {
+			e.PreventDefault()
+			p.prefsWin.Hide()
+		})
+	}
+	p.win.Hide()
+	p.prefs.Open()
+	p.prefsWin.Show()
+	p.prefsWin.Focus()
 }
 
 func (p *program) show() {
@@ -142,4 +194,14 @@ type host struct{ p *program }
 func (h host) Apply(it model.Item) { h.p.app.Apply(it) }
 func (h host) Hide()               { h.p.win.Hide() }
 func (h host) SyncNow()            { h.p.app.SyncNow() }
+func (h host) ShowPrefs()          { h.p.showPrefs() }
 func (h host) Quit()               { mygo.App.Quit() }
+
+// prefsHost is what the preferences window asks of the program.
+type prefsHost struct{ p *program }
+
+func (h prefsHost) OpenStorage()           { _ = mygo.Shell.OpenPath(h.p.layout.Root) }
+func (h prefsHost) CheckUpdates() func()   { return nil } // the update module comes later
+func (h prefsHost) SyncNow()               { h.p.app.SyncNow() }
+func (h prefsHost) AccountChanged(in bool) { h.p.app.AccountChanged(in) }
+func (h prefsHost) Close()                 { h.p.prefsWin.Hide() }

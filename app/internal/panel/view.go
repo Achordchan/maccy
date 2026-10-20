@@ -58,6 +58,7 @@ func (m *Model) View(c *ui.Context) {
 		}
 	}
 	c.OnShortcut(ui.Cmd, ui.KeyQ, m.Host.Quit)
+	c.OnShortcut(ui.Cmd, ui.KeyComma, m.Host.ShowPrefs)
 
 	ui.Column(c).Fill().Children(func() {
 		ui.Row(c).Padding(12, 14).Gap(8).AlignItems(ui.Center).Children(func() {
@@ -98,6 +99,9 @@ func (m *Model) View(c *ui.Context) {
 			ui.Text(c, status).FontSize(11).TextColor(t.TextMuted).SingleLine().Grow(1)
 			if ui.Button(c, "同步").Label("立即同步").Clicked() {
 				m.Host.SyncNow()
+			}
+			if ui.Button(c, "设置").Label("偏好设置").Clicked() {
+				m.Host.ShowPrefs()
 			}
 		})
 	})
