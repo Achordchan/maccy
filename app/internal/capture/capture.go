@@ -87,6 +87,7 @@ type Service struct {
 	ownSeq      atomic.Int64                // counter after our last write, plus 2; 0 is none
 	applying    atomic.Int32                // Apply calls in progress
 	ownCheck    atomic.Pointer[func() bool] // reads the clipboard back; true while it holds what we wrote
+	setMu       sync.RWMutex                // guards the capture settings below
 	capMu       sync.Mutex                  // one Capture at a time (the watcher and Retry)
 	skipped     atomic.Bool                 // a Capture gave way to an Apply
 	writeGen    atomic.Int64                // moves at the start and the end of every Apply
@@ -109,14 +110,34 @@ func New(layout paths.Layout, h *history.Service, c Clipboard) *Service {
 // ApplySettings sets the capture options from the settings, as App.ApplySettings
 // does: the file size limit is the smaller of its own and the history's.
 func (s *Service) ApplySettings(st model.Settings) {
+	s.setMu.Lock()
 	s.CaptureText, s.CaptureImages, s.CaptureFiles = st.CaptureText, st.CaptureImages, st.CaptureFiles
-	s.SetFileExtensions(st.CaptureFileExtensions)
+	s.allowed = parseExtensions(st.CaptureFileExtensions)
 	s.CaptureFileMaxBytes = int64(min(st.CaptureFileMaxMegabytes, st.MaxMegabytes)) * 1024 * 1024
+	s.setMu.Unlock()
 }
 
 // SetFileExtensions sets which file extensions are captured: a list separated
 // by commas, semicolons or spaces. An empty list is any extension.
-func (s *Service) SetFileExtensions(list string) { s.allowed = parseExtensions(list) }
+func (s *Service) SetFileExtensions(list string) {
+	s.setMu.Lock()
+	s.allowed = parseExtensions(list)
+	s.setMu.Unlock()
+}
+
+// options is the capture settings as one capture sees them: a copy taken at
+// its start, so a change of settings never shows up half way.
+type options struct {
+	text, images, files bool
+	maxBytes            int64
+	allowed             map[string]bool
+}
+
+func (s *Service) options() options {
+	s.setMu.RLock()
+	defer s.setMu.RUnlock()
+	return options{s.CaptureText, s.CaptureImages, s.CaptureFiles, s.CaptureFileMaxBytes, s.allowed}
+}
 
 // MarkWriteByUs says that the app has just written to the clipboard, so that
 // the change that follows is not captured again.
@@ -160,30 +181,33 @@ const ownSeqTTL = 5 * time.Second
 // isOwnChange says whether the clipboard is as our last write left it, or the
 // write is too recent to tell.
 func (s *Service) isOwnChange() bool {
+	check := s.ownCheck.Load()
 	if s.Seq != nil {
 		if own := s.ownSeq.Load(); own != 0 {
-			if n := s.Seq(); n >= 0 && s.Now().UnixNano()-s.lastOwnWrit.Load() < int64(ownSeqTTL) {
-				// The counter knows: still where our write left it is ours,
-				// anywhere else somebody else copied, window or not. That
-				// holds only for a while, so that a copy that slipped in
-				// next to the write cannot hide later captures for ever.
-				return n == own-2
+			if n := s.Seq(); n >= 0 {
+				// The counter knows: anywhere but where our write left it,
+				// somebody else copied, window or not.
+				if n != own-2 {
+					return false
+				}
+				if s.Now().UnixNano()-s.lastOwnWrit.Load() < int64(ownSeqTTL) || check == nil {
+					return true
+				}
+				// Seen late (the machine slept?): the content has the say.
+				return (*check)()
 			}
 		}
+	}
+	// No counter: ours if the clipboard still holds what we wrote, however
+	// late it is looked at; before that is known, the window decides.
+	if check != nil {
+		return (*check)()
 	}
 	w := s.OwnWindow
 	if w <= 0 {
 		w = 250 * time.Millisecond
 	}
-	if s.Now().UnixNano()-s.lastOwnWrit.Load() >= int64(w) {
-		return false
-	}
-	// In the window with no counter: ours only if the clipboard still holds
-	// what we wrote, so a copy made right after is not lost.
-	if c := s.ownCheck.Load(); c != nil {
-		return (*c)()
-	}
-	return true
+	return s.Now().UnixNano()-s.lastOwnWrit.Load() < int64(w)
 }
 
 // dangerousExtensions are never captured, whatever the list says.
@@ -239,6 +263,7 @@ func (s *Service) Capture(ctx context.Context) error {
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
 	gen := s.writeGen.Load()
+	opt := s.options()
 	if s.applying.Load() > 0 {
 		s.noteSkipped()
 		return nil
@@ -276,7 +301,7 @@ func (s *Service) Capture(ctx context.Context) error {
 		s.History.Add(it)
 	}
 
-	if s.CaptureText && has(set, textFormats) {
+	if opt.text && has(set, textFormats) {
 		text := s.Clipboard.ReadText()
 		if strings.TrimSpace(text) != "" {
 			items := s.History.Items()
@@ -291,11 +316,11 @@ func (s *Service) Capture(ctx context.Context) error {
 		}
 	}
 
-	if s.CaptureFiles && has(set, fileFormats) {
+	if opt.files && has(set, fileFormats) {
 		files, _ := s.Clipboard.ReadFiles()
 		files = nonBlank(files)
 		if len(files) > 0 {
-			if s.CaptureImages && len(files) == 1 && isImagePath(files[0]) && isFile(files[0]) {
+			if opt.images && len(files) == 1 && isImagePath(files[0]) && isFile(files[0]) {
 				if data, err := os.ReadFile(files[0]); err == nil {
 					if p, h, size, err := s.savePNG(data); err == nil {
 						add(model.Item{ID: s.NewID(), Kind: model.KindImage, ApproxBytes: size, ImageFilePath: &p, CopyCount: 1, ContentHash: &h})
@@ -303,7 +328,7 @@ func (s *Service) Capture(ctx context.Context) error {
 					}
 				}
 			}
-			files = s.filterFiles(files)
+			files = s.filterFiles(files, opt)
 			if len(files) == 0 {
 				return nil
 			}
@@ -317,7 +342,7 @@ func (s *Service) Capture(ctx context.Context) error {
 		}
 	}
 
-	if s.CaptureImages {
+	if opt.images {
 		// Whatever was not captured above gets one try as a picture, whatever
 		// formats are named: screenshot tools use odd names, and blank text
 		// or a text flavour beside the picture must not hide it (the C#
@@ -344,7 +369,7 @@ func nonBlank(in []string) []string {
 
 // filterFiles drops directories, dangerous types, types not in the list and
 // files over the size limit (a size of 0 or unknown passes).
-func (s *Service) filterFiles(in []string) []string {
+func (s *Service) filterFiles(in []string, opt options) []string {
 	out := make([]string, 0, len(in))
 	for _, p := range in {
 		if strings.TrimSpace(p) == "" {
@@ -360,13 +385,13 @@ func (s *Service) filterFiles(in []string) []string {
 		if ext != "" && dangerousExtensions[ext] {
 			continue
 		}
-		if s.allowed != nil {
-			if ext == "" || !s.allowed[ext] {
+		if opt.allowed != nil {
+			if ext == "" || !opt.allowed[ext] {
 				continue
 			}
 		}
-		if s.CaptureFileMaxBytes > 0 {
-			if size := fileSize(p); size > 0 && size > s.CaptureFileMaxBytes {
+		if opt.maxBytes > 0 {
+			if size := fileSize(p); size > 0 && size > opt.maxBytes {
 				continue
 			}
 		}

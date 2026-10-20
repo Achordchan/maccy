@@ -646,3 +646,20 @@ func TestCopyInsideWindowWithoutCounter(t *testing.T) {
 		t.Fatal("another copy inside the window must be kept: the content tells it from ours")
 	}
 }
+
+func TestSettingsChangeWhileCapturing(t *testing.T) {
+	r := newRig(t)
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "x"
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			r.s.ApplySettings(model.Settings{CaptureText: i%2 == 0, CaptureImages: true, CaptureFiles: true, CaptureFileMaxMegabytes: 20, MaxMegabytes: 100})
+			r.s.SetFileExtensions("txt, png")
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		r.s.Capture(context.Background())
+	}
+	<-done
+}
