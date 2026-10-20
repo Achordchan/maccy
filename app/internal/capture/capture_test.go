@@ -854,3 +854,18 @@ func TestEachChangeGetsItsOwnRetryBudget(t *testing.T) {
 		t.Fatalf("%d retries in all, the second change must get its own", n.Load())
 	}
 }
+
+func TestSupersededApplyDoesNotTouchOwnership(t *testing.T) {
+	r := newRig(t)
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "new"
+	old := r.s.applyID.Add(1) // an older Apply, paused
+	newer := "new"
+	_ = r.s.Apply(model.Item{Kind: model.KindText, Text: &newer}) // a newer one finishes
+	if r.s.ownCheck.Load() == nil {
+		t.Fatal("the newer Apply owns the clipboard")
+	}
+	r.s.setOwn(old, 0, 0, nil) // the older one wakes up and says "not ours"
+	if r.s.ownCheck.Load() == nil {
+		t.Fatal("a superseded Apply must not clear the newer ownership")
+	}
+}

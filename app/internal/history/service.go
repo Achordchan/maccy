@@ -112,15 +112,33 @@ func (t *trash) add(it model.Item) {
 // whose files are being deleted.
 // A file that cannot be deleted stays; nothing here is worth failing for.
 func (s *Service) empty(ctx context.Context, t trash) {
+	// What an item that stays still refers to is not trash, whatever was
+	// removed beside it (two items may share a picture after a sync).
+	keepImg := map[string]bool{}
+	keepDir := map[string]bool{}
+	for _, it := range s.items {
+		if p := model.Str(it.ImageFilePath); strings.TrimSpace(p) != "" {
+			keepImg[strings.ToLower(p)] = true
+		}
+		if it.Kind == model.KindFileList {
+			keepDir[it.IDN()] = true
+		}
+	}
 	for _, p := range t.images {
 		if ctx.Err() != nil {
 			return
+		}
+		if keepImg[strings.ToLower(p)] {
+			continue
 		}
 		os.Remove(p)
 	}
 	for _, id := range t.fileDirs {
 		if ctx.Err() != nil {
 			return
+		}
+		if keepDir[id] {
+			continue
 		}
 		os.RemoveAll(filepath.Join(s.layout.Files(), id))
 	}

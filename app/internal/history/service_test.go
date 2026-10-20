@@ -406,3 +406,21 @@ func TestPersister(t *testing.T) {
 		t.Errorf("loaded %d items, the image item should be dropped", svc2.Len())
 	}
 }
+
+func TestSharedImageSurvivesRemovalOfOneItem(t *testing.T) {
+	r := newRig(t)
+	a := r.image("img:A")
+	b := r.image("img:B")
+	b.ImageFilePath = a.ImageFilePath // two items, one picture (as after a sync)
+	if err := r.svc.ReplaceAll(context.Background(), []model.Item{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	r.svc.Remove(a.ID)
+	if !exists(model.Str(b.ImageFilePath)) {
+		t.Fatal("the picture the other item still uses was deleted")
+	}
+	r.svc.Remove(b.ID)
+	if exists(model.Str(b.ImageFilePath)) {
+		t.Fatal("the last item gone, the picture goes")
+	}
+}

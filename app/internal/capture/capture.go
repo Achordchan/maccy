@@ -93,6 +93,7 @@ type Service struct {
 	applying    atomic.Int32                // Apply calls in progress
 	ownCheck    atomic.Pointer[func() bool] // reads the clipboard back; true while it holds what we wrote
 	ownMu       sync.Mutex                  // makes a change of the ownership state one step
+	applyID     atomic.Int64                // number of the newest Apply
 	ownGen      atomic.Int64                // moves with every change of it
 	setMu       sync.RWMutex                // guards the capture settings below
 	capMu       sync.Mutex                  // one Capture at a time (the watcher and Retry)
@@ -151,14 +152,17 @@ func (s *Service) options() options {
 // MarkWriteByUs says that the app has just written to the clipboard, so that
 // the change that follows is not captured again.
 func (s *Service) MarkWriteByUs() {
-	s.setOwn(s.Now().UnixNano(), 0, nil)
+	s.setOwn(0, s.Now().UnixNano(), 0, nil)
 }
 
 // setOwn sets the ownership state in one step (never held across a clipboard
 // call) and moves its generation.
-func (s *Service) setOwn(at int64, seqPlus2 int64, check *func() bool) {
+func (s *Service) setOwn(apply int64, at int64, seqPlus2 int64, check *func() bool) {
 	s.ownMu.Lock()
 	defer s.ownMu.Unlock()
+	if apply != 0 && apply != s.applyID.Load() {
+		return // a newer Apply has taken over: this one is not heard any more
+	}
 	s.ownGen.Add(1)
 	s.lastOwnWrit.Store(at)
 	s.ownSeq.Store(seqPlus2)
@@ -167,9 +171,9 @@ func (s *Service) setOwn(at int64, seqPlus2 int64, check *func() bool) {
 
 // markWritten is called when the write is done: the counter then stands where
 // our own change left it.
-func (s *Service) markWritten(verify func() bool) {
+func (s *Service) markWritten(apply int64, verify func() bool) {
 	now := s.Now().UnixNano()
-	notOurs := func() { s.setOwn(0, 0, nil) } // somebody copied in between: capture it
+	notOurs := func() { s.setOwn(apply, 0, 0, nil) } // somebody copied in between: capture it
 	var before int64 = -1
 	if s.Seq != nil {
 		before = s.Seq()
@@ -193,7 +197,7 @@ func (s *Service) markWritten(verify func() bool) {
 	if verify != nil {
 		check = &verify // without a counter, content tells ours from theirs
 	}
-	s.setOwn(now, seqPlus2, check)
+	s.setOwn(apply, now, seqPlus2, check)
 }
 
 // checkOwn asks the verifier. Once it says the clipboard holds something
@@ -653,6 +657,7 @@ func newGUID() string {
 // clipboard, which hops to the main thread, and a lock held across that could
 // deadlock with a caller that is on it.
 func (s *Service) Apply(it model.Item) error {
+	id := s.applyID.Add(1)
 	s.applying.Add(1)
 	s.writeGen.Add(1)
 	defer func() {
@@ -664,9 +669,9 @@ func (s *Service) Apply(it model.Item) error {
 	s.MarkWriteByUs()
 	wrote, w, err := s.write(it)
 	if wrote && err == nil {
-		s.markWritten(s.verifier(it, w)) // only a write that happened can be recognised as ours
+		s.markWritten(id, s.verifier(it, w)) // only a write that happened can be recognised as ours
 	} else {
-		s.lastOwnWrit.Store(0) // nothing was written: nothing to hold back
+		s.setOwn(id, 0, 0, nil) // nothing was written: nothing to hold back
 	}
 	return err
 }
