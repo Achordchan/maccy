@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "issuer": "https://achord-maccy.authing.cn/oidc",
+  "issuer": "https://achord-klip.authing.cn/oidc",
   "subject": "authing-sub-user-id",
   "latest": {
     "version": "1700000000000",

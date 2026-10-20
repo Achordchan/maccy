@@ -1,6 +1,6 @@
-# Maccy
+# Klip
 
-Maccy is an open-source clipboard management tool designed specifically for Windows. It helps users manage and utilize clipboard content more efficiently, supporting capture and paste of text, images, and files.
+Klip is an open-source clipboard management tool designed specifically for Windows. It helps users manage and utilize clipboard content more efficiently, supporting capture and paste of text, images, and files.
 
 ## Key Features
 
@@ -17,7 +17,7 @@ Maccy is an open-source clipboard management tool designed specifically for Wind
 
 1. Download the latest installation package.
 2. Run the installer and follow the prompts to complete installation.
-3. After installation, Maccy will automatically display an icon in the system tray.
+3. After installation, Klip will automatically display an icon in the system tray.
 
 ## Usage Instructions
 

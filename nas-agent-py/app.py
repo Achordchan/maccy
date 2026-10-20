@@ -31,7 +31,7 @@ TOKEN_LEEWAY_SECONDS = 30
 ACCESS_TOKEN_HOURS = 2
 REFRESH_TOKEN_DAYS = 30
 ADMIN_TOKEN_HOURS = 12
-ADMIN_AUDIENCE = "maccy-admin"
+ADMIN_AUDIENCE = "klip-admin"
 PASSWORD_CODE_DIGITS = 6
 PASSWORD_CODE_TTL_MINUTES = 10
 PASSWORD_CODE_RESEND_COOLDOWN_SECONDS = 60
@@ -174,15 +174,15 @@ SETTINGS = Settings(
     admin_key=os.getenv("ADMIN_KEY", "change-me"),
     admin_email=os.getenv("ADMIN_EMAIL", "admin@example.com"),
     admin_password=os.getenv("ADMIN_PASSWORD", "change-me"),
-    issuer=os.getenv("AUTH_ISSUER", "maccy-self-hosted"),
-    audience=os.getenv("AUTH_AUDIENCE", "maccy-client"),
+    issuer=os.getenv("AUTH_ISSUER", "klip-self-hosted"),
+    audience=os.getenv("AUTH_AUDIENCE", "klip-client"),
     signing_key=os.getenv("AUTH_SIGNING_KEY", "change-me-to-a-long-random-secret"),
     smtp_host=os.getenv("SMTP_HOST", "").strip(),
     smtp_port=env_int("SMTP_PORT", 587),
     smtp_user=os.getenv("SMTP_USER", "").strip(),
     smtp_password=os.getenv("SMTP_PASSWORD", ""),
     smtp_from=os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "")).strip(),
-    smtp_from_name=os.getenv("SMTP_FROM_NAME", "Maccy Cloud").strip(),
+    smtp_from_name=os.getenv("SMTP_FROM_NAME", "Klip Cloud").strip(),
     smtp_starttls=env_bool("SMTP_STARTTLS", True),
     smtp_ssl=env_bool("SMTP_SSL", False),
 )
@@ -204,7 +204,7 @@ def startup() -> None:
 async def index() -> str:
     return (
         "<!doctype html><html><body style=\"font-family:system-ui;padding:24px\">"
-        "<h1>Maccy Agent</h1><p><a href=\"/health\">health</a> | "
+        "<h1>Klip Agent</h1><p><a href=\"/health\">health</a> | "
         "<a href=\"/admin\">admin</a></p></body></html>"
     )
 
@@ -1119,13 +1119,13 @@ def is_email_service_configured(settings: Settings) -> bool:
 def send_password_code_email(settings: Settings, email: str, code: str, purpose: str) -> None:
     action = "修改密码" if purpose == "change" else "找回密码"
     message = EmailMessage()
-    message["Subject"] = f"Maccy 云同步{action}验证码"
-    message["From"] = formataddr((settings.smtp_from_name or "Maccy Cloud", settings.smtp_from))
+    message["Subject"] = f"Klip 云同步{action}验证码"
+    message["From"] = formataddr((settings.smtp_from_name or "Klip Cloud", settings.smtp_from))
     message["To"] = email
     message.set_content(
         "\n".join(
             [
-                f"你正在为 Maccy 云同步账号执行{action}操作。",
+                f"你正在为 Klip 云同步账号执行{action}操作。",
                 f"验证码：{code}",
                 f"验证码 {PASSWORD_CODE_TTL_MINUTES} 分钟内有效，请勿转发给他人。",
                 "如果这不是你的操作，请忽略此邮件。",
@@ -1703,7 +1703,7 @@ def read_admin_html() -> str:
     path = APP_DIR / "AdminPage.html"
     if path.exists():
         return path.read_text(encoding="utf-8")
-    return "<!doctype html><html><body><h1>Maccy Admin</h1><p>Admin page missing.</p></body></html>"
+    return "<!doctype html><html><body><h1>Klip Admin</h1><p>Admin page missing.</p></body></html>"
 
 
 def now_utc() -> datetime:

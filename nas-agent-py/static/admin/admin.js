@@ -1,7 +1,7 @@
 const STORAGE = {
-  token: "maccy_admin_token",
-  email: "maccy_admin_email",
-  theme: "maccy_admin_theme"
+  token: "klip_admin_token",
+  email: "klip_admin_email",
+  theme: "klip_admin_theme"
 };
 
 const VIEW_META = {

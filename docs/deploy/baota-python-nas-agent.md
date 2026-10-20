@@ -2,29 +2,29 @@
 
 ## 目录建议
 
-- 代码目录：`/www/wwwroot/maccy-agent/current`
-- 数据目录：`/www/wwwroot/maccy-agent/data`
-- 虚拟环境：`/www/wwwroot/maccy-agent/venv`
-- 历史发布：`/www/wwwroot/maccy-agent/releases`
+- 代码目录：`/www/wwwroot/klip-agent/current`
+- 数据目录：`/www/wwwroot/klip-agent/data`
+- 虚拟环境：`/www/wwwroot/klip-agent/venv`
+- 历史发布：`/www/wwwroot/klip-agent/releases`
 
 ## 宝塔网站
 
 1. 新建网站，域名继续使用现有同步域名。
-2. 网站根目录可指向 `/www/wwwroot/maccy-agent/current`。
+2. 网站根目录可指向 `/www/wwwroot/klip-agent/current`。
 3. SSL 继续由宝塔网站管理。
 4. 反向代理目标固定为 `http://127.0.0.1:17655`。
 
 ## Python 项目
 
-1. 将 `nas-agent-py/` 的发布文件上传到 `/www/wwwroot/maccy-agent/current`。
+1. 将 `nas-agent-py/` 的发布文件上传到 `/www/wwwroot/klip-agent/current`。
 2. 在宝塔 Python 项目中选择该目录，并创建虚拟环境。
 3. 安装依赖：
    `pip install -r requirements.txt`
 4. 在项目环境变量里配置：
-   - `STORAGE_ROOT=/www/wwwroot/maccy-agent/data`
+   - `STORAGE_ROOT=/www/wwwroot/klip-agent/data`
    - `ADMIN_KEY=你的后台密钥`
-   - `AUTH_ISSUER=maccy-self-hosted`
-   - `AUTH_AUDIENCE=maccy-client`
+   - `AUTH_ISSUER=klip-self-hosted`
+   - `AUTH_AUDIENCE=klip-client`
    - `AUTH_SIGNING_KEY=迁移现有环境时保持和之前服务一致的签名密钥`
    - `LISTEN_HOST=127.0.0.1`
    - `LISTEN_PORT=17655`

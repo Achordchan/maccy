@@ -1,6 +1,6 @@
-# Maccy
+# Klip
 
-Maccy 是一个面向 Windows 的剪贴板管理工具。当前仓库包含桌面客户端、Python 同步后端、自动更新清单和安装包脚本。
+Klip 是一个面向 Windows 的剪贴板管理工具。当前仓库包含桌面客户端、Python 同步后端、自动更新清单和安装包脚本。
 
 ## 功能概览
 
@@ -14,10 +14,10 @@ Maccy 是一个面向 Windows 的剪贴板管理工具。当前仓库包含桌�
 
 ## 仓库结构
 
-- `maccy/`：Windows 桌面客户端，技术栈为 `.NET 8 + Avalonia 11`
+- `klip/`：Windows 桌面客户端，技术栈为 `.NET 8 + Avalonia 11`
 - `nas-agent-py/`：Python 同步后端，技术栈为 `FastAPI + uvicorn + httpx + PyJWT`
 - `docs/updates/manifest.json`：客户端自动更新清单
-- `installer/maccy.iss`：Inno Setup 安装包脚本
+- `installer/klip.iss`：Inno Setup 安装包脚本
 - `tools/package_nas_agent_py.py`：后端上传包生成脚本
 - `docs/deploy/baota-python-nas-agent.md`：宝塔 Python 项目部署说明
 
@@ -32,8 +32,8 @@ Maccy 是一个面向 Windows 的剪贴板管理工具。当前仓库包含桌�
 ### 本地运行
 
 ```powershell
-dotnet build .\maccy\maccy.csproj
-dotnet run --project .\maccy\maccy.csproj
+dotnet build .\klip\klip.csproj
+dotnet run --project .\klip\klip.csproj
 ```
 
 启动后默认通过全局快捷键 `Ctrl + Alt + 2` 呼出主窗口。
@@ -41,13 +41,13 @@ dotnet run --project .\maccy\maccy.csproj
 ### 发布目录
 
 ```powershell
-dotnet publish .\maccy\maccy.csproj -c Release -r win-x64 --self-contained false -o .\artifacts\publish\win-x64
+dotnet publish .\klip\klip.csproj -c Release -r win-x64 --self-contained false -o .\artifacts\publish\win-x64
 ```
 
 ### 打包安装程序
 
 ```powershell
-"D:\Inno Setup 6\ISCC.exe" .\installer\maccy.iss
+"D:\Inno Setup 6\ISCC.exe" .\installer\klip.iss
 ```
 
 ## 同步后端 `nas-agent-py`

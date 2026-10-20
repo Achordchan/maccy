@@ -9,9 +9,9 @@
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build",
-            "program": "${workspaceFolder}/maccy/bin/Debug/net8.0/maccy.dll",
+            "program": "${workspaceFolder}/klip/bin/Debug/net8.0/klip.dll",
             "args": [],
-            "cwd": "${workspaceFolder}/maccy",
+            "cwd": "${workspaceFolder}/klip",
             "console": "internalConsole",
             "stopAtEntry": false
         },
