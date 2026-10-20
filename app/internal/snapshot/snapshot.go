@@ -305,6 +305,16 @@ func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]B
 				continue
 			}
 			name := filepath.Base(filepath.Clean(p))
+			// Only a path inside Klip's files folder names a cached file; an
+			// original document called "2026_report.pdf" is not index 2026.
+			if !within(l.Files(), filepath.Dir(filepath.Clean(p))) {
+				f, ok := byIdx[i]
+				if !ok {
+					return nil, errors.New("snapshot: local file payload missing")
+				}
+				selected = append(selected, f)
+				continue
+			}
 			if idx, cut := indexPrefix(name); cut > 0 {
 				f, ok := byKey[cacheKey(idx, name[cut:])]
 				if !ok {

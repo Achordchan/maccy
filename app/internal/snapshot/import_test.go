@@ -623,3 +623,24 @@ func TestExportIgnoresSurplusCacheFiles(t *testing.T) {
 		t.Errorf("%d files exported, want 2", n)
 	}
 }
+
+// An original document called "2026_report.pdf" is not cache index 2026.
+func TestExportMatchesMigratedDocumentsByPosition(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	l := paths.Layout{Root: t.TempDir()}
+	dir := filepath.Join(l.Files(), strings.ReplaceAll(id, "-", ""))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "0000_2026_report.pdf"), []byte("pdf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := model.Item{
+		ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()},
+		FilePaths: []string{"/docs/2026_report.pdf"}, CopyCount: 1,
+	}
+	snap := filepath.Join(t.TempDir(), "snapshot.sqlite")
+	if _, err := Export(ctx, l, snap, []model.Item{item}, model.DefaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+}

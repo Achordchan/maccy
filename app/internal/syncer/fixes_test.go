@@ -55,6 +55,11 @@ func (h *unitHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.It
 
 func (h *unitHistory) ApplyLimits(model.Settings) {}
 
+func (h *unitHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+	h.ApplyLimits(s)
+	return h.Items()
+}
+
 // changingHistory changes after the first read, as a capture does while an
 // upload is running.
 type changingHistory struct {
@@ -81,6 +86,11 @@ func (h *changingHistory) Mutate(ctx context.Context, f func([]model.Item) ([]mo
 
 func (h *changingHistory) RemoveFiles([]string) error                     { return nil }
 func (h *changingHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
+
+func (h *changingHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+	h.ApplyLimits(s)
+	return h.Items()
+}
 
 func (h *changingHistory) ApplyLimits(model.Settings) {}
 
@@ -339,6 +349,11 @@ func (h *mergeHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.I
 func (h *mergeHistory) RemoveFiles([]string) error                     { return nil }
 func (h *mergeHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
 
+func (h *mergeHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+	h.ApplyLimits(s)
+	return h.Items()
+}
+
 func (h *mergeHistory) ApplyLimits(model.Settings) {}
 
 // A capture made while the remote snapshot is downloading is part of the
@@ -504,6 +519,11 @@ func (h *downloadArrivalHistory) Mutate(_ context.Context, f func([]model.Item) 
 
 func (h *downloadArrivalHistory) RemoveFiles([]string) error                     { return nil }
 func (h *downloadArrivalHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
+
+func (h *downloadArrivalHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+	h.ApplyLimits(s)
+	return h.Items()
+}
 
 func (h *downloadArrivalHistory) ApplyLimits(model.Settings) {}
 
@@ -962,6 +982,11 @@ func snapshotFileWithSettings(t *testing.T, items []model.Item, settings model.S
 // pruningHistory applies the item limit as the real history does.
 type pruningHistory struct {
 	downloadArrivalHistory
+}
+
+func (h *pruningHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+	h.ApplyLimits(s)
+	return h.Items()
 }
 
 func (h *pruningHistory) ApplyLimits(s model.Settings) {
@@ -2119,6 +2144,11 @@ type keepOnlyHistory struct {
 	unitHistory
 	keep  string
 	armed bool
+}
+
+func (h *keepOnlyHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+	h.ApplyLimits(s)
+	return h.Items()
 }
 
 func (h *keepOnlyHistory) ApplyLimits(model.Settings) {

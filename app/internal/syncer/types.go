@@ -90,6 +90,10 @@ type History interface {
 	// ApplyLimits sets the history's limits from the settings: the number
 	// of items, the size, and whether duplicates are merged.
 	ApplyLimits(model.Settings)
+	// ApplyLimitsAndSnapshot applies the limits and returns the items after
+	// them, atomically: a later Items() read cannot tell a limit removal from
+	// a user deletion.
+	ApplyLimitsAndSnapshot(model.Settings) []model.Item
 }
 
 // Config is what a Syncer works with.

@@ -670,6 +670,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		if err := s.discardMutation(ctx, applied, moves, oldSettings); err != nil {
 			return DownloadResult{}, fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
 		}
+		if err := s.persistCleanup(); err != nil {
+			return DownloadResult{}, fmt.Errorf("%w (session cleanup not saved: %v)", ErrSessionChanged, err)
+		}
 		if moves != nil {
 			moves.Rollback()
 		}
@@ -685,9 +688,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			EnsureSettingsCanHoldItems(&settings, applied)
 		}
 		s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(settings) })
-		s.cfg.History.ApplyLimits(s.settings())
 	}
-	limitPruned := prunedItems(applied, s.cfg.History.Items())
+	afterLimits := s.cfg.History.ApplyLimitsAndSnapshot(s.settings())
+	limitPruned := prunedItems(applied, afterLimits)
 	res := DownloadResult{
 		Fingerprint:         appliedFP,
 		SnapshotSHA256:      sum,
@@ -945,6 +948,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		if err := s.discardMutation(ctx, merged, moves, localSettings); err != nil {
 			return fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
 		}
+		if err := s.persistCleanup(); err != nil {
+			return fmt.Errorf("%w (session cleanup not saved: %v)", ErrSessionChanged, err)
+		}
 		if moves != nil {
 			moves.Rollback()
 		}
@@ -957,8 +963,8 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	EnsureSettingsCanHoldItems(&mergedSettings, merged)
 
 	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(mergedSettings) })
-	s.cfg.History.ApplyLimits(s.settings())
-	limitPruned := prunedItems(merged, s.cfg.History.Items())
+	afterLimits := s.cfg.History.ApplyLimitsAndSnapshot(s.settings())
+	limitPruned := prunedItems(merged, afterLimits)
 	s.timing("merge", "merge_snapshot", started, fmt.Sprintf("%s;localItems=%d;remoteItems=%d;mergedItems=%d", reason, len(local), len(remote.Items), len(merged)))
 
 	cleanup := append(append([]model.Item(nil), before...), merged...)
