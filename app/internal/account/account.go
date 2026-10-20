@@ -36,6 +36,9 @@ type Service struct {
 	// is replaced or ended; work that belongs to the old login should be stopped
 	// there, not after (may be nil).
 	BeforeLoginChange func()
+	// AfterLoginChange is called, with sessMu held, once the stored login has
+	// been replaced or ended (may be nil).
+	AfterLoginChange func()
 
 	Client *syncclient.Client
 	Store  Store
@@ -88,6 +91,12 @@ func (s *Service) StatusText() string {
 	return "已登录"
 }
 
+func (s *Service) afterChange() {
+	if s.AfterLoginChange != nil {
+		s.AfterLoginChange()
+	}
+}
+
 func (s *Service) beforeChange() {
 	if s.BeforeLoginChange != nil {
 		s.BeforeLoginChange()
@@ -116,6 +125,7 @@ func (s *Service) storeTokensAt(t syncclient.TokenSet, fallbackEmail string, epo
 	if strings.TrimSpace(email) == "" {
 		email = fallbackEmail
 	}
+	defer s.afterChange()
 	return s.Store.Update(func(m *model.Settings) {
 		if prev := strings.TrimSpace(model.Str(m.AuthUserEmail)); !strings.EqualFold(prev, strings.TrimSpace(email)) {
 			// Somebody else's account: what was remembered of the last sync is
@@ -182,6 +192,7 @@ func (s *Service) SignOut() Result {
 	defer s.sessMu.Unlock()
 	s.epoch.Add(1)
 	s.beforeChange()
+	defer s.afterChange()
 	if err := s.Store.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, true) }); err != nil {
 		// The tokens are gone from memory but the file still has them: after
 		// a restart the user would be signed in again.
@@ -416,6 +427,7 @@ func (s *Service) afterPasswordUpdated(email string, epoch int64) {
 	}
 	s.epoch.Add(1)
 	s.beforeChange()
+	defer s.afterChange()
 	_ = s.Store.Update(func(m *model.Settings) {
 		m.AuthUserEmail = &email
 		syncclient.ClearAuthSession(m, false)

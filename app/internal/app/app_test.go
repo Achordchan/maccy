@@ -489,6 +489,13 @@ func TestAccountChangeCancelsTheSyncOfTheOldAccount(t *testing.T) {
 		t.Fatal("no sync started")
 	}
 	a.endAccountWork() // what the account service does just before it replaces the login
+	if a.acct().Err() == nil {
+		t.Fatal("between the old login and the new one no account work may start")
+	}
+	a.beginAccountWork() // and once the new one is stored
+	if a.acct().Err() != nil {
+		t.Fatal("the new account must get a live context")
+	}
 	a.AccountChanged(true)
 	select {
 	case <-ctx.Done():

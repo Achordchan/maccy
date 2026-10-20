@@ -157,10 +157,16 @@ func New(cfg Config) (*App, error) {
 			// The record of a sync belongs to the account it ran for: one that
 			// outlives a change of account does not write into the new one's.
 			Update: func(f func(*model.Settings)) {
-				if a.runActive.Load() && a.runGen.Load() != a.acctGen.Load() {
-					return
-				}
-				_ = a.Settings.Update(f)
+				gen := a.runGen.Load()
+				_ = a.Settings.Update(func(m *model.Settings) {
+					// Looked at inside the update, which the replacing of the
+					// tokens is serialized with: a write that comes after the
+					// account changed is the old account's, and is dropped.
+					if a.runActive.Load() && gen != a.acctGen.Load() {
+						return
+					}
+					f(m)
+				})
 			},
 		},
 		History:          a.History,
@@ -183,7 +189,7 @@ func New(cfg Config) (*App, error) {
 		return run(ctx, reason, manual)
 	}
 
-	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings, BeforeLoginChange: a.endAccountWork}
+	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings, BeforeLoginChange: a.endAccountWork, AfterLoginChange: a.beginAccountWork}
 	if cfg.Autostart == nil {
 		cfg.Autostart = autostart.Default()
 	}
@@ -467,6 +473,21 @@ func (a *App) endAccountWork() {
 	a.mu.Lock()
 	if a.started {
 		a.acctCancel()
+		// Until the new login is in place the account context is a dead one: a
+		// callback or timer of the old account that fires now finds its work
+		// refused instead of starting with tokens about to be replaced.
+		dead, stop := context.WithCancel(a.ctx)
+		stop()
+		a.acctCtx, a.acctCancel = dead, func() {}
+	}
+	a.mu.Unlock()
+}
+
+// beginAccountWork is called by the account service once the new login (or
+// none) is stored: the work of the account that is signed in now may start.
+func (a *App) beginAccountWork() {
+	a.mu.Lock()
+	if a.started {
 		a.acctCtx, a.acctCancel = context.WithCancel(a.ctx)
 	}
 	a.mu.Unlock()
