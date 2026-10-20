@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -83,10 +84,12 @@ type Service struct {
 
 	allowed     map[string]bool
 	lastOwnWrit atomic.Int64
-	ownSeq      atomic.Int64 // counter after our last write, plus 2; 0 is none
-	applying    atomic.Int32 // Apply calls in progress
-	skipped     atomic.Bool  // a Capture gave way to an Apply
-	writeGen    atomic.Int64 // moves at the start and the end of every Apply
+	ownSeq      atomic.Int64                // counter after our last write, plus 2; 0 is none
+	applying    atomic.Int32                // Apply calls in progress
+	ownCheck    atomic.Pointer[func() bool] // reads the clipboard back; true while it holds what we wrote
+	capMu       sync.Mutex                  // one Capture at a time (the watcher and Retry)
+	skipped     atomic.Bool                 // a Capture gave way to an Apply
+	writeGen    atomic.Int64                // moves at the start and the end of every Apply
 }
 
 // New returns a Service with the defaults of ClipboardCaptureService: all
@@ -120,6 +123,7 @@ func (s *Service) SetFileExtensions(list string) { s.allowed = parseExtensions(l
 func (s *Service) MarkWriteByUs() {
 	s.lastOwnWrit.Store(s.Now().UnixNano())
 	s.ownSeq.Store(0)
+	s.ownCheck.Store(nil)
 }
 
 // markWritten is called when the write is done: the counter then stands where
@@ -134,6 +138,9 @@ func (s *Service) markWritten(verify func() bool) {
 	if verify != nil && !verify() {
 		notOurs()
 		return
+	}
+	if verify != nil {
+		s.ownCheck.Store(&verify) // without a counter, content tells ours from theirs
 	}
 	if s.Seq != nil {
 		n := s.Seq()
@@ -168,7 +175,15 @@ func (s *Service) isOwnChange() bool {
 	if w <= 0 {
 		w = 250 * time.Millisecond
 	}
-	return s.Now().UnixNano()-s.lastOwnWrit.Load() < int64(w)
+	if s.Now().UnixNano()-s.lastOwnWrit.Load() >= int64(w) {
+		return false
+	}
+	// In the window with no counter: ours only if the clipboard still holds
+	// what we wrote, so a copy made right after is not lost.
+	if c := s.ownCheck.Load(); c != nil {
+		return (*c)()
+	}
+	return true
 }
 
 // dangerousExtensions are never captured, whatever the list says.
@@ -221,6 +236,8 @@ func has(set map[string]bool, names []string) bool {
 // Text comes first, then files, then images; the first that yields something
 // is the item.
 func (s *Service) Capture(ctx context.Context) error {
+	s.capMu.Lock()
+	defer s.capMu.Unlock()
 	gen := s.writeGen.Load()
 	if s.applying.Load() > 0 {
 		s.noteSkipped()
@@ -579,7 +596,7 @@ func (s *Service) verifier(it model.Item, files []string) func() bool {
 				return false
 			}
 			for i, g := range got {
-				if baseName(g) != baseName(files[i]) {
+				if !samePath(g, files[i]) {
 					return false
 				}
 			}
@@ -595,6 +612,22 @@ func (s *Service) verifier(it model.Item, files []string) func() bool {
 		}
 	}
 	return nil
+}
+
+// samePath compares two paths in full, with the symbolic links resolved when
+// they can be; Windows and macOS file systems ignore case.
+func samePath(a, b string) bool {
+	norm := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			p = r
+		}
+		return filepath.Clean(p)
+	}
+	a, b = norm(a), norm(b)
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // samePicture says whether two encoded pictures show the same pixels, give or

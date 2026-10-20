@@ -628,3 +628,21 @@ func TestApplyThatWroteNothingHoldsNothingBack(t *testing.T) {
 		t.Fatal("a copy right after an Apply that wrote nothing must be kept")
 	}
 }
+
+func TestCopyInsideWindowWithoutCounter(t *testing.T) {
+	r := newRig(t)
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "ours"
+	text := "ours"
+	_ = r.s.Apply(model.Item{Kind: model.KindText, Text: &text})
+	r.now = r.now.Add(100 * time.Millisecond)
+	r.s.Capture(context.Background())
+	if r.h.Len() != 0 {
+		t.Fatal("our own write is still held back inside the window")
+	}
+	r.clip.text = "somebody else, 300 ms later"
+	r.now = r.now.Add(200 * time.Millisecond)
+	r.s.Capture(context.Background())
+	if r.h.Len() != 1 {
+		t.Fatal("another copy inside the window must be kept: the content tells it from ours")
+	}
+}
