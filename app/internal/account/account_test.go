@@ -377,3 +377,13 @@ func TestAnotherAccountStartsWithoutTheLastSyncState(t *testing.T) {
 		t.Fatal("another account must not inherit the sync state of the first")
 	}
 }
+
+func TestSignInAnsweredAfterALoginChangeIsRefused(t *testing.T) {
+	s, m := newService(t, "http://127.0.0.1:1")
+	epoch := s.epoch.Load() // the sign-in begins
+	s.SignOut()             // a sign-out (or a password reset) happens while it is out
+	err := s.storeTokensAt(syncclient.TokenSet{AccessToken: "late", RefreshToken: "late-r", Email: "x@example.com"}, "x@example.com", epoch)
+	if !errors.Is(err, errSuperseded) || model.Str(m.Get().AuthRefreshToken) != "" {
+		t.Fatalf("a late answer was stored: %v %+v", err, m.Get())
+	}
+}

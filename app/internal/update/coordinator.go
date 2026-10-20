@@ -210,15 +210,13 @@ func (c *Coordinator) Check(ctx context.Context) {
 // Dismiss clears a finished message (UpToDateNow, Problem) and, for a version
 // the user postponed, goes back to Available.
 func (c *Coordinator) Dismiss() {
-	c.mu.Lock()
-	info := c.state.Info
-	phase := c.state.Phase
-	c.mu.Unlock()
-	if phase == Applying || phase == Downloading {
-		return
-	}
+	// One step, under the lock: an installation that starts meanwhile is not
+	// turned back into "available" by a dismissal that read the state earlier.
 	c.set(func(s *State) {
-		if info != nil {
+		if s.Phase == Applying || s.Phase == Downloading || c.applying {
+			return
+		}
+		if info := s.Info; info != nil {
 			*s = State{Phase: Available, Info: info}
 		} else {
 			*s = State{}

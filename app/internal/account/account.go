@@ -84,9 +84,22 @@ func (s *Service) StatusText() string {
 	return "已登录"
 }
 
+// errSuperseded: something that ends or replaces the login (a sign-out, a
+// password reset) happened while this sign-in was being answered.
+var errSuperseded = errors.New("account: superseded")
+
 func (s *Service) storeTokens(t syncclient.TokenSet, fallbackEmail string) error {
+	return s.storeTokensAt(t, fallbackEmail, -1)
+}
+
+// storeTokensAt stores a login if no other change of login has happened since
+// epoch (-1: whatever the epoch is).
+func (s *Service) storeTokensAt(t syncclient.TokenSet, fallbackEmail string, epoch int64) error {
 	s.sessMu.Lock()
 	defer s.sessMu.Unlock()
+	if epoch >= 0 && s.epoch.Load() != epoch {
+		return errSuperseded
+	}
 	s.epoch.Add(1)
 	email := t.Email
 	if strings.TrimSpace(email) == "" {
@@ -136,11 +149,15 @@ func (s *Service) enter(ctx context.Context, email, password, okMsg, failMsg, ca
 	}
 	ctx, cancel := context.WithTimeout(ctx, signInTimeout)
 	defer cancel()
+	startEpoch := s.epoch.Load()
 	t, err := call(ctx, email, password)
 	if err != nil {
 		return s.failure(err, failMsg, cancelMsg)
 	}
-	if err := s.storeTokens(t, email); err != nil {
+	if err := s.storeTokensAt(t, email, startEpoch); err != nil {
+		if errors.Is(err, errSuperseded) {
+			return fail("账号状态在登录期间发生了变化，请重新登录")
+		}
 		// Signed in for this run (the tokens are in memory and work), but the
 		// file does not have them: say so, or the user finds out at the next start.
 		return Result{OK: true, Message: okMsg + "，但无法保存登录状态，重启后需要重新登录：" + err.Error()}

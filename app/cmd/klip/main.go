@@ -53,6 +53,7 @@ type program struct {
 	shelf   *shelf.Service
 	layout  paths.Layout
 
+	followShelf    func()      // starts or stops the shelf as the settings say
 	mandatoryShown atomic.Bool // the window for a mandatory update was put up
 	quitting       atomic.Bool // set when the program is quitting, see OnBeforeQuit
 }
@@ -194,6 +195,7 @@ func (p *program) startShelf() {
 			log.Println("shelf:", err)
 		}
 	}
+	p.followShelf = follow
 	follow()
 	p.app.Settings.OnChange(func(model.Settings) { follow() })
 }
@@ -261,7 +263,15 @@ func (p *program) gateMandatory() {
 	if p.app == nil || p.app.Updates == nil {
 		return
 	}
-	if p.app.Updates.MustUpdate() != nil && p.mandatoryShown.CompareAndSwap(false, true) {
+	if p.app.Updates.MustUpdate() == nil {
+		// The mandatory update is gone (withdrawn, or installed): the gate opens
+		// again and the shelf comes back as the settings have it.
+		if p.mandatoryShown.Swap(false) && p.followShelf != nil {
+			p.followShelf()
+		}
+		return
+	}
+	if p.mandatoryShown.CompareAndSwap(false, true) {
 		mygo.RunOnMain(func() {
 			// Whatever is open is shut: preferences, the shelves, the shelf
 			// trigger; the update window is all that is left.
