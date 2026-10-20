@@ -211,7 +211,7 @@ def _collect_config_gui(repo: Path, manifest_path: Path) -> dict | None:
     result: dict | None = None
 
     root = tk.Tk()
-    root.title("Maccy Release")
+    root.title("Klip Release")
     root.geometry("720x520")
 
     frm = tk.Frame(root, padx=12, pady=12)
@@ -388,8 +388,8 @@ def _ensure_worktree_clean_for_release(repo_root: Path) -> None:
         return
 
     allowed = {
-        "maccy/maccy.csproj",
-        "installer/maccy.iss",
+        "klip/klip.csproj",
+        "installer/klip.iss",
         "docs/updates/manifest.json",
     }
 
@@ -486,8 +486,8 @@ class _QueueWriter(io.TextIOBase):
 
 
 def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[int, dict]:
-    csproj = repo / "maccy" / "maccy.csproj"
-    iss = repo / "installer" / "maccy.iss"
+    csproj = repo / "klip" / "klip.csproj"
+    iss = repo / "installer" / "klip.iss"
     manifest = repo / "docs" / "updates" / "manifest.json"
 
     version = _validate_version(cfg["version"])
@@ -544,7 +544,7 @@ def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[in
     print(f"[1/5] set csproj version -> {version}")
     _set_csproj_version(csproj, version)
     _set_iss_version(iss, version)
-    completed.append("更新版本号（maccy.csproj）")
+    completed.append("更新版本号（klip.csproj）")
 
     print(f"[2/5] dotnet publish ({configuration}, {runtime})")
     publish_dir.mkdir(parents=True, exist_ok=True)
@@ -672,11 +672,11 @@ def _run_pipeline_gui(repo: Path, cfg: dict) -> int:
         import tkinter as tk
         from tkinter import messagebox
     except Exception:
-        _message_box("Maccy Release", "GUI 不可用（缺少 tkinter）。\n\n请安装带 tkinter 的 Python（Windows 官方安装包通常自带），或换一个 Python 解释器。")
+        _message_box("Klip Release", "GUI 不可用（缺少 tkinter）。\n\n请安装带 tkinter 的 Python（Windows 官方安装包通常自带），或换一个 Python 解释器。")
         return 2
 
     root = tk.Tk()
-    root.title("Maccy Release")
+    root.title("Klip Release")
     root.geometry("900x600")
 
     frm = tk.Frame(root)
@@ -978,7 +978,7 @@ def _http_json(method: str, url: str, *, fields: dict[str, str] | None = None, h
 
 
 def _encode_multipart(fields: dict[str, str], file_field: str, file_path: Path) -> tuple[bytes, str]:
-    boundary = "----maccy" + hashlib.sha256(os.urandom(16)).hexdigest()
+    boundary = "----klip" + hashlib.sha256(os.urandom(16)).hexdigest()
     parts: list[bytes] = []
 
     for name, value in fields.items():
@@ -1040,7 +1040,7 @@ def _publish_to_gitee(
 ) -> dict[str, str]:
     tag = "v" + version
 
-    _git(repo_root, ["add", "maccy/maccy.csproj", "installer/maccy.iss"])
+    _git(repo_root, ["add", "klip/klip.csproj", "installer/klip.iss"])
     try:
         _git(repo_root, ["commit", "-m", "release " + tag])
     except SystemExit:
@@ -1242,8 +1242,8 @@ def main() -> int:
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
-    csproj = repo / "maccy" / "maccy.csproj"
-    iss = repo / "installer" / "maccy.iss"
+    csproj = repo / "klip" / "klip.csproj"
+    iss = repo / "installer" / "klip.iss"
     publish_dir = repo / "artifacts" / "publish" / args.runtime
     installer_dir = repo / "artifacts" / "installer"
     manifest = repo / "docs" / "updates" / "manifest.json"
@@ -1259,7 +1259,7 @@ def main() -> int:
     if args.gui:
         cfg = _collect_config_gui(repo, manifest)
         if cfg is None:
-            _message_box("Maccy Release", "GUI 不可用（缺少 tkinter）。\n\n请安装带 tkinter 的 Python（Windows 官方安装包通常自带），或换一个 Python 解释器。")
+            _message_box("Klip Release", "GUI 不可用（缺少 tkinter）。\n\n请安装带 tkinter 的 Python（Windows 官方安装包通常自带），或换一个 Python 解释器。")
             return 2
 
         # Run the full pipeline in a GUI log/progress window.
@@ -1334,7 +1334,7 @@ def main() -> int:
     print(f"[1/5] set csproj version -> {version}")
     _set_csproj_version(csproj, version)
     _set_iss_version(iss, version)
-    completed.append("更新版本号（maccy.csproj）")
+    completed.append("更新版本号（klip.csproj）")
 
     publish_dir = repo / "artifacts" / "publish" / runtime
     installer_dir = repo / "artifacts" / "installer"
@@ -1460,7 +1460,7 @@ def main() -> int:
     else:
         print("[ ] git add/commit 并 push 到 gitee（脚本不会自动推送）")
         print("    git status")
-        print("    git add maccy/maccy.csproj installer/maccy.iss docs/updates/manifest.json")
+        print("    git add klip/klip.csproj installer/klip.iss docs/updates/manifest.json")
         print("    git commit -m \"release v" + version + "\"")
         print("    git push")
         print("[ ] 在 Gitee Releases 创建 tag/release: v" + version + "，上传安装包：" + installer_path.name)

@@ -1,6 +1,6 @@
 # 赞助作者
 
-如果 Maccy 对你有帮助，欢迎通过以下方式联系作者支持项目继续迭代：
+如果 Klip 对你有帮助，欢迎通过以下方式联系作者支持项目继续迭代：
 
 - 邮箱：achordchan@gmail.com
 - 项目地址：https://gitee.com/Achordchan/maccy
