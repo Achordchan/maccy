@@ -17,6 +17,9 @@ type Manager struct {
 	IconOf func(path string) *ui.Bitmap
 	// Left is called when the pointer leaves the window.
 	Left func()
+	// Quitting says the program is quitting: the window then lets itself be
+	// closed instead of hiding, or Quit would wait for it for ever.
+	Quitting func() bool
 
 	mu    sync.Mutex
 	model *Model
@@ -76,7 +79,13 @@ func (mg *Manager) Show(it model.Item, anchor Rect) {
 				Height:        h,
 				Content:       ui.View(mg.model.View),
 			})
-			mg.win.OnClose(func(e *mygo.CloseEvent) { e.PreventDefault(); mg.win.Hide() })
+			mg.win.OnClose(func(e *mygo.CloseEvent) {
+				if mg.Quitting != nil && mg.Quitting() {
+					return
+				}
+				e.PreventDefault()
+				mg.win.Hide()
+			})
 		}
 		mg.win.SetSize(w, h)
 		mg.win.SetPosition(x, y)

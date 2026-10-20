@@ -11,6 +11,9 @@ import (
 // button, by pressing the chip again, or when the main window goes.
 type Manager struct {
 	Version string
+	// Quitting says the program is quitting: the window then lets itself be
+	// closed instead of hiding, or Quit would wait for it for ever.
+	Quitting func() bool
 
 	mu    sync.Mutex
 	model *Model
@@ -49,7 +52,13 @@ func (mg *Manager) Toggle(anchorX, anchorY int) {
 				Content:       ui.View(mg.model.View),
 			})
 			mg.model.Redraw = func() { mg.win.Update(func() {}) }
-			mg.win.OnClose(func(e *mygo.CloseEvent) { e.PreventDefault(); mg.win.Hide() })
+			mg.win.OnClose(func(e *mygo.CloseEvent) {
+				if mg.Quitting != nil && mg.Quitting() {
+					return
+				}
+				e.PreventDefault()
+				mg.win.Hide()
+			})
 		}
 		x, y := Place(anchorX, anchorY+10, mg.workArea(anchorX, anchorY))
 		mg.win.SetPosition(x, y)
