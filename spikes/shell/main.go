@@ -345,6 +345,7 @@ func (k *klip) capture() bool {
 			k.ownHash, k.lastHash = "", h
 			return
 		}
+		k.ownHash = "" // the next observation is not our own write, whatever it is
 		if h == k.lastHash || (kind == kindText && strings.TrimSpace(text) == "") {
 			return
 		}
