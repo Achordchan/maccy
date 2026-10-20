@@ -284,8 +284,15 @@ func (s *Syncer) DecideItems(manifest ManifestInfo, items []model.Item) Decision
 
 // PersistSyncState remembers that this history and that snapshot were the
 // same at this moment.
-func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo) {
+func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo, account string) {
 	s.cfg.Settings.Update(func(st *model.Settings) {
+		if account != "" {
+			// Check the account inside the same update that writes the state:
+			// a check before the callback cannot stop a sign-in in between.
+			if cur := syncclient.AccountID(model.Str(st.AuthAccessToken)); cur != "" && !strings.EqualFold(cur, account) {
+				return
+			}
+		}
 		st.SyncLastLocalFingerprint = nonEmpty(localFingerprint)
 		st.SyncLastRemoteVersion = nonEmpty(m.Version)
 		st.SyncLastRemoteUpdatedAt = nil
@@ -299,7 +306,7 @@ func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo) {
 
 // persistPendingMerge records the state before a merge, so that the upload
 // that follows is seen as a local change.
-func (s *Syncer) persistPendingMerge(preMergeFingerprint string, basis ManifestInfo) {
+func (s *Syncer) persistPendingMerge(preMergeFingerprint string, basis ManifestInfo, account string) {
 	fp := strings.TrimSpace(preMergeFingerprint)
 	// The pending fingerprint must differ from the history that is about to
 	// be uploaded: an empty remote snapshot plus a capture can make the two
@@ -307,7 +314,7 @@ func (s *Syncer) persistPendingMerge(preMergeFingerprint string, basis ManifestI
 	if fp == "" || fp == s.Fingerprint() {
 		fp = "pending-upload"
 	}
-	s.PersistSyncState(fp, basis)
+	s.PersistSyncState(fp, basis, account)
 }
 
 func nonEmpty(v string) *string {
@@ -679,16 +686,18 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		return DownloadResult{}, ErrSessionChanged
 	}
 	// The settings change only after the history was replaced: a failure
-	// above leaves both as they were.
+	// above leaves both as they were. A snapshot without settings keeps the
+	// local ones, and a download-time merge still has to fit.
+	settings := oldSettings.Portable()
 	if data.Settings != nil {
-		settings := data.Settings.Portable()
-		if merged {
-			// The merge added items to a history that may be at its limits:
-			// do not let ApplyLimits prune them before the upload.
-			EnsureSettingsCanHoldItems(&settings, applied)
-		}
-		s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(settings) })
+		settings = data.Settings.Portable()
 	}
+	if merged {
+		// The merge added items to a history that may be at its limits: do
+		// not let ApplyLimits prune them before the upload.
+		EnsureSettingsCanHoldItems(&settings, applied)
+	}
+	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(settings) })
 	afterLimits := s.cfg.History.ApplyLimitsAndSnapshot(s.settings())
 	limitPruned := prunedItems(applied, afterLimits)
 	res := DownloadResult{
@@ -1018,7 +1027,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	}
 	// The merged history is on disk: record the pending upload before the
 	// payload cleanup and the upload that follows.
-	s.persistPendingMerge(preMergeFingerprint, basis)
+	s.persistPendingMerge(preMergeFingerprint, basis, account)
 	if moves != nil {
 		moves.Commit()
 	}

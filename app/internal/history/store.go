@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"klip/internal/model"
 	"klip/internal/paths"
@@ -47,9 +49,23 @@ func Load(l paths.Layout) ([]model.Item, error) {
 	return out, nil
 }
 
+// Saves are serialized and ordered: an autosave that started with older items
+// must not rename over a newer sync flush that finished first.
+var (
+	saveMu     sync.Mutex
+	saveSeq    atomic.Uint64
+	writtenSeq atomic.Uint64
+)
+
 // Save writes the items as System.Text.Json writes a list of
 // ClipboardItem: compact, nulls included.
 func Save(l paths.Layout, items []model.Item) error {
+	seq := saveSeq.Add(1)
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	if seq <= writtenSeq.Load() {
+		return nil // a newer save already committed
+	}
 	if items == nil {
 		items = []model.Item{}
 	}
@@ -86,6 +102,7 @@ func Save(l paths.Layout, items []model.Item) error {
 		return err
 	}
 	_ = os.Chmod(l.History(), 0o600)
+	writtenSeq.Store(seq)
 	return nil
 }
 

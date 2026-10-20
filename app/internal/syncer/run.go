@@ -68,7 +68,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		if s.accountChanged(account) {
 			return res, ErrSessionChanged
 		}
-		s.PersistSyncState(d.LocalFingerprint, d.Manifest)
+		s.PersistSyncState(d.LocalFingerprint, d.Manifest, account)
 
 	case Download:
 		dr, err := s.downloadAndApply(ctx, progress, reason, d.LocalFingerprint, localItems, account)
@@ -84,7 +84,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 			if s.accountChanged(account) {
 				return res, ErrSessionChanged
 			}
-			s.persistPendingMerge(dr.PreMergeFingerprint, state)
+			s.persistPendingMerge(dr.PreMergeFingerprint, state, dr.Account)
 			up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_download_merge_upload", account)
 			if err != nil {
 				return res, err
@@ -102,7 +102,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		if s.accountChanged(account) {
 			return res, ErrSessionChanged
 		}
-		s.PersistSyncState(dr.Fingerprint, state)
+		s.PersistSyncState(dr.Fingerprint, state, dr.Account)
 
 	case Merge:
 		if err := s.mergeAndApply(ctx, d.Manifest, d.LocalFingerprint, progress, reason, account); err != nil {
@@ -183,7 +183,7 @@ func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadRe
 		if s.accountChanged(account) {
 			return ErrSessionChanged
 		}
-		s.PersistSyncState(fp, m)
+		s.PersistSyncState(fp, m, account)
 		return nil
 	}
 	if s.accountChanged(account) {
@@ -193,11 +193,11 @@ func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadRe
 	case up != nil:
 		// No server timestamp: the client's clock would look like a rollback.
 		m := ManifestInfo{Version: up.Version, SnapshotSHA256: up.SHA256, SnapshotSize: up.Size}
-		s.PersistSyncState(fp, m)
+		s.PersistSyncState(fp, m, account)
 	case fallback != nil:
-		s.PersistSyncState(fp, *fallback)
+		s.PersistSyncState(fp, *fallback, account)
 	default:
-		s.PersistSyncState(fp, ManifestInfo{})
+		s.PersistSyncState(fp, ManifestInfo{}, account)
 	}
 	return nil
 }
@@ -263,9 +263,9 @@ func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) er
 		// A restore that had to merge a local capture has items that were
 		// never uploaded: remember the pending upload, not a synchronized
 		// history, so the next run publishes it.
-		s.persistPendingMerge(dr.PreMergeFingerprint, state)
+		s.persistPendingMerge(dr.PreMergeFingerprint, state, dr.Account)
 	} else {
-		s.PersistSyncState(dr.Fingerprint, state)
+		s.PersistSyncState(dr.Fingerprint, state, dr.Account)
 	}
 	_ = s.bindAccount(dr.Account)
 	return nil

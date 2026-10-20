@@ -1855,7 +1855,7 @@ func TestPendingFingerprintAlwaysDiffers(t *testing.T) {
 	item := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "one")
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, serveSnapshot(t, snapshotFile(t, nil)), s, &unitHistory{items: []model.Item{item}})
-	syn.persistPendingMerge(Fingerprint([]model.Item{item}), ManifestInfo{Version: "v1"})
+	syn.persistPendingMerge(Fingerprint([]model.Item{item}), ManifestInfo{Version: "v1"}, "")
 	if got := model.Str(s.SyncLastLocalFingerprint); got == Fingerprint([]model.Item{item}) || got == "" {
 		t.Errorf("pending fingerprint %q equals the unpublished history", got)
 	}
@@ -2325,5 +2325,22 @@ func TestDecideItemsUsesTheGivenHistory(t *testing.T) {
 	d := syn.DecideItems(ManifestInfo{Version: "v1", SnapshotSHA256: "x", UpdatedAt: tp(t, "2026-05-30T12:00:00+00:00")}, []model.Item{baseline})
 	if d.LocalFingerprint != Fingerprint([]model.Item{baseline}) {
 		t.Errorf("fingerprint is not of the baseline slice")
+	}
+}
+
+// The account is checked inside the settings update, not only before it.
+func TestPersistSyncStateChecksTheAccountInsideTheUpdate(t *testing.T) {
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	syn := New(Config{
+		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+	})
+	syn.PersistSyncState("fp", ManifestInfo{Version: "v1"}, "account-b")
+	if s.SyncLastLocalFingerprint != nil || s.SyncLastRemoteVersion != nil {
+		t.Errorf("another account's state was written: %+v", s)
+	}
+	syn.PersistSyncState("fp", ManifestInfo{Version: "v1"}, "account-a")
+	if model.Str(s.SyncLastLocalFingerprint) != "fp" || model.Str(s.SyncLastRemoteVersion) != "v1" {
+		t.Errorf("the current account's state was not written: %+v", s)
 	}
 }
