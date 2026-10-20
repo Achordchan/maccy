@@ -23,7 +23,11 @@ import (
 type Syncer struct {
 	cfg     Config
 	session *syncclient.Session
-	gate    sync.Mutex
+	// gate serializes the operations that talk to the server or change the
+	// data folder; workflow is held for a whole Run, so that two runs cannot
+	// decide on the same manifest and apply it twice.
+	gate     sync.Mutex
+	workflow sync.Mutex
 }
 
 // New returns a Syncer. cfg.Client, Settings, History, Layout and BaseURL are
@@ -121,6 +125,10 @@ func (s *Syncer) refreshAndRetry(ctx context.Context, token string, call func(to
 func (s *Syncer) ManifestJSON(ctx context.Context) (string, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
+	return s.manifestJSON(ctx)
+}
+
+func (s *Syncer) manifestJSON(ctx context.Context) (string, error) {
 	started := s.cfg.Now()
 	token, err := s.connection(ctx)
 	if err != nil {
@@ -142,11 +150,19 @@ func (s *Syncer) ManifestJSON(ctx context.Context) (string, error) {
 // answers 404, which is returned as the *syncclient.APIError it is, as the C#
 // client does ("云端还没有快照").
 func (s *Syncer) ManifestInfo(ctx context.Context) (ManifestInfo, error) {
-	text, err := s.ManifestJSON(ctx)
+	s.gate.Lock()
+	defer s.gate.Unlock()
+	return s.manifestInfoLocked(ctx)
+}
+
+// manifestInfoLocked is ManifestInfo for a caller that already holds the
+// gate (upload checks whether the remote snapshot is still there).
+func (s *Syncer) manifestInfoLocked(ctx context.Context) (ManifestInfo, error) {
+	text, err := s.manifestJSON(ctx)
 	if err != nil {
 		return ManifestInfo{}, err
 	}
-	return ParseManifestInfo(text), nil
+	return ParseManifestStrict(text)
 }
 
 // remoteManifest is ManifestInfo for a sync that has to decide: a server
@@ -217,6 +233,8 @@ func nonEmpty(v string) *string {
 // Upload exports the history and sends it, with the blobs the server lacks.
 // It sends nothing when the snapshot is the one the server already has.
 func (s *Syncer) Upload(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, error) {
+	s.workflow.Lock()
+	defer s.workflow.Unlock()
 	up, _, err := s.uploadWithFingerprint(ctx, progress, reason)
 	return up, err
 }
@@ -257,9 +275,15 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason str
 	s.timing("upload", "export_snapshot", started, fmt.Sprintf("%s;size=%d;sha256=%s;blobs=%d", reason, exp.Size, exp.SHA256, len(exp.Blobs)))
 
 	if last := strings.TrimSpace(model.Str(st.SyncLastRemoteSha256)); last != "" && strings.EqualFold(last, exp.SHA256) {
-		s.timing("upload", "skip_upload_same_sha", started, reason)
-		size := exp.Size
-		return &syncclient.UploadResult{Version: model.Str(st.SyncLastRemoteVersion), SHA256: exp.SHA256, Size: &size}, fp, nil
+		// The shortcut is safe only while the server still has that snapshot:
+		// after a storage reset or a deletion the same export has to be
+		// uploaded again.
+		if m, err := s.manifestInfoLocked(ctx); err == nil &&
+			strings.EqualFold(strings.TrimSpace(m.SnapshotSHA256), exp.SHA256) {
+			s.timing("upload", "skip_upload_same_sha", started, reason)
+			size := exp.Size
+			return &syncclient.UploadResult{Version: model.Str(st.SyncLastRemoteVersion), SHA256: exp.SHA256, Size: &size}, fp, nil
+		}
 	}
 
 	if len(exp.Blobs) > 0 {
@@ -376,8 +400,15 @@ type DownloadResult struct {
 }
 
 // DownloadAndApply replaces the history and the portable settings with the
-// server's snapshot.
-func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), reason string) (DownloadResult, error) {
+// server's snapshot, unless the history changed since expectFingerprint, in
+// which case the new captures are merged instead of being lost.
+func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint string) (DownloadResult, error) {
+	s.workflow.Lock()
+	defer s.workflow.Unlock()
+	return s.downloadAndApply(ctx, progress, reason, expectFingerprint)
+}
+
+func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint string) (DownloadResult, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	started := s.cfg.Now()
@@ -404,11 +435,17 @@ func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), 
 	}
 
 	report(progress, "import_snapshot", "导入快照", 76)
-	data, err := snapshot.Read(ctx, s.cfg.Layout, path, s.ensureBlob(ctx, &token))
+	// The payloads are kept apart from the data folders until the history is
+	// replaced: a failed replacement must leave the old history's files.
+	importRoot := filepath.Join(s.cfg.Layout.Root, ".download-"+guidN())
+	if err := os.MkdirAll(importRoot, 0o700); err != nil {
+		return DownloadResult{}, err
+	}
+	defer os.RemoveAll(importRoot)
+	data, err := snapshot.ReadDetached(ctx, s.cfg.Layout, importRoot, path, s.ensureBlob(ctx, &token))
 	if err != nil {
 		return DownloadResult{}, err
 	}
-	res := DownloadResult{Fingerprint: Fingerprint(data.Items), SnapshotSHA256: sum}
 
 	s.suppress(true)
 	defer s.suppress(false)
@@ -416,9 +453,33 @@ func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), 
 		s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(*data.Settings) })
 		s.cfg.History.ApplyLimits(s.settings())
 	}
-	if err := s.cfg.History.ReplaceAll(ctx, data.Items); err != nil {
+
+	var applied []model.Item
+	var moves *snapshot.AppliedPayloads
+	err = s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
+		next := data.Items
+		if expectFingerprint != "" && Fingerprint(current) != expectFingerprint {
+			// A capture arrived while the snapshot was downloading: keep it
+			// and let the upload that follows publish both sides.
+			next = MergeItems(data.Items, current)
+		}
+		out, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, next)
+		if err != nil {
+			return nil, err
+		}
+		moves, applied = ap, out
+		return out, nil
+	})
+	if err != nil {
+		if moves != nil {
+			moves.Rollback()
+		}
 		return DownloadResult{}, err
 	}
+	if moves != nil {
+		moves.Commit()
+	}
+	res := DownloadResult{Fingerprint: Fingerprint(applied), SnapshotSHA256: sum}
 	s.timing("download", "import_snapshot", started, reason)
 
 	report(progress, "persist_local", "保存本地状态", 90)
@@ -471,6 +532,12 @@ func (s *Syncer) ensureBlob(ctx context.Context, token *string) snapshot.EnsureB
 // fingerprint of the history before the merge; they are remembered so that
 // the upload that follows counts as a local change.
 func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMergeFingerprint string, progress func(Progress), reason string) error {
+	s.workflow.Lock()
+	defer s.workflow.Unlock()
+	return s.mergeAndApply(ctx, basis, preMergeFingerprint, progress, reason)
+}
+
+func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMergeFingerprint string, progress func(Progress), reason string) error {
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	started := s.cfg.Now()
@@ -527,22 +594,29 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 
 	report(progress, "merge_snapshot", "merge snapshots", 78)
 	var merged []model.Item
+	var moves *snapshot.AppliedPayloads
 	s.suppress(true)
 	defer s.suppress(false)
 	// The merge runs on the history as it is now, and the payloads it keeps
 	// are moved into place under the same lock: a capture made while the
-	// download ran is merged, not overwritten by ReplaceAll.
+	// download ran is merged, not overwritten.
 	err = s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
 		merged = MergeItems(remote.Items, current)
-		applied, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, merged)
+		applied, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, merged)
 		if err != nil {
 			return nil, err
 		}
-		merged = applied
+		moves, merged = ap, applied
 		return merged, nil
 	})
 	if err != nil {
+		if moves != nil {
+			moves.Rollback()
+		}
 		return err
+	}
+	if moves != nil {
+		moves.Commit()
 	}
 	mergedSettings := localSettings.Portable()
 	if remote.Settings != nil {
@@ -572,11 +646,21 @@ func (s *Syncer) ensureLocalBackupBlobs(ctx context.Context, exp snapshot.Export
 			return err
 		}
 		target := s.cfg.Layout.BlobPath(b.SHA256)
-		if target == "" || !isFile(b.SourcePath) || isFile(target) {
+		if target == "" || !isFile(b.SourcePath) {
 			continue
 		}
 		if a, _ := filepath.Abs(b.SourcePath); strings.EqualFold(a, mustAbs(target)) {
 			continue
+		}
+		if isFile(target) {
+			// A blob that is there but does not hash to its name is not a
+			// backup: keep the one the source still gives.
+			if sum, err := snapshot.FileSHA256(target); err == nil && strings.EqualFold(sum, b.SHA256) {
+				continue
+			}
+			if err := os.Remove(target); err != nil {
+				return fmt.Errorf("remove the corrupt blob %s: %w", b.SHA256, err)
+			}
 		}
 		if err := copyNew(b.SourcePath, target); err != nil {
 			return fmt.Errorf("blob %s: %w", b.SHA256, err)

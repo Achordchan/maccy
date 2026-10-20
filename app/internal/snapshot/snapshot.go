@@ -692,21 +692,44 @@ func moveDir(staged, target string) (backup string, err error) {
 	return backup, nil
 }
 
+// AppliedPayloads is a set of payload moves of ApplyPayloads. The caller
+// commits it once the history replacement that selects these payloads has
+// succeeded, or rolls it back when that fails: the files of the old history
+// stay until both are in place.
+type AppliedPayloads struct {
+	undo  []func()
+	stale []string
+}
+
+// Commit deletes the folders that the moves replaced.
+func (a *AppliedPayloads) Commit() {
+	for _, p := range a.stale {
+		_ = os.RemoveAll(p)
+	}
+	a.undo, a.stale = nil, nil
+}
+
+// Rollback undoes the moves: the folders that were replaced are put back.
+func (a *AppliedPayloads) Rollback() {
+	for i := len(a.undo) - 1; i >= 0; i-- {
+		a.undo[i]()
+	}
+	a.undo, a.stale = nil, nil
+}
+
 // ApplyPayloads moves the payloads that ReadDetached put under root into the
 // data folders, for the items that a merge kept, and rewrites their paths.
-// The payloads of items that the merge did not keep stay under root, for the
-// caller to delete. A failure undoes the moves already made.
-func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Item, error) {
+// The payloads of items that were not kept stay under root, for the caller to
+// delete. The returned handle commits or rolls back the moved folders, so
+// that the files change only together with the history.
+func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Item, *AppliedPayloads, error) {
 	imagesDir := filepath.Join(root, "images")
 	filesDir := filepath.Join(root, "files")
 	out := append([]model.Item(nil), items...)
+	applied := &AppliedPayloads{}
 
-	var undo []func()
-	var stale []string
 	rollback := func() {
-		for i := len(undo) - 1; i >= 0; i-- {
-			undo[i]()
-		}
+		applied.Rollback()
 	}
 
 	for i := range out {
@@ -719,16 +742,16 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 		}
 		if err := os.MkdirAll(l.Images(), 0o755); err != nil {
 			rollback()
-			return nil, err
+			return nil, nil, err
 		}
 		dest := filepath.Join(l.Images(), filepath.Base(p))
 		if err := os.Rename(p, dest); err != nil {
 			rollback()
-			return nil, err
+			return nil, nil, err
 		}
 		out[i].ImageFilePath = &dest
 		d := dest
-		undo = append(undo, func() { _ = os.Remove(d) })
+		applied.undo = append(applied.undo, func() { _ = os.Remove(d) })
 	}
 
 	for i := range out {
@@ -738,7 +761,7 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 		idn, err := itemIDN(out[i].ID)
 		if err != nil {
 			rollback()
-			return nil, err
+			return nil, nil, err
 		}
 		staged := filepath.Join(filesDir, idn)
 		if !within(staged, out[i].FilePaths[0]) {
@@ -747,22 +770,22 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 		dest, err := itemDir(l.Files(), idn)
 		if err != nil {
 			rollback()
-			return nil, err
+			return nil, nil, err
 		}
 		if err := os.MkdirAll(l.Files(), 0o755); err != nil {
 			rollback()
-			return nil, err
+			return nil, nil, err
 		}
 		backup, err := moveDir(staged, dest)
 		if err != nil {
 			rollback()
-			return nil, err
+			return nil, nil, err
 		}
 		if backup != "" {
-			stale = append(stale, backup)
+			applied.stale = append(applied.stale, backup)
 		}
 		to, old := dest, backup
-		undo = append(undo, func() {
+		applied.undo = append(applied.undo, func() {
 			_ = os.RemoveAll(to)
 			if old != "" {
 				_ = os.Rename(old, to)
@@ -779,10 +802,7 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 		out[i].FilePaths = paths
 	}
 
-	for _, p := range stale {
-		_ = os.RemoveAll(p)
-	}
-	return out, nil
+	return out, applied, nil
 }
 
 // within says p is base or is inside it.

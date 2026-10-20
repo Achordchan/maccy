@@ -96,10 +96,26 @@ func (s *Session) Refresh(ctx context.Context) (bool, error) {
 		if !errors.As(err, &ae) || !refreshRejected(ae) {
 			return false, err // no answer, or a server that is unwell: keep the tokens
 		}
-		s.Settings.Update(func(m *model.Settings) { ClearAuthSession(m, false) })
+		s.Settings.Update(func(m *model.Settings) {
+			// The user may have signed out, or into another account, while
+			// the request was in flight: its refusal is not about that
+			// session, so leave it alone.
+			if !sameRefreshToken(m, refresh) {
+				return
+			}
+			ClearAuthSession(m, false)
+		})
 		return false, nil
 	}
+
+	applied := false
 	s.Settings.Update(func(m *model.Settings) {
+		// The tokens belong to the session that asked for them. If the user
+		// signed out or in while the request was in flight, do not resurrect
+		// the old one (nor overwrite the new one) with this answer.
+		if !sameRefreshToken(m, refresh) {
+			return
+		}
 		m.AuthAccessToken = &token.AccessToken
 		if strings.TrimSpace(token.RefreshToken) != "" {
 			m.AuthRefreshToken = &token.RefreshToken
@@ -112,8 +128,18 @@ func (s *Session) Refresh(ctx context.Context) (bool, error) {
 			m.AuthUserEmail = &token.Email
 		}
 		m.NasAgentBaseUrl = model.OfficialSyncBaseUrl
+		applied = true
 	})
+	if !applied {
+		return false, nil
+	}
 	return true, nil
+}
+
+// sameRefreshToken says the settings still hold the session that sent this
+// refresh token.
+func sameRefreshToken(m *model.Settings, refresh string) bool {
+	return strings.TrimSpace(model.Str(m.AuthRefreshToken)) == refresh
 }
 
 // refreshRejected says the server refused the refresh token itself: 400 for

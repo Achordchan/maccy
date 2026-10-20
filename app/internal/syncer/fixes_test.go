@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -356,15 +358,15 @@ func TestMergeAppliesTheHistoryAsItIs(t *testing.T) {
 	}
 }
 
-// captureOnSaveHistory is a history that takes a capture while the download
-// saves its items.
-type captureOnSaveHistory struct {
+// captureAfterMutationHistory takes a capture just after the download
+// replaced the history, before the sync remembers its state.
+type captureAfterMutationHistory struct {
 	unitHistory
 	extra model.Item
 }
 
-func (h *captureOnSaveHistory) ReplaceAll(ctx context.Context, items []model.Item) error {
-	if err := h.unitHistory.ReplaceAll(ctx, items); err != nil {
+func (h *captureAfterMutationHistory) Mutate(ctx context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	if err := h.unitHistory.Mutate(ctx, f); err != nil {
 		return err
 	}
 	h.items = append([]model.Item{h.extra}, h.items...)
@@ -378,11 +380,11 @@ func TestDownloadRemembersTheHistoryItApplied(t *testing.T) {
 	data := snapshotFile(t, remote)
 	srv := serveSnapshot(t, data)
 	defer srv.Close()
-	h := &captureOnSaveHistory{extra: textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "captured while saving")}
+	h := &captureAfterMutationHistory{extra: textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "captured after saving")}
 	s := signedIn(model.DefaultSettings())
 	syn := unitSyncer(t, srv, s, h)
 
-	dr, err := syn.DownloadAndApply(context.Background(), nil, "test")
+	dr, err := syn.DownloadAndApply(context.Background(), nil, "test", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,5 +431,222 @@ func TestRestoreStateIsBoundToTheDownloadedSnapshot(t *testing.T) {
 	syn2.PersistAfterDownload(context.Background(), DownloadResult{Fingerprint: "fp", SnapshotSHA256: "aaa"})
 	if got := model.Str(s2.SyncLastRemoteVersion); got != "v2" {
 		t.Errorf("version %q: the manifest of the restored snapshot was not used", got)
+	}
+}
+
+// A successful but garbled manifest answer must not look like "the server has
+// no snapshot": that would upload local history over the remote one.
+func TestParseManifestStrictRejectsAGarbledAnswer(t *testing.T) {
+	for _, in := range []string{
+		"",
+		"<html>proxy login</html>",
+		`{}`,
+		`{"latest":{}}`,
+		`{"latest":{"updatedAt":"not a time"}}`,
+		`{"latest":`,
+	} {
+		if _, err := ParseManifestStrict(in); err == nil {
+			t.Errorf("%q was accepted as a manifest", in)
+		}
+	}
+	m, err := ParseManifestStrict(`{"schema":1,"latest":{"version":"v1","updatedAt":"2026-05-30T12:00:00+00:00","snapshot":{"sha256":"abc","size":12}}}`)
+	if err != nil || m.Version != "v1" || m.SnapshotSHA256 != "abc" || m.UpdatedAt == nil || m.SnapshotSize == nil || *m.SnapshotSize != 12 {
+		t.Errorf("%+v %v", m, err)
+	}
+}
+
+// downloadArrivalHistory has the history change between the decision and the
+// download: current is what the history holds when the download applies.
+type downloadArrivalHistory struct {
+	initial []model.Item
+	current []model.Item
+	items   []model.Item
+}
+
+func (h *downloadArrivalHistory) Items() []model.Item { return append([]model.Item(nil), h.initial...) }
+
+func (h *downloadArrivalHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	next, err := f(append([]model.Item(nil), h.current...))
+	if err != nil {
+		return err
+	}
+	h.items = next
+	return nil
+}
+
+func (h *downloadArrivalHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
+
+func (h *downloadArrivalHistory) ApplyLimits(model.Settings) {}
+
+// A capture made after Run chose Download but before the snapshot was applied
+// is merged, not replaced: the fingerprint at the decision no longer matches.
+func TestDownloadKeepsACaptureMadeWhileItRuns(t *testing.T) {
+	remote := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{remote}))
+	defer srv.Close()
+	local := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local at the decision")
+	captured := textItemAt("16fd2706-8baf-433b-82eb-8c7fada847da", "captured while downloading")
+	h := &downloadArrivalHistory{initial: []model.Item{local}, current: []model.Item{captured, local}}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+
+	dr, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, it := range h.items {
+		texts = append(texts, model.Str(it.Text))
+	}
+	if len(texts) != 3 {
+		t.Fatalf("history %v: the capture made during the download was lost", texts)
+	}
+	if got := dr.Fingerprint; got != Fingerprint(h.items) {
+		t.Errorf("fingerprint %q is not of the applied history", got)
+	}
+}
+
+// A pre-merge backup must not accept a cached blob that does not hash to its
+// name: the source is still there to repair it.
+func TestMergeBackupRepairsACorruptBlob(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	if err := os.MkdirAll(l.Images(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(l.Images(), "good.png")
+	if err := os.WriteFile(src, []byte("good bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := snapshot.FileSHA256(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := l.BlobPath(sum)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{Layout: l})
+	if err := s.ensureLocalBackupBlobs(context.Background(), snapshot.ExportResult{
+		Blobs: []snapshot.Blob{{SHA256: sum, SourcePath: src, Size: 10}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "good bytes" {
+		t.Errorf("the corrupt blob was kept: %q", b)
+	}
+}
+
+// Two runs must not interleave: each looks at the manifest, decides, applies
+// and remembers, and a second decision on the same manifest would apply the
+// same remote items twice.
+func TestRunIsSerialized(t *testing.T) {
+	var active, peak atomic.Int32
+	enter := func() {
+		n := active.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				return
+			}
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enter()
+		defer active.Add(-1)
+		time.Sleep(20 * time.Millisecond)
+		switch r.URL.Path {
+		case "/sync/manifest":
+			w.WriteHeader(http.StatusNotFound)
+		case "/sync/snapshot":
+			io.WriteString(w, `{"version":"v1","sha256":"sha-1","size":10}`)
+		case "/sync/blobs/check":
+			io.WriteString(w, `{"missing":[]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, &unitHistory{items: []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "one")}})
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = syn.Run(context.Background(), nil, "test")
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := peak.Load(); n > 1 {
+		t.Errorf("%d requests were in flight at once: the runs overlapped", n)
+	}
+}
+
+// The same-sha shortcut is only valid while the remote snapshot is still
+// there: after a storage reset the export has to be uploaded again.
+func TestUploadOnlySkipsWhenTheRemoteHasThatSnapshot(t *testing.T) {
+	var puts atomic.Int32
+	var mu sync.Mutex
+	remoteSHA := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sync/manifest":
+			mu.Lock()
+			sha := remoteSHA
+			mu.Unlock()
+			if sha == "" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			io.WriteString(w, `{"latest":{"version":"v-old","updatedAt":"2026-05-30T12:00:00+00:00","snapshot":{"sha256":"`+sha+`","size":1}}}`)
+		case "/sync/snapshot":
+			puts.Add(1)
+			io.WriteString(w, `{"version":"v-new","sha256":"x","size":1}`)
+		case "/sync/blobs/check":
+			io.WriteString(w, `{"missing":[]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	h := &unitHistory{items: []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "one")}}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	tmp := filepath.Join(t.TempDir(), "export.sqlite")
+	exp, err := snapshot.Export(context.Background(), syn.cfg.Layout, tmp, h.items, *s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SyncLastRemoteSha256, s.SyncLastRemoteVersion = &exp.SHA256, model.Ptr("v-old")
+
+	// The remote lost its snapshot: upload it again even though the export
+	// has the hash the device remembers.
+	if _, err := syn.Upload(context.Background(), nil, "again"); err != nil {
+		t.Fatal(err)
+	}
+	if n := puts.Load(); n != 1 {
+		t.Fatalf("uploads %d: a snapshot that is gone was not uploaded", n)
+	}
+
+	// The remote still has it: the shortcut applies.
+	mu.Lock()
+	remoteSHA = exp.SHA256
+	mu.Unlock()
+	if _, err := syn.Upload(context.Background(), nil, "again"); err != nil {
+		t.Fatal(err)
+	}
+	if n := puts.Load(); n != 1 {
+		t.Errorf("uploads %d: the same snapshot was uploaded again", n)
 	}
 }

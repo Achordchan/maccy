@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -50,6 +51,32 @@ func ParseManifestInfo(manifestJSON string) ManifestInfo {
 		}
 	}
 	return info
+}
+
+// ParseManifestStrict reads a successful manifest answer. Unlike
+// ParseManifestInfo, a body that is not a manifest is an error: a proxy's HTML
+// page, a truncated body or an invalid time must not become "the server has
+// no snapshot", which would upload over the remote one.
+func ParseManifestStrict(manifestJSON string) (ManifestInfo, error) {
+	var doc struct {
+		Latest *struct {
+			UpdatedAt json.RawMessage `json:"updatedAt"`
+		} `json:"latest"`
+	}
+	if err := json.Unmarshal([]byte(manifestJSON), &doc); err != nil {
+		return ManifestInfo{}, fmt.Errorf("manifest: %w", err)
+	}
+	if doc.Latest == nil {
+		return ManifestInfo{}, fmt.Errorf("manifest: no latest snapshot")
+	}
+	at := strings.TrimSpace(rawText(doc.Latest.UpdatedAt))
+	if at == "" {
+		return ManifestInfo{}, fmt.Errorf("manifest: no updatedAt")
+	}
+	if _, err := model.ParseTime(at); err != nil {
+		return ManifestInfo{}, fmt.Errorf("manifest: updatedAt: %w", err)
+	}
+	return ParseManifestInfo(manifestJSON), nil
 }
 
 // rawText is TryReadString: a string as it is, any other value as its JSON

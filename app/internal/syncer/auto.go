@@ -61,6 +61,12 @@ func (a *Auto) Suppress(on bool) { a.suppressed.Store(on) }
 // start because there is no sign-in reports ErrNotLoggedIn.
 func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {
 	if !a.busy.CompareAndSwap(false, true) {
+		// A background trigger that cannot start is remembered: it may be the
+		// only notice of a change or of another device's upload. A manual one
+		// is the user asking again, and is dropped as before.
+		if !manual {
+			a.pending.Store(true)
+		}
 		return
 	}
 	go func() {
@@ -91,15 +97,9 @@ func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {
 func (a *Auto) Startup(ctx context.Context) { a.Trigger(ctx, "startup", false) }
 
 // OnRemoteUpdated is for the event stream: another device uploaded. An event
-// that arrives while a sync runs is kept and synced after it: the running
-// sync may have read an older manifest.
-func (a *Auto) OnRemoteUpdated(ctx context.Context) {
-	if a.busy.Load() {
-		a.pending.Store(true)
-		return
-	}
-	a.Trigger(ctx, "remote_event", false)
-}
+// that arrives while a sync runs is kept (Trigger records it) and synced after
+// it: the running sync may have read an older manifest.
+func (a *Auto) OnRemoteUpdated(ctx context.Context) { a.Trigger(ctx, "remote_event", false) }
 
 // OnHistoryChanged is for each change of the history. A sync follows after
 // the pause, unless another change comes first. A change that arrives while

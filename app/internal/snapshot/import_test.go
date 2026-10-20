@@ -209,12 +209,13 @@ func TestDetachedReadKeepsTheLocalPayloadsUntilTheMergeDecides(t *testing.T) {
 	}
 
 	// The merge keeps the local item: its files are still the local ones.
-	kept, err := ApplyPayloads(l, root, []model.Item{{
+	kept, moves, err := ApplyPayloads(l, root, []model.Item{{
 		ID: id3, Kind: model.KindFileList, FilePaths: []string{localPath},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	moves.Commit()
 	if len(kept[0].FilePaths) != 1 || kept[0].FilePaths[0] != localPath {
 		t.Errorf("kept paths %v", kept[0].FilePaths)
 	}
@@ -224,10 +225,11 @@ func TestDetachedReadKeepsTheLocalPayloadsUntilTheMergeDecides(t *testing.T) {
 
 	// The merge keeps the remote item: its files replace the cache, and the
 	// old folder is gone.
-	applied, err := ApplyPayloads(l, root, remote.Items)
+	applied, moves, err := ApplyPayloads(l, root, remote.Items)
 	if err != nil {
 		t.Fatal(err)
 	}
+	moves.Commit()
 	got := applied[0].FilePaths
 	if len(got) != 1 || filepath.Dir(got[0]) != dir || filepath.Base(got[0]) != "0000_remote.txt" {
 		t.Fatalf("applied paths %v", got)

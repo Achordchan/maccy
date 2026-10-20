@@ -129,3 +129,112 @@ func TestCheckMissingBlobsRejectsMalformedResponses(t *testing.T) {
 		})
 	}
 }
+
+// A refresh that was in flight while the user signed into another account
+// must not resurrect the old session.
+func TestSessionRefreshDoesNotOverwriteANewSignIn(t *testing.T) {
+	for _, status := range []int{200, 401} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				close(entered)
+				<-release
+				if status == 200 {
+					io.WriteString(w, `{"accessToken":"old-access-2","refreshToken":"old-refresh-2","accessTokenExpiresAt":"2030-01-01T00:00:00+00:00"}`)
+					return
+				}
+				w.WriteHeader(http.StatusUnauthorized)
+				io.WriteString(w, `{}`)
+			}))
+			defer srv.Close()
+
+			var mu sync.Mutex
+			s := model.DefaultSettings()
+			s.AuthAccessToken, s.AuthRefreshToken = model.Ptr("old-access"), model.Ptr("old-refresh")
+			settings := Settings{
+				Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
+				Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+			}
+			sess := &Session{Client: New(srv.URL), Settings: settings}
+			done := make(chan struct{})
+			go func() {
+				sess.Refresh(context.Background())
+				close(done)
+			}()
+			<-entered
+			// The user signs into another account while the request is in flight.
+			mu.Lock()
+			s.AuthAccessToken, s.AuthRefreshToken = model.Ptr("new-access"), model.Ptr("new-refresh")
+			mu.Unlock()
+			close(release)
+			<-done
+
+			if got := model.Str(s.AuthAccessToken); got != "new-access" {
+				t.Errorf("access token %q: the old session was resurrected or the new one cleared", got)
+			}
+			if got := model.Str(s.AuthRefreshToken); got != "new-refresh" {
+				t.Errorf("refresh token %q", got)
+			}
+		})
+	}
+}
+
+// The event stream must not lose an update that arrives while onUpdated is
+// still running: the sync it started may have read an older manifest.
+func TestWatchKeepsAnUpdateThatArrivesDuringTheCallback(t *testing.T) {
+	var calls atomic.Int32
+	second := make(chan struct{})
+	written := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync/events" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		io.WriteString(w, "event: sync-updated\ndata: {}\n\n")
+		fl.Flush()
+		<-second
+		io.WriteString(w, "event: sync-updated\ndata: {}\n\n")
+		fl.Flush()
+		once.Do(func() { close(written) })
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		New(srv.URL).Watch(ctx, &fakeTokens{token: "t"}, WatchOptions{
+			InitialDelay: 10 * time.Millisecond, MaxDelay: 10 * time.Millisecond, Debounce: 10 * time.Millisecond,
+		}, func() {
+			if calls.Add(1) == 1 {
+				<-release
+			}
+		})
+		close(done)
+	}()
+
+	waitUntil(t, "the first callback", func() bool { return calls.Load() == 1 })
+	close(second)
+	<-written
+	time.Sleep(30 * time.Millisecond) // the stream is read while the callback runs
+	close(release)
+	waitUntil(t, "the second callback", func() bool { return calls.Load() >= 2 })
+	cancel()
+	<-done
+}
+
+func waitUntil(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}

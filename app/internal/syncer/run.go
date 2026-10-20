@@ -30,6 +30,12 @@ func (s *Syncer) CanAutoSync() bool {
 // state. It is RunAutoSyncAsync without the window, and also what "sync
 // now" does.
 func (s *Syncer) Run(ctx context.Context, progress func(Progress), reason string) (RunResult, error) {
+	s.workflow.Lock()
+	defer s.workflow.Unlock()
+	return s.run(ctx, progress, reason)
+}
+
+func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string) (RunResult, error) {
 	report(progress, "check_remote", "检查远端", 10)
 	manifest, err := s.remoteManifest(ctx)
 	if err != nil {
@@ -43,14 +49,14 @@ func (s *Syncer) Run(ctx context.Context, progress func(Progress), reason string
 		s.PersistSyncState(d.LocalFingerprint, d.Manifest)
 
 	case Download:
-		dr, err := s.DownloadAndApply(ctx, progress, reason)
+		dr, err := s.downloadAndApply(ctx, progress, reason, d.LocalFingerprint)
 		if err != nil {
 			return res, err
 		}
 		s.PersistSyncState(dr.Fingerprint, snapshotState(dr, d.Manifest, s.cfg.Now().UTC()))
 
 	case Merge:
-		if err := s.MergeAndApply(ctx, d.Manifest, d.LocalFingerprint, progress, reason); err != nil {
+		if err := s.mergeAndApply(ctx, d.Manifest, d.LocalFingerprint, progress, reason); err != nil {
 			return res, err
 		}
 		up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_merge_upload")
@@ -74,6 +80,8 @@ func (s *Syncer) Run(ctx context.Context, progress func(Progress), reason string
 // UploadAfterLocalMutation uploads right after the user changed the history
 // (UploadCloudAfterLocalMutationAsync), without looking at the server first.
 func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.UploadResult, error) {
+	s.workflow.Lock()
+	defer s.workflow.Unlock()
 	up, fp, err := s.uploadWithFingerprint(ctx, nil, "local_mutation")
 	if err != nil {
 		return nil, err
@@ -127,6 +135,8 @@ func uploadIsInManifest(up *syncclient.UploadResult, m ManifestInfo) bool {
 // recorded next to the restored history would make the next sync think the
 // two are the same.
 func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) {
+	s.workflow.Lock()
+	defer s.workflow.Unlock()
 	m, err := s.ManifestInfo(ctx)
 	if err != nil {
 		m = ManifestInfo{}

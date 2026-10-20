@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 )
 
@@ -122,17 +122,41 @@ func (o WatchOptions) withDefaults() WatchOptions {
 // returns when ctx is done.
 func (c *Client) Watch(ctx context.Context, ts TokenSource, opts WatchOptions, onUpdated func()) {
 	opts = opts.withDefaults()
-	var queued atomic.Bool
+	var mu sync.Mutex
+	running, pending := false, false
 	dispatch := func(e Event) {
-		if e.Name != "sync-updated" || !queued.CompareAndSwap(false, true) {
+		if e.Name != "sync-updated" {
 			return
 		}
+		mu.Lock()
+		pending = true
+		if running {
+			mu.Unlock()
+			return
+		}
+		running = true
+		mu.Unlock()
 		go func() {
-			defer queued.Store(false)
-			select {
-			case <-time.After(opts.Debounce):
+			for {
+				select {
+				case <-time.After(opts.Debounce):
+				case <-ctx.Done():
+					mu.Lock()
+					running = false
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				pending = false
+				mu.Unlock()
 				onUpdated()
-			case <-ctx.Done():
+				mu.Lock()
+				if !pending {
+					running = false
+					mu.Unlock()
+					return
+				}
+				mu.Unlock()
 			}
 		}()
 	}
