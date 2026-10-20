@@ -258,14 +258,14 @@ func (k *klip) apply(i int) {
 	var err error
 	switch it.kind {
 	case kindText:
-		k.ownHash = hashOf("text", it.text)
+		k.ownHash = hashOf(fmt.Sprint(kindText), it.text)
 		mygo.Clipboard.WriteText(it.text)
 	case kindImage:
-		k.ownHash = hashOf("image", string(it.png))
+		k.ownHash = hashOf(fmt.Sprint(kindImage), string(it.png))
 		err = mygo.Clipboard.WriteImage(it.png)
 	case kindFiles:
 		paths := strings.Split(it.text, "\n")
-		k.ownHash = hashOf("files", it.text)
+		k.ownHash = hashOf(fmt.Sprint(kindFiles), it.text)
 		err = mygo.Clipboard.WriteFiles(paths...)
 	}
 	k.status = fmt.Sprintf("applied item %d (err=%v)", it.n, err)
@@ -282,7 +282,7 @@ func hashOf(kind, s string) string {
 func (k *klip) poll() {
 	k.seqActive = *useSeq && changeSeq() >= 0
 	k.seqLast = changeSeq()
-	log.Printf("poller start: seqActive=%v seq=%d pbReady=%v", k.seqActive, k.seqLast, pbReady)
+	log.Printf("poller start: seqActive=%v seq=%d", k.seqActive, k.seqLast)
 	k.panel.Update(func() { k.status = fmt.Sprintf("poll every %v, change counter: %v", *pollEvery, k.seqActive) })
 	tick := time.NewTicker(*pollEvery)
 	defer tick.Stop()
