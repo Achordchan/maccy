@@ -157,7 +157,7 @@ func TestTextCaptureOffAndBlank(t *testing.T) {
 	r.clip.formats, r.clip.text = []string{"text/plain"}, "x"
 	r.s.CaptureText = false
 	r.capture()
-	if r.h.Len() != 0 || r.clip.reads != 0 {
+	if r.h.Len() != 0 || r.clip.reads > 1 { // the one read is the try as a picture
 		t.Errorf("text capture is off: %d items, %d reads", r.h.Len(), r.clip.reads)
 	}
 	r.s.CaptureText = true
@@ -180,6 +180,22 @@ func TestOwnWritesAreNotCaptured(t *testing.T) {
 	r.s.Capture(context.Background())
 	if r.h.Len() != 1 {
 		t.Error("after 250 ms the change counts")
+	}
+}
+
+func TestFailedApplyIsNotMarkedAsOurs(t *testing.T) {
+	r := newRig(t)
+	r.s.Seq = func() int64 { return 7 }
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "from elsewhere"
+	// An image whose file is gone writes nothing, so nothing is ours.
+	it := model.Item{Kind: model.KindImage, ImageFilePath: model.Ptr(filepath.Join(r.l.Images(), "gone.png"))}
+	if err := r.s.Apply(it); err != nil {
+		t.Fatal(err)
+	}
+	r.now = r.now.Add(time.Second)
+	r.s.Capture(context.Background())
+	if r.h.Len() != 1 {
+		t.Fatal("a copy from elsewhere must be kept after an Apply that wrote nothing")
 	}
 }
 
@@ -256,10 +272,19 @@ func TestImageCapture(t *testing.T) {
 	}
 	r5 := newRig(t)
 	r5.clip.formats, r5.clip.image, r5.clip.text = []string{"text/html", "text/plain"}, data, " "
-	r5.capture() // text is blank, and the formats name text: the image is not tried for odd names
-	if r5.h.Len() != 0 {
-		t.Error("no image where there is text")
+	r5.capture() // text is blank: what is left is tried as a picture, whatever the formats say
+	if r5.h.Len() != 1 {
+		t.Error("an image beside blank text is kept")
 	}
+	// A picture that is cut off after its header is not a picture.
+	r6 := newRig(t)
+	r6.clip.formats, r6.clip.image = []string{"image/png"}, data[:len(data)/2]
+	r6.capture()
+	if r6.h.Len() != 0 {
+		t.Error("a truncated PNG must not be kept")
+	}
+	r5 = newRig(t)
+	r5.clip.formats, r5.clip.image, r5.clip.text = []string{"text/html", "text/plain"}, data, " "
 	r5.s.CaptureImages = false
 	r4.s.CaptureImages = false
 	r4.capture()

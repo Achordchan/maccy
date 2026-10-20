@@ -254,15 +254,14 @@ func (s *Service) Capture(ctx context.Context) error {
 	}
 
 	if s.CaptureImages {
-		// The portable image formats first; if none is named, still try once,
-		// since screenshot tools use odd names (the C# fallback loop). Nothing
-		// is tried when the clipboard holds text or files only.
-		if has(set, imageFormats) || (!has(set, textFormats) && !has(set, fileFormats)) {
-			if data := s.Clipboard.ReadImage(); len(data) > 0 {
-				if p, h, size, err := s.savePNG(data); err == nil {
-					add(model.Item{ID: s.NewID(), Kind: model.KindImage, ApproxBytes: size, ImageFilePath: &p, CopyCount: 1, ContentHash: &h})
-					return nil
-				}
+		// Whatever was not captured above gets one try as a picture, whatever
+		// formats are named: screenshot tools use odd names, and blank text
+		// or a text flavour beside the picture must not hide it (the C#
+		// fallback loop does the same).
+		if data := s.Clipboard.ReadImage(); len(data) > 0 {
+			if p, h, size, err := s.savePNG(data); err == nil {
+				add(model.Item{ID: s.NewID(), Kind: model.KindImage, ApproxBytes: size, ImageFilePath: &p, CopyCount: 1, ContentHash: &h})
+				return nil
 			}
 		}
 	}
@@ -368,7 +367,9 @@ func (s *Service) savePNG(data []byte) (path, hash string, size int64, err error
 			return "", "", 0, err
 		}
 		data = b.Bytes()
-	} else if _, derr := png.DecodeConfig(bytes.NewReader(data)); derr != nil {
+	} else if _, derr := png.Decode(bytes.NewReader(data)); derr != nil {
+		// the header alone is not enough: a cut-off file must not become a
+		// picture that cannot be shown
 		return "", "", 0, derr
 	}
 	if err := os.MkdirAll(s.Layout.Images(), 0o755); err != nil {
@@ -464,10 +465,18 @@ func newGUID() string {
 // that is gone is not an error: nothing is written.
 func (s *Service) Apply(it model.Item) error {
 	s.MarkWriteByUs()
-	defer s.markWritten()
+	wrote, err := s.write(it)
+	if wrote && err == nil {
+		s.markWritten() // only a write that happened can be recognised as ours
+	}
+	return err
+}
+
+// write puts the item on the clipboard and says whether it wrote anything.
+func (s *Service) write(it model.Item) (bool, error) {
 	switch it.Kind {
 	case model.KindText:
-		return s.Clipboard.WriteText(model.Str(it.Text))
+		return true, s.Clipboard.WriteText(model.Str(it.Text))
 
 	case model.KindFileList:
 		var resolved []string
@@ -488,20 +497,20 @@ func (s *Service) Apply(it model.Item) error {
 			}
 		}
 		if len(resolved) == 0 {
-			return nil
+			return false, nil
 		}
-		return s.Clipboard.WriteFiles(resolved)
+		return true, s.Clipboard.WriteFiles(resolved)
 
 	case model.KindImage:
 		p := model.Str(it.ImageFilePath)
 		if strings.TrimSpace(p) == "" || !isFile(p) {
-			return nil
+			return false, nil
 		}
 		data, err := os.ReadFile(p)
 		if err != nil {
-			return err
+			return false, err
 		}
-		return s.Clipboard.WriteImage(data, p)
+		return true, s.Clipboard.WriteImage(data, p)
 	}
-	return errors.New("capture: unknown item kind")
+	return false, errors.New("capture: unknown item kind")
 }
