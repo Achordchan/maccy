@@ -839,3 +839,83 @@ func TestDownloadStopsWhenTheSessionChanges(t *testing.T) {
 		t.Error("the old account's snapshot was applied to the new session")
 	}
 }
+
+// The token used for a retry is checked itself, not the settings it was read
+// from: another account's token is never sent for this workflow's data.
+func TestTokenForRejectsAnotherAccountsToken(t *testing.T) {
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+	syn := New(Config{
+		Settings: syncclient.Settings{
+			Get:    func() model.Settings { return s },
+			Update: func(f func(*model.Settings)) { f(&s) },
+		},
+	})
+	if _, err := syn.tokenFor("account-a"); !errors.Is(err, ErrSessionChanged) {
+		t.Errorf("another account's token: %v", err)
+	}
+	if tok, err := syn.tokenFor("account-b"); err != nil || tok == "" {
+		t.Errorf("the same account's token: %q %v", tok, err)
+	}
+	// An opaque token cannot be attributed, so it is not rejected.
+	s.AuthAccessToken = model.Ptr("opaque")
+	if tok, err := syn.tokenFor("account-a"); err != nil || tok != "opaque" {
+		t.Errorf("opaque token: %q %v", tok, err)
+	}
+}
+
+// Signing out is a session change too: an in-flight download must not put the
+// old account's history into the signed-out session.
+func TestDownloadStopsWhenSignedOut(t *testing.T) {
+	data := snapshotFile(t, []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the account")})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync/snapshot" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		once.Do(func() { close(entered) })
+		<-release
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	s.AuthRefreshToken = model.Ptr("ra")
+	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	h := &unitHistory{}
+	syn := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()},
+		Settings: syncclient.Settings{
+			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
+			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+		},
+		History: h,
+		Client:  syncclient.New(srv.URL),
+		BaseURL: srv.URL,
+		Now:     time.Now,
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := syn.DownloadAndApply(context.Background(), nil, "test", "")
+		done <- err
+	}()
+	<-entered
+	mu.Lock()
+	s.AuthAccessToken, s.AuthRefreshToken = nil, nil
+	s.AuthExpiresAtUnixMs = 0
+	mu.Unlock()
+	close(release)
+
+	if err := <-done; !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("a sign-out during the download: %v", err)
+	}
+	if h.replaced != 0 {
+		t.Error("the old account's snapshot was applied after the sign-out")
+	}
+}

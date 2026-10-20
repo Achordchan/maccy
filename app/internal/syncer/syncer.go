@@ -92,7 +92,35 @@ func (s *Syncer) accountChanged(account string) bool {
 		return false
 	}
 	cur := s.currentAccount()
-	return cur != "" && !strings.EqualFold(cur, account)
+	if cur == "" {
+		// Signed out (or the token is gone): the session the workflow started
+		// in is not there any more.
+		return true
+	}
+	return !strings.EqualFold(cur, account)
+}
+
+// checkToken says the access token belongs to account. The token itself is
+// checked, not the settings: a sign-in between reading the settings and
+// sending the request cannot swap the credentials of a workflow.
+func (s *Syncer) checkToken(token, account string) error {
+	if strings.TrimSpace(account) == "" {
+		return nil
+	}
+	if id := syncclient.AccountID(token); id != "" && !strings.EqualFold(id, account) {
+		return ErrSessionChanged
+	}
+	return nil
+}
+
+// tokenFor is checkToken for the stored token: the token the caller gets is
+// the one it will send, so it cannot be replaced by another account's.
+func (s *Syncer) tokenFor(account string) (string, error) {
+	token := s.bearer()
+	if err := s.checkToken(token, account); err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 // refreshBound renews the token only for the account that started the
@@ -132,6 +160,9 @@ func (s *Syncer) refreshAndRetry(ctx context.Context, token, account string, cal
 	if strings.TrimSpace(account) == "" {
 		account = syncclient.AccountID(token)
 	}
+	if err := s.checkToken(token, account); err != nil {
+		return token, err
+	}
 	if s.accountChanged(account) {
 		return token, ErrSessionChanged
 	}
@@ -152,7 +183,9 @@ func (s *Syncer) refreshAndRetry(ctx context.Context, token, account string, cal
 	if !ok {
 		return token, err
 	}
-	token = s.bearer()
+	if token, err = s.tokenFor(account); err != nil {
+		return token, err
+	}
 	return token, call(token)
 }
 
@@ -296,6 +329,9 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason, ac
 	if strings.TrimSpace(account) == "" {
 		account = syncclient.AccountID(token)
 	}
+	if err := s.checkToken(token, account); err != nil {
+		return nil, "", err
+	}
 	if s.accountChanged(account) {
 		return nil, "", ErrSessionChanged
 	}
@@ -358,7 +394,9 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason, ac
 		if !ok {
 			return nil, fp, err
 		}
-		token = s.bearer()
+		if token, err = s.tokenFor(account); err != nil {
+			return nil, fp, err
+		}
 		if len(exp.Blobs) > 0 {
 			if token, err = s.uploadMissingBlobsWithRefresh(ctx, token, exp, started, reason+";after_refresh", account); err != nil {
 				return nil, fp, err
@@ -386,7 +424,9 @@ func (s *Syncer) uploadMissingBlobsWithRefresh(ctx context.Context, token string
 	if !ok {
 		return token, err
 	}
-	token = s.bearer()
+	if token, err = s.tokenFor(account); err != nil {
+		return token, err
+	}
 	return token, s.uploadMissingBlobs(ctx, token, exp, started, reason+";blob_refresh")
 }
 
@@ -469,6 +509,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	}
 	if strings.TrimSpace(account) == "" {
 		account = syncclient.AccountID(token)
+	}
+	if err := s.checkToken(token, account); err != nil {
+		return DownloadResult{}, err
 	}
 	if s.accountChanged(account) {
 		return DownloadResult{}, ErrSessionChanged
@@ -587,7 +630,11 @@ func (s *Syncer) ensureBlob(ctx context.Context, token *string, account string) 
 			if !ok {
 				return "", nil
 			}
-			*token = s.bearer()
+			tok, terr := s.tokenFor(account)
+			if terr != nil {
+				return "", terr
+			}
+			*token = tok
 			err = s.cfg.Client.DownloadBlob(ctx, *token, sha, local)
 		}
 		if err != nil || !isFile(local) {
@@ -621,6 +668,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	}
 	if strings.TrimSpace(account) == "" {
 		account = syncclient.AccountID(token)
+	}
+	if err := s.checkToken(token, account); err != nil {
+		return err
 	}
 	if s.accountChanged(account) {
 		return ErrSessionChanged

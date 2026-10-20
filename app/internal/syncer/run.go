@@ -132,8 +132,14 @@ func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadRe
 		return ErrSessionChanged
 	}
 	if m, err := s.ManifestInfo(ctx); err == nil && uploadIsInManifest(up, m) {
+		if s.accountChanged(account) {
+			return ErrSessionChanged
+		}
 		s.PersistSyncState(fp, m)
 		return nil
+	}
+	if s.accountChanged(account) {
+		return ErrSessionChanged
 	}
 	now := s.cfg.Now().UTC()
 	switch {
@@ -181,6 +187,9 @@ func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) er
 	m, err := s.ManifestInfo(ctx)
 	if err != nil {
 		m = ManifestInfo{}
+	}
+	if s.accountChanged(dr.Account) {
+		return ErrSessionChanged
 	}
 	s.PersistSyncState(dr.Fingerprint, snapshotState(dr, m, s.cfg.Now().UTC()))
 	return nil
