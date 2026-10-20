@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"klip/internal/model"
 )
@@ -84,5 +85,32 @@ func TestHandlersGetTheCurrentSettings(t *testing.T) {
 	_ = m.Update(func(s *model.Settings) { s.CaptureText = !s.CaptureText })
 	if got.CaptureText != m.Get().CaptureText {
 		t.Fatal("a handler is given the settings as they are")
+	}
+}
+
+func TestHandlersNeverGoBackToOlderSettings(t *testing.T) {
+	m, _ := Open(filepath.Join(t.TempDir(), "settings.json"))
+	var mu sync.Mutex
+	var seen []bool
+	m.OnChange(func(s model.Settings) {
+		time.Sleep(3 * time.Millisecond) // a slow handler
+		mu.Lock()
+		seen = append(seen, s.CaptureText)
+		mu.Unlock()
+	})
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = m.Update(func(s *model.Settings) { s.CaptureText = !s.CaptureText })
+		}()
+	}
+	wg.Wait()
+	time.Sleep(200 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 || seen[len(seen)-1] != m.Get().CaptureText {
+		t.Fatalf("the last delivery was %v, the settings are %v", seen, m.Get().CaptureText)
 	}
 }

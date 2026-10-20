@@ -2,6 +2,8 @@ package settings
 
 import (
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"klip/internal/model"
 )
@@ -14,6 +16,13 @@ type Manager struct {
 	mu       sync.Mutex
 	cur      model.Settings
 	handlers []func(model.Settings)
+
+	// Handlers run one after the other on one goroutine (see Update).
+	rev       int64         // number of the newest update, under mu
+	delivered atomic.Int64  // the newest one the handlers have seen
+	signal    chan struct{} // an update is waiting to be delivered
+	start     sync.Once
+	inHandler atomic.Bool
 }
 
 // Open reads the settings. The Manager is usable also when err says the file
@@ -30,23 +39,57 @@ func (m *Manager) Get() model.Settings {
 	return m.cur
 }
 
+// deliverWait is how long Update waits for the handlers to have run: they
+// are meant to have run when Update returns, but one of them may be waiting
+// for the thread that called Update, so the wait has an end.
+const deliverWait = 300 * time.Millisecond
+
 // Update changes the settings and saves them. Functions registered with
-// OnChange then run, outside the lock, with the new settings. A failure to
+// OnChange then run with the new settings, one after another in the order of
+// the updates (a single goroutine delivers them, so a slow handler of one
+// update can never be overtaken by the handler of a later one). Update returns
+// once they have run, or after a short wait if they are slow. A failure to
 // save is returned, the change stays in memory.
 func (m *Manager) Update(f func(*model.Settings)) error {
+	m.start.Do(func() {
+		m.signal = make(chan struct{}, 1)
+		go m.deliver()
+	})
 	m.mu.Lock()
 	f(&m.cur)
-	hs := make([]func(model.Settings), len(m.handlers))
-	copy(hs, m.handlers)
 	err := Save(m.path, m.cur)
+	m.rev++
+	rev := m.rev
 	m.mu.Unlock()
-	// Two updates on two goroutines can reach this point in either order, so
-	// a handler is given the settings as they are now, not the ones this
-	// update made: the last word is always the newest, whoever delivers it.
-	for _, h := range hs {
-		h(m.Get())
+	select {
+	case m.signal <- struct{}{}:
+	default: // one is pending already: it will carry this update too
+	}
+	if !m.inHandler.Load() { // a handler's own Update must not wait for itself
+		deadline := time.Now().Add(deliverWait)
+		for m.delivered.Load() < rev && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
 	}
 	return err
+}
+
+// deliver runs the handlers for every update, always with the newest
+// settings, until the program ends.
+func (m *Manager) deliver() {
+	for range m.signal {
+		m.mu.Lock()
+		rev, cur := m.rev, m.cur
+		hs := make([]func(model.Settings), len(m.handlers))
+		copy(hs, m.handlers)
+		m.mu.Unlock()
+		m.inHandler.Store(true)
+		for _, h := range hs {
+			h(cur)
+		}
+		m.inHandler.Store(false)
+		m.delivered.Store(rev)
+	}
 }
 
 // OnChange registers a function to run after each Update.

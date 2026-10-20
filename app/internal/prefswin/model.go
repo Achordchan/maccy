@@ -300,6 +300,9 @@ func (m *Model) redeemCard() {
 			if r.OK {
 				m.redeem = ""
 				m.sub = s
+				// A card may be what the sign-in's first sync was waiting
+				// for (no subscription): sync now, as after a sign-in.
+				m.Host.AccountChanged(true)
 			}
 		}
 	})

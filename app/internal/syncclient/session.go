@@ -68,10 +68,19 @@ func (s *Session) Refresh(ctx context.Context) (bool, error) {
 		if !errors.As(err, &ae) {
 			return false, err // no answer: not a reason to sign out
 		}
-		s.Settings.Update(func(m *model.Settings) { ClearAuthSession(m, false) })
+		s.Settings.Update(func(m *model.Settings) {
+			if strings.TrimSpace(model.Str(m.AuthRefreshToken)) == refresh { // still the session that asked
+				ClearAuthSession(m, false)
+			}
+		})
 		return false, nil
 	}
+	stored := false
 	s.Settings.Update(func(m *model.Settings) {
+		if strings.TrimSpace(model.Str(m.AuthRefreshToken)) != refresh {
+			return // signed out, or in as somebody else, while the request was on its way
+		}
+		stored = true
 		m.AuthAccessToken = &token.AccessToken
 		if strings.TrimSpace(token.RefreshToken) != "" {
 			m.AuthRefreshToken = &token.RefreshToken
@@ -85,5 +94,5 @@ func (s *Session) Refresh(ctx context.Context) (bool, error) {
 		}
 		m.NasAgentBaseUrl = model.OfficialSyncBaseUrl
 	})
-	return true, nil
+	return stored, nil
 }

@@ -29,6 +29,10 @@ type Service struct {
 func (s *Service) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.startLocked()
+}
+
+func (s *Service) startLocked() error {
 	if s.stop != nil {
 		return errors.New("shelf: already started")
 	}
@@ -55,11 +59,17 @@ func (s *Service) Start() error {
 // Stop removes the hook.
 func (s *Service) Stop() {
 	s.mu.Lock()
-	stop := s.stop
-	s.stop = nil
-	s.mu.Unlock()
-	if stop != nil {
-		stop()
+	defer s.mu.Unlock()
+	s.stopLocked()
+}
+
+// stopLocked removes the hook and returns when it is gone; the lock is held
+// meanwhile, so a Start cannot begin while the old hook still uses the shared
+// state.
+func (s *Service) stopLocked() {
+	if s.stop != nil {
+		s.stop()
+		s.stop = nil
 	}
 }
 
@@ -75,11 +85,13 @@ func (s *Service) Running() bool {
 // (1.0.10 keeps it always; this is cheaper and means the same.)
 func (s *Service) Follow(st Settings) error {
 	on := st.Enabled && st.Modifier != "Disabled"
+	s.mu.Lock() // look and act under one lock: two Follows must not interleave
+	defer s.mu.Unlock()
 	switch {
-	case on && !s.Running():
-		return s.Start()
-	case !on && s.Running():
-		s.Stop()
+	case on && s.stop == nil:
+		return s.startLocked()
+	case !on && s.stop != nil:
+		s.stopLocked()
 	}
 	return nil
 }
