@@ -41,7 +41,15 @@ const (
 type Client struct {
 	baseURL string
 	http    *http.Client
+	// accountTimeout bounds the account calls. It is a field so that a test
+	// can shorten it; New sets accountCallTimeout.
+	accountTimeout time.Duration
 }
+
+// accountCallTimeout is the deadline of an account call. The HTTP client has
+// no timeout of its own, and a refresh that never answers would hold the
+// sync gate.
+const accountCallTimeout = 30 * time.Second
 
 // New returns a client for the server at baseURL, without a trailing slash.
 // An empty address is the official server only for the account calls, as in
@@ -56,7 +64,11 @@ func NewWithHTTP(baseURL string, h *http.Client) *Client {
 	if h == nil {
 		h = &http.Client{}
 	}
-	return &Client{baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), http: h}
+	return &Client{
+		baseURL:        strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		http:           h,
+		accountTimeout: accountCallTimeout,
+	}
 }
 
 // ErrNoBaseURL is returned when the client has no server address.

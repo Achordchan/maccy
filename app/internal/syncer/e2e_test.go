@@ -258,7 +258,7 @@ func TestDevicesSyncThroughTheRealServer(t *testing.T) {
 		t.Fatalf("C: %+v", res.Decision)
 	}
 	backups, _ := filepath.Glob(filepath.Join(c.layout.Root, "sync", "backups", "pre-merge-*.sqlite"))
-	if len(backups) != 1 || !regexpMatch(`pre-merge-\d{8}-\d{6}-\d{3}\.sqlite$`, backups[0]) {
+	if len(backups) != 1 || !regexpMatch(`pre-merge-\d{8}-\d{6}\.\d{3}-[0-9a-f]{8}\.sqlite$`, backups[0]) {
 		t.Errorf("backups %v", backups)
 	}
 	merged := c.hist.Items()

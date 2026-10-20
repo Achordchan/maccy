@@ -58,6 +58,8 @@ func (c *Client) CurrentEmail(ctx context.Context, accessToken string) (string, 
 	if strings.TrimSpace(accessToken) == "" {
 		return "", nil
 	}
+	ctx, cancel := c.withAccountTimeout(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.accountURL()+"/auth/me", nil)
 	if err != nil {
 		return "", err
@@ -116,6 +118,16 @@ func (c *Client) ChangePassword(ctx context.Context, accessToken, code, newPassw
 	return err
 }
 
+// withAccountTimeout bounds an account call. A client built by hand, without
+// New, gets the default.
+func (c *Client) withAccountTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := c.accountTimeout
+	if timeout <= 0 {
+		timeout = accountCallTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 func (c *Client) tokenRequest(ctx context.Context, path string, payload map[string]any) (TokenSet, error) {
 	obj, err := c.jsonRequest(ctx, path, payload, "")
 	if err != nil {
@@ -145,6 +157,8 @@ func (c *Client) jsonRequest(ctx context.Context, path string, payload any, acce
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := c.withAccountTimeout(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.accountURL()+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err

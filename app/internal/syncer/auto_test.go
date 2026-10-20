@@ -168,3 +168,26 @@ func TestAutoFailedStartupKeepsChangesQuiet(t *testing.T) {
 		t.Error("only a successful background sync opens the gate (C# _initialSyncCompleted)")
 	}
 }
+
+// A change that arrives while a sync runs is not dropped: the sync has
+// already read the history, so it runs once more when it ends.
+func TestAutoSyncsAgainForAChangeDuringASync(t *testing.T) {
+	r := newRig()
+	ctx := context.Background()
+	r.a.Startup(ctx)
+	waitFor(t, "startup", func() bool { return r.runs.Load() == 1 && !r.a.busy.Load() })
+
+	gate := make(chan struct{})
+	r.setGate(gate)
+	r.a.Trigger(ctx, "one", true)
+	waitFor(t, "the running sync", func() bool { return r.runs.Load() == 2 })
+	r.a.OnHistoryChanged(ctx)
+	close(gate)
+
+	waitFor(t, "the follow-up sync", func() bool { return r.runs.Load() == 3 })
+	waitFor(t, "idle", func() bool { return !r.a.busy.Load() })
+	time.Sleep(80 * time.Millisecond)
+	if n := r.runs.Load(); n != 3 {
+		t.Errorf("runs %d: a change during a sync should be one more sync", n)
+	}
+}

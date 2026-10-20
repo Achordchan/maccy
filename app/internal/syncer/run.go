@@ -51,20 +51,20 @@ func (s *Syncer) Run(ctx context.Context, progress func(Progress), reason string
 		if err := s.MergeAndApply(ctx, d.Manifest, d.LocalFingerprint, progress, reason); err != nil {
 			return res, err
 		}
-		up, err := s.Upload(ctx, progress, reason+"_merge_upload")
+		up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_merge_upload")
 		if err != nil {
 			return res, err
 		}
 		res.Uploaded = up
-		s.persistAfterUpload(ctx, up, &d.Manifest)
+		s.persistAfterUpload(ctx, up, &d.Manifest, fp)
 
 	default: // Upload
-		up, err := s.Upload(ctx, progress, reason)
+		up, fp, err := s.uploadWithFingerprint(ctx, progress, reason)
 		if err != nil {
 			return res, err
 		}
 		res.Uploaded = up
-		s.persistAfterUpload(ctx, up, &d.Manifest)
+		s.persistAfterUpload(ctx, up, &d.Manifest, fp)
 	}
 	return res, nil
 }
@@ -72,20 +72,21 @@ func (s *Syncer) Run(ctx context.Context, progress func(Progress), reason string
 // UploadAfterLocalMutation uploads right after the user changed the history
 // (UploadCloudAfterLocalMutationAsync), without looking at the server first.
 func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.UploadResult, error) {
-	up, err := s.Upload(ctx, nil, "local_mutation")
+	up, fp, err := s.uploadWithFingerprint(ctx, nil, "local_mutation")
 	if err != nil {
 		return nil, err
 	}
-	s.persistAfterUpload(ctx, up, nil)
+	s.persistAfterUpload(ctx, up, nil, fp)
 	return up, nil
 }
 
 // persistAfterUpload is PersistSyncStateAfterUploadAsync: the state to
-// remember is the server's manifest as it is now; when it cannot be fetched,
-// what the upload answered, or the manifest the decision was made on.
-func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadResult, fallback *ManifestInfo) {
-	fp := s.Fingerprint()
-	if m, err := s.ManifestInfo(ctx); err == nil && (m.UpdatedAt != nil || m.Version != "") {
+// remember is the snapshot that was uploaded, with the fingerprint of the
+// items that went into it. The manifest is used only when it still describes
+// that upload: another device may have uploaded in between, and remembering
+// its version next to this history would lose both changes.
+func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadResult, fallback *ManifestInfo, fp string) {
+	if m, err := s.ManifestInfo(ctx); err == nil && uploadIsInManifest(up, m) {
 		s.PersistSyncState(fp, m)
 		return
 	}
@@ -99,6 +100,23 @@ func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadRe
 	default:
 		s.PersistSyncState(fp, ManifestInfo{UpdatedAt: &now})
 	}
+}
+
+// uploadIsInManifest says the server's manifest describes the snapshot this
+// upload wrote, not a later one from another device. The upload's version is
+// authoritative; the hash is the fallback for a server that answers without
+// one.
+func uploadIsInManifest(up *syncclient.UploadResult, m ManifestInfo) bool {
+	if up == nil {
+		return false
+	}
+	if v := strings.TrimSpace(up.Version); v != "" {
+		return v == strings.TrimSpace(m.Version)
+	}
+	if sha := strings.TrimSpace(up.SHA256); sha != "" {
+		return strings.EqualFold(sha, strings.TrimSpace(m.SnapshotSHA256))
+	}
+	return false
 }
 
 // PersistAfterDownload remembers the state after a manual restore.

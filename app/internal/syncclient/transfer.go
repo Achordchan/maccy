@@ -132,10 +132,17 @@ func (c *Client) CheckMissingBlobs(ctx context.Context, accessToken string, hash
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, newAPIError(resp, "check missing blobs failed", false)
 	}
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := decodeObject(b)["missing"]
+	if !ok {
+		return nil, errors.New("check missing blobs: response has no missing list")
+	}
 	var list []json.RawMessage
-	if json.Unmarshal(decodeObject(b)["missing"], &list) != nil {
-		return nil, nil
+	if err := json.Unmarshal(raw, &list); err != nil || list == nil {
+		return nil, errors.New("check missing blobs: malformed missing list")
 	}
 	var missing []string
 	for _, raw := range list {

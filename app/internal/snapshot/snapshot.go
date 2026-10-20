@@ -265,7 +265,15 @@ type cachedFile struct {
 }
 
 func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]Blob) ([]sqlite.Statement, error) {
-	files := cachedFiles(filepath.Join(l.Files(), it.IDN()))
+	idn, err := itemIDN(it.ID)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := itemDir(l.Files(), idn)
+	if err != nil {
+		return nil, err
+	}
+	files := cachedFiles(dir)
 	if len(files) == 0 {
 		var srcs []string
 		for _, p := range it.FilePaths {
@@ -305,6 +313,31 @@ func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]B
 		return nil, errors.New("snapshot: local file payload missing")
 	}
 	return stmts, nil
+}
+
+// itemIDN validates the GUID of an item and returns the folder name the C#
+// client uses (Guid.ToString("N")). A snapshot is not trusted: an id that is
+// not a GUID is refused rather than becoming a path.
+func itemIDN(id string) (string, error) {
+	n := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(id), "-", ""))
+	if len(n) != 32 {
+		return "", fmt.Errorf("snapshot: item id %q is not a GUID", id)
+	}
+	if _, err := hex.DecodeString(n); err != nil {
+		return "", fmt.Errorf("snapshot: item id %q is not a GUID", id)
+	}
+	return n, nil
+}
+
+// itemDir is the cache folder of an item under base, checked to stay there.
+func itemDir(base, idn string) (string, error) {
+	p := filepath.Join(base, idn)
+	rel, err := filepath.Rel(base, p)
+	if err != nil || rel == ".." || filepath.IsAbs(rel) ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("snapshot: item path %q escapes %q", idn, base)
+	}
+	return p, nil
 }
 
 // cachedFiles lists dir/NNNN_name files: the copies the client keeps of the
@@ -365,7 +398,9 @@ type EnsureBlob func(sha256 string) (string, error)
 
 // Read reads a snapshot. Images and files are put in the data folder (from
 // the bytes in the file, or from the blob store, asking ensure for a blob
-// that is not there), and the items point to them.
+// that is not there), and the items point to them. Nothing in the data
+// folder is replaced until the whole snapshot has been read: a snapshot
+// with a missing blob leaves the history and its files as they were.
 func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure EnsureBlob) (ReadResult, error) {
 	if _, err := os.Stat(snapshotPath); err != nil {
 		return ReadResult{}, fmt.Errorf("snapshot not found: %w", err)
@@ -395,6 +430,12 @@ func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure Ensur
 		return ReadResult{}, err
 	}
 
+	staging, err := newImportStaging(l.Root)
+	if err != nil {
+		return ReadResult{}, err
+	}
+	defer staging.cleanup()
+
 	var res ReadResult
 	for i, it := range items {
 		switch it.Kind {
@@ -403,7 +444,7 @@ func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure Ensur
 			if err != nil {
 				return ReadResult{}, err
 			}
-			p, err := writeImportedImage(l, img, ensure)
+			p, err := staging.addImage(l, i, img, ensure)
 			if err != nil {
 				return ReadResult{}, err
 			}
@@ -418,21 +459,16 @@ func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure Ensur
 			if len(files) == 0 {
 				return ReadResult{}, errors.New("snapshot file payload missing")
 			}
-			dir := filepath.Join(l.Files(), it.IDN())
-			if err := os.MkdirAll(dir, 0o755); err != nil {
+			local, err := staging.addFiles(l, i, it, files, ensure)
+			if err != nil {
 				return ReadResult{}, err
 			}
-			var local []string
-			for _, f := range files {
-				dest := filepath.Join(dir, fmt.Sprintf("%04d_%s", f.idx, sanitizeFileName(f.name)))
-				if err := writeImportedFile(l, dest, f, ensure); err != nil {
-					return ReadResult{}, err
-				}
-				res.FileCount++
-				local = append(local, dest)
-			}
+			res.FileCount += len(local)
 			items[i].FilePaths = local
 		}
+	}
+	if err := staging.commit(); err != nil {
+		return ReadResult{}, err
 	}
 	res.Items = items
 
@@ -442,6 +478,185 @@ func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure Ensur
 		}
 	}
 	return res, nil
+}
+
+// importStaging holds the payloads of a snapshot until all of them are
+// there. Only then are they moved into the data folder, so that a failure
+// halfway through (a blob the server does not have, say) cannot replace the
+// files of an item whose history is kept.
+type importStaging struct {
+	dir   string
+	files []stagedFile
+	dirs  []stagedDir
+}
+
+type stagedFile struct{ from, to string }
+
+type stagedDir struct{ from, to string }
+
+func newImportStaging(root string) (*importStaging, error) {
+	// The staging folder is a child of the data folder, so that the moves
+	// below stay on one file system; it is private and removed afterwards.
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, err
+	}
+	dir, err := os.MkdirTemp(root, ".import-")
+	if err != nil {
+		return nil, err
+	}
+	return &importStaging{dir: dir}, nil
+}
+
+func (s *importStaging) cleanup() {
+	if s.dir != "" {
+		_ = os.RemoveAll(s.dir)
+	}
+}
+
+// addImage stages the bytes of an image and returns the path it will have in
+// the images folder.
+func (s *importStaging) addImage(l paths.Layout, n int, img imageRecord, ensure EnsureBlob) (string, error) {
+	data := img.bytes
+	if len(data) == 0 {
+		if strings.TrimSpace(img.sha256) == "" {
+			return "", errors.New("snapshot image blob missing")
+		}
+		blob, err := localBlobPath(l, img.sha256, ensure)
+		if err != nil {
+			return "", err
+		}
+		if data, err = os.ReadFile(blob); err != nil {
+			return "", err
+		}
+	}
+	ext := filepath.Ext(img.fileName)
+	if ext == "" {
+		ext = ".png"
+	}
+	name := fmt.Sprintf("%d_%s%s", time.Now().UnixMilli(), newGUIDN(), ext)
+	from := filepath.Join(s.dir, fmt.Sprintf("image-%d", n))
+	if err := os.WriteFile(from, data, 0o600); err != nil {
+		return "", err
+	}
+	to := filepath.Join(l.Images(), name)
+	s.files = append(s.files, stagedFile{from: from, to: to})
+	return to, nil
+}
+
+// addFiles stages the files of a file-list item and returns where they will
+// be. The whole folder is replaced when the import is committed, so that
+// the files of an older copy of the same item do not survive next to the
+// imported ones.
+func (s *importStaging) addFiles(l paths.Layout, n int, it model.Item, files []fileRecord, ensure EnsureBlob) ([]string, error) {
+	idn, err := itemIDN(it.ID)
+	if err != nil {
+		return nil, err
+	}
+	target, err := itemDir(l.Files(), idn)
+	if err != nil {
+		return nil, err
+	}
+	from := filepath.Join(s.dir, fmt.Sprintf("files-%d", n))
+	if err := os.MkdirAll(from, 0o700); err != nil {
+		return nil, err
+	}
+	var local []string
+	for _, f := range files {
+		name := fmt.Sprintf("%04d_%s", f.idx, sanitizeFileName(f.name))
+		if err := writeFileRecord(l, filepath.Join(from, name), f, ensure); err != nil {
+			return nil, err
+		}
+		local = append(local, filepath.Join(target, name))
+	}
+	s.dirs = append(s.dirs, stagedDir{from: from, to: target})
+	return local, nil
+}
+
+func writeFileRecord(l paths.Layout, dest string, f fileRecord, ensure EnsureBlob) error {
+	if len(f.bytes) > 0 {
+		return os.WriteFile(dest, f.bytes, 0o600)
+	}
+	if strings.TrimSpace(f.sha256) == "" {
+		return errors.New("snapshot file blob missing")
+	}
+	blob, err := localBlobPath(l, f.sha256, ensure)
+	if err != nil {
+		return err
+	}
+	return copyPayload(blob, dest)
+}
+
+func copyPayload(src, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// commit moves the staged payloads into place. If a move fails, the moves
+// that already happened are undone, so that a failure cannot leave an item
+// with a mix of old and new files.
+func (s *importStaging) commit() error {
+	var undo []func()
+	rollback := func() {
+		for i := len(undo) - 1; i >= 0; i-- {
+			undo[i]()
+		}
+	}
+	for _, f := range s.files {
+		if err := os.MkdirAll(filepath.Dir(f.to), 0o755); err != nil {
+			rollback()
+			return err
+		}
+		if err := os.Rename(f.from, f.to); err != nil {
+			rollback()
+			return err
+		}
+		to := f.to
+		undo = append(undo, func() { _ = os.Remove(to) })
+	}
+	for _, d := range s.dirs {
+		if err := os.MkdirAll(filepath.Dir(d.to), 0o755); err != nil {
+			rollback()
+			return err
+		}
+		old := d.to + ".old-" + newGUIDN()
+		hadOld := false
+		if _, err := os.Stat(d.to); err == nil {
+			if err := os.Rename(d.to, old); err != nil {
+				rollback()
+				return err
+			}
+			hadOld = true
+		}
+		if err := os.Rename(d.from, d.to); err != nil {
+			if hadOld {
+				_ = os.Rename(old, d.to)
+			}
+			rollback()
+			return err
+		}
+		to, backup := d.to, old
+		if hadOld {
+			undo = append(undo, func() {
+				_ = os.RemoveAll(to)
+				_ = os.Rename(backup, to)
+			})
+		} else {
+			undo = append(undo, func() { _ = os.RemoveAll(to) })
+		}
+	}
+	return nil
 }
 
 func readItems(ctx context.Context, db *sqlite.DB) ([]model.Item, error) {
@@ -460,8 +675,12 @@ ORDER BY position ASC`)
 		if err != nil {
 			return nil, err
 		}
+		id := strings.ToLower(strings.TrimSpace(cellString(r, 1)))
+		if _, err := itemIDN(id); err != nil {
+			return nil, err
+		}
 		it := model.Item{
-			ID:            strings.ToLower(cellString(r, 1)),
+			ID:            id,
 			Kind:          model.Kind(cellInt(r, 2)),
 			CapturedAt:    model.Time{Time: at},
 			ApproxBytes:   cellInt(r, 4),
@@ -545,66 +764,11 @@ func readFiles(ctx context.Context, db *sqlite.DB, id string, schema int) ([]fil
 	return out, nil
 }
 
-// writeImportedImage stores an image the way the C# client does: in the
-// images folder as <unix ms>_<guid>.<ext>.
-func writeImportedImage(l paths.Layout, img imageRecord, ensure EnsureBlob) (string, error) {
-	data := img.bytes
-	if len(data) == 0 {
-		if strings.TrimSpace(img.sha256) == "" {
-			return "", errors.New("snapshot image blob missing")
-		}
-		blob, err := localBlobPath(l, img.sha256, ensure)
-		if err != nil {
-			return "", err
-		}
-		if data, err = os.ReadFile(blob); err != nil {
-			return "", err
-		}
-	}
-	ext := filepath.Ext(img.fileName)
-	if ext == "" {
-		ext = ".png"
-	}
-	name := fmt.Sprintf("%d_%s%s", time.Now().UnixMilli(), newGUIDN(), ext)
-	if err := os.MkdirAll(l.Images(), 0o755); err != nil {
-		return "", err
-	}
-	p := filepath.Join(l.Images(), name)
-	return p, os.WriteFile(p, data, 0o644)
-}
-
-func writeImportedFile(l paths.Layout, dest string, f fileRecord, ensure EnsureBlob) error {
-	if len(f.bytes) > 0 {
-		return os.WriteFile(dest, f.bytes, 0o644)
-	}
-	if strings.TrimSpace(f.sha256) == "" {
-		return errors.New("snapshot file blob missing")
-	}
-	blob, err := localBlobPath(l, f.sha256, ensure)
-	if err != nil {
-		return err
-	}
-	in, err := os.Open(blob)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
-}
-
 // localBlobPath finds a blob in the local store, or asks ensure for it.
 func localBlobPath(l paths.Layout, sha256 string, ensure EnsureBlob) (string, error) {
 	local := l.BlobPath(sha256)
 	if local == "" {
-		return "", errors.New("snapshot: blob hash is empty")
+		return "", errors.New("snapshot: blob hash is not a SHA-256")
 	}
 	if isFile(local) {
 		return local, nil

@@ -1,0 +1,167 @@
+package snapshot
+
+import (
+	"database/sql"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"klip/internal/paths"
+)
+
+// newSnapshot builds a schema 2 snapshot with raw SQL, so that a test can
+// put in it what Export never writes (a forged item id, a forged blob hash).
+func newSnapshot(t *testing.T, fill func(exec func(string, ...any))) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "snapshot.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
+	exec(`CREATE TABLE settings (json TEXT NOT NULL)`)
+	exec(`CREATE TABLE items (position INTEGER NOT NULL, id TEXT PRIMARY KEY, kind INTEGER NOT NULL, capturedAt TEXT NOT NULL, approxBytes INTEGER NOT NULL, text TEXT, filePathsJson TEXT, pinned INTEGER NOT NULL, copyCount INTEGER NOT NULL, firstCapturedAt TEXT, note TEXT, contentHash TEXT, sourceAppName TEXT, sourceAppPath TEXT)`)
+	exec(`CREATE TABLE item_images (itemId TEXT PRIMARY KEY, fileName TEXT NOT NULL, blobSha256 TEXT, sizeBytes INTEGER, bytes BLOB)`)
+	exec(`CREATE TABLE item_files (itemId TEXT NOT NULL, idx INTEGER NOT NULL, fileName TEXT NOT NULL, blobSha256 TEXT, sizeBytes INTEGER, bytes BLOB, PRIMARY KEY(itemId, idx))`)
+	exec(`INSERT INTO meta VALUES ('schema', '2')`)
+	fill(exec)
+	return path
+}
+
+func insertItem(exec func(string, ...any), position int, id string, kind int, filePathsJSON any) {
+	exec(`INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		position, id, kind, "2026-05-30T12:10:00.0000000+00:00", 3, nil, filePathsJSON, 0, 1, nil, nil, nil, nil, nil)
+}
+
+// An item id is a GUID, never a path: a snapshot that says otherwise is
+// refused before anything is written.
+func TestReadRefusesAnItemIDThatIsAPath(t *testing.T) {
+	root := t.TempDir()
+	data := filepath.Join(root, "data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{
+		"../../.config/autostart",
+		"..",
+		"0f8fad5b-d9cb-469f-a165-70867728950e/../../evil",
+		"",
+		"not a guid at all",
+	} {
+		t.Run(id, func(t *testing.T) {
+			snap := newSnapshot(t, func(exec func(string, ...any)) {
+				insertItem(exec, 0, id, 2, `["C:\\src\\a.txt"]`)
+				exec(`INSERT INTO item_files VALUES (?,0,'evil.desktop',NULL,3,?)`, id, []byte("payload"))
+			})
+			_, err := Read(ctx, paths.Layout{Root: data}, snap, nil)
+			if err == nil || !strings.Contains(err.Error(), "not a GUID") {
+				t.Fatalf("id %q: %v", id, err)
+			}
+		})
+	}
+	if _, err := os.Stat(filepath.Join(root, ".config")); err == nil {
+		t.Error("a path outside the data folder was created")
+	}
+}
+
+// A blob hash is a SHA-256, never a path either.
+func TestReadRefusesABlobHashThatIsAPath(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	snap := newSnapshot(t, func(exec func(string, ...any)) {
+		insertItem(exec, 0, "7c9e6679-7425-40de-944b-e07fc1f90ae7", 1, nil)
+		exec(`INSERT INTO item_images VALUES (?, 'pic.png', ?, 3, NULL)`,
+			"7c9e6679-7425-40de-944b-e07fc1f90ae7", "../../../../tmp/evil")
+	})
+	_, err := Read(ctx, l, snap, nil)
+	if err == nil || !strings.Contains(err.Error(), "blob hash") {
+		t.Fatalf("a forged blob hash: %v", err)
+	}
+}
+
+// The payloads are staged first: when a blob is missing, the history of the
+// item and the files of its cache are as they were.
+func TestReadLeavesTheCacheAloneWhenAPayloadIsMissing(t *testing.T) {
+	const id3 = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	l := paths.Layout{Root: t.TempDir()}
+	old := filepath.Join(l.Files(), strings.ReplaceAll(id3, "-", ""))
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, "0000_old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap := newSnapshot(t, func(exec func(string, ...any)) {
+		// An image that carries its bytes, so that it is staged before the
+		// missing file blob fails the import.
+		insertItem(exec, 0, "7c9e6679-7425-40de-944b-e07fc1f90ae7", 1, nil)
+		exec(`INSERT INTO item_images VALUES (?, 'pic.png', NULL, 3, ?)`,
+			"7c9e6679-7425-40de-944b-e07fc1f90ae7", []byte("img"))
+		insertItem(exec, 1, id3, 2, `["C:\\src\\a.txt"]`)
+		exec(`INSERT INTO item_files VALUES (?,0,'a.txt',?,3,NULL)`, id3, strings.Repeat("a", 64))
+	})
+	if _, err := Read(ctx, l, snap, nil); err == nil || !strings.Contains(err.Error(), "blob missing") {
+		t.Fatalf("a missing blob: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(old, "0000_old.txt")); err != nil || string(b) != "old" {
+		t.Errorf("the old cache file: %q %v", b, err)
+	}
+	if ents, err := os.ReadDir(l.Images()); err == nil && len(ents) != 0 {
+		t.Errorf("an image was committed before the import failed: %v", ents)
+	}
+	ents, err := os.ReadDir(l.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".import-") {
+			t.Errorf("staging folder left behind: %s", e.Name())
+		}
+	}
+}
+
+// A directory of an item is replaced by the imported files, not overlaid:
+// files of an older copy must not come back in the next export.
+func TestReadReplacesTheFilesOfAnItem(t *testing.T) {
+	const id3 = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	l := paths.Layout{Root: t.TempDir()}
+	dir := filepath.Join(l.Files(), strings.ReplaceAll(id3, "-", ""))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"0000_old.txt", "0001_gone.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("old"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snap := newSnapshot(t, func(exec func(string, ...any)) {
+		insertItem(exec, 0, id3, 2, `["C:\\src\\new.txt"]`)
+		exec(`INSERT INTO item_files VALUES (?,0,'new.txt',NULL,3,?)`, id3, []byte("new"))
+	})
+	res, err := Read(ctx, l, snap, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 1 || len(res.Items[0].FilePaths) != 1 {
+		t.Fatalf("items %+v", res.Items)
+	}
+	want := filepath.Join(dir, "0000_new.txt")
+	if res.Items[0].FilePaths[0] != want {
+		t.Errorf("path %q, want %q", res.Items[0].FilePaths[0], want)
+	}
+	if b, err := os.ReadFile(want); err != nil || string(b) != "new" {
+		t.Errorf("imported file %q %v", b, err)
+	}
+	for _, name := range []string{"0000_old.txt", "0001_gone.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("the old cache file %s survived: %v", name, err)
+		}
+	}
+}

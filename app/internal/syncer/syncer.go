@@ -59,8 +59,10 @@ func (s *Syncer) connection(ctx context.Context) (string, error) {
 	}
 	nowMs := s.cfg.Now().UnixMilli()
 	if cur.AuthExpiresAtUnixMs <= nowMs+60_000 {
-		if _, err := s.session.Refresh(ctx); err != nil && ctx.Err() != nil {
-			return "", ctx.Err()
+		// A temporary failure must reach the caller as it is: the tokens are
+		// still there, so "not logged in" would be wrong.
+		if _, err := s.session.Refresh(ctx); err != nil {
+			return "", err
 		}
 	}
 	cur = s.settings()
@@ -101,7 +103,11 @@ func (s *Syncer) refreshAndRetry(ctx context.Context, token string, call func(to
 	if !isAuthError(err) {
 		return token, err
 	}
-	if ok, rerr := s.session.Refresh(ctx); rerr != nil || !ok {
+	ok, rerr := s.session.Refresh(ctx)
+	if rerr != nil {
+		return token, rerr
+	}
+	if !ok {
 		return token, err
 	}
 	token = s.bearer()
@@ -211,51 +217,59 @@ func nonEmpty(v string) *string {
 // Upload exports the history and sends it, with the blobs the server lacks.
 // It sends nothing when the snapshot is the one the server already has.
 func (s *Syncer) Upload(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, error) {
+	up, _, err := s.uploadWithFingerprint(ctx, progress, reason)
+	return up, err
+}
+
+// uploadWithFingerprint is Upload, and also says which history went into the
+// snapshot: a change made while the upload ran must not be remembered as
+// uploaded.
+func (s *Syncer) uploadWithFingerprint(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, string, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	return s.upload(ctx, progress, reason)
 }
 
-func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, error) {
+func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason string) (res *syncclient.UploadResult, fp string, err error) {
 	started := s.cfg.Now()
 	report(progress, "prepare_local", "准备本地数据", 30)
 	token, err := s.connection(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	path, err := s.tempSnapshotPath()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer tryDelete(path)
 
 	items := s.cfg.History.Items()
+	fp = Fingerprint(items)
 	st := s.settings()
 	s.timing("upload", "snapshot_source_ready", started, fmt.Sprintf("%s;items=%d", reason, len(items)))
 
 	report(progress, "export_snapshot", "导出快照", 52)
 	exp, err := snapshot.Export(ctx, s.cfg.Layout, path, items, st)
 	if err != nil {
-		return nil, err
+		return nil, fp, err
 	}
 	s.timing("upload", "export_snapshot", started, fmt.Sprintf("%s;size=%d;sha256=%s;blobs=%d", reason, exp.Size, exp.SHA256, len(exp.Blobs)))
 
 	if last := strings.TrimSpace(model.Str(st.SyncLastRemoteSha256)); last != "" && strings.EqualFold(last, exp.SHA256) {
 		s.timing("upload", "skip_upload_same_sha", started, reason)
 		size := exp.Size
-		return &syncclient.UploadResult{Version: model.Str(st.SyncLastRemoteVersion), SHA256: exp.SHA256, Size: &size}, nil
+		return &syncclient.UploadResult{Version: model.Str(st.SyncLastRemoteVersion), SHA256: exp.SHA256, Size: &size}, fp, nil
 	}
 
 	if len(exp.Blobs) > 0 {
 		report(progress, "upload_blobs", "上传二进制对象", 68)
 		if token, err = s.uploadMissingBlobsWithRefresh(ctx, token, exp, started, reason); err != nil {
-			return nil, err
+			return nil, fp, err
 		}
 	}
 
 	report(progress, "upload_snapshot", "上传快照", 84)
-	var res *syncclient.UploadResult
 	call := func(t string) error {
 		var e error
 		res, e = s.cfg.Client.UploadSnapshot(ctx, t, path)
@@ -264,28 +278,32 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason str
 	err = call(token)
 	if err != nil {
 		if isSubscriptionExpired(err) {
-			return nil, ErrSubscriptionExpired
+			return nil, fp, ErrSubscriptionExpired
 		}
 		if !isAuthError(err) {
-			return nil, err
+			return nil, fp, err
 		}
-		if ok, rerr := s.session.Refresh(ctx); rerr != nil || !ok {
-			return nil, err
+		ok, rerr := s.session.Refresh(ctx)
+		if rerr != nil {
+			return nil, fp, rerr
+		}
+		if !ok {
+			return nil, fp, err
 		}
 		token = s.bearer()
 		if len(exp.Blobs) > 0 {
 			if token, err = s.uploadMissingBlobsWithRefresh(ctx, token, exp, started, reason+";after_refresh"); err != nil {
-				return nil, err
+				return nil, fp, err
 			}
 		}
 		if err = call(token); err != nil {
-			return nil, err
+			return nil, fp, err
 		}
 		s.timing("upload", "upload_snapshot_after_refresh", started, reason)
-		return res, nil
+		return res, fp, nil
 	}
 	s.timing("upload", "upload_snapshot", started, reason)
-	return res, nil
+	return res, fp, nil
 }
 
 func (s *Syncer) uploadMissingBlobsWithRefresh(ctx context.Context, token string, exp snapshot.ExportResult, started time.Time, reason string) (string, error) {
@@ -293,7 +311,11 @@ func (s *Syncer) uploadMissingBlobsWithRefresh(ctx context.Context, token string
 	if err == nil || !isAuthError(err) {
 		return token, err
 	}
-	if ok, rerr := s.session.Refresh(ctx); rerr != nil || !ok {
+	ok, rerr := s.session.Refresh(ctx)
+	if rerr != nil {
+		return token, rerr
+	}
+	if !ok {
 		return token, err
 	}
 	token = s.bearer()
@@ -452,7 +474,11 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	if err != nil {
 		return err
 	}
-	s.ensureLocalBackupBlobs(ctx, bexp)
+	if err := s.ensureLocalBackupBlobs(ctx, bexp); err != nil {
+		// The local history is about to be replaced: a backup that cannot be
+		// read back is not a backup, so stop before anything is changed.
+		return fmt.Errorf("pre-merge backup: %w", err)
+	}
 	s.timing("merge", "backup_snapshot", started, fmt.Sprintf("%s;path=%s;items=%d;size=%d", reason, backup, len(local), bexp.Size))
 
 	path, err := s.tempSnapshotPath()
@@ -501,11 +527,12 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 }
 
 // ensureLocalBackupBlobs copies the files the backup refers to into the blob
-// store, so that the backup can be read back later.
-func (s *Syncer) ensureLocalBackupBlobs(ctx context.Context, exp snapshot.ExportResult) {
+// store, so that the backup can be read back later. It fails when a copy
+// fails: the merge must not go on with a backup that refers to nothing.
+func (s *Syncer) ensureLocalBackupBlobs(ctx context.Context, exp snapshot.ExportResult) error {
 	for _, b := range exp.Blobs {
-		if ctx.Err() != nil {
-			return
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		target := s.cfg.Layout.BlobPath(b.SHA256)
 		if target == "" || !isFile(b.SourcePath) || isFile(target) {
@@ -514,12 +541,18 @@ func (s *Syncer) ensureLocalBackupBlobs(ctx context.Context, exp snapshot.Export
 		if a, _ := filepath.Abs(b.SourcePath); strings.EqualFold(a, mustAbs(target)) {
 			continue
 		}
-		_ = copyNew(b.SourcePath, target)
+		if err := copyNew(b.SourcePath, target); err != nil {
+			return fmt.Errorf("blob %s: %w", b.SHA256, err)
+		}
 	}
+	return nil
 }
 
-func copyNew(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+// copyNew copies src to dst, which must not exist yet. A file that cannot be
+// written or closed is removed, so that a later backup cannot mistake a
+// partial file for a complete blob.
+func copyNew(src, dst string) (err error) {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
 	in, err := os.Open(src)
@@ -527,15 +560,20 @@ func copyNew(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
+	defer func() {
+		if cerr := out.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			_ = os.Remove(dst)
+		}
+	}()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 // ---- small helpers
@@ -562,10 +600,14 @@ func (s *Syncer) tempSnapshotPath() (string, error) {
 
 func (s *Syncer) preMergeBackupPath() (string, error) {
 	dir := filepath.Join(s.cfg.Layout.Root, "sync", "backups")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "pre-merge-"+s.cfg.Now().Format("20060102-150405-000")+".sqlite"), nil
+	// ".000" is the milliseconds of the layout, not literal text. The guid
+	// keeps two backups of the same millisecond apart; Export deletes a file
+	// that is already there.
+	name := "pre-merge-" + s.cfg.Now().Format("20060102-150405.000") + "-" + guidN()[:8] + ".sqlite"
+	return filepath.Join(dir, name), nil
 }
 
 func guidN() string {

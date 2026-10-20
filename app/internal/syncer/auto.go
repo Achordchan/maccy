@@ -26,6 +26,9 @@ type Auto struct {
 	busy        atomic.Bool
 	suppressed  atomic.Bool
 	initialDone atomic.Bool
+	// pending says a history change came while a sync was running; another
+	// sync follows when it ends, so that the change is not left unsynced.
+	pending atomic.Bool
 
 	mu    sync.Mutex
 	timer *time.Timer
@@ -61,11 +64,11 @@ func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {
 		return
 	}
 	go func() {
-		defer a.busy.Store(false)
 		if !a.CanSync() {
 			if manual && a.Done != nil {
 				a.Done(reason, manual, ErrNotLoggedIn)
 			}
+			a.busy.Store(false)
 			return
 		}
 		err := a.Run(ctx, reason, manual)
@@ -74,6 +77,12 @@ func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {
 		}
 		if a.Done != nil {
 			a.Done(reason, manual, err)
+		}
+		a.busy.Store(false)
+		// A change that came while the sync was running was remembered:
+		// sync it now. A suppressed change (the sync's own write) is not.
+		if a.pending.CompareAndSwap(true, false) && !a.suppressed.Load() && a.CanSync() {
+			a.Trigger(ctx, "auto", false)
 		}
 	}()
 }
@@ -85,9 +94,15 @@ func (a *Auto) Startup(ctx context.Context) { a.Trigger(ctx, "startup", false) }
 func (a *Auto) OnRemoteUpdated(ctx context.Context) { a.Trigger(ctx, "remote_event", false) }
 
 // OnHistoryChanged is for each change of the history. A sync follows after
-// the pause, unless another change comes first.
+// the pause, unless another change comes first. A change that arrives while
+// a sync is running makes that sync run again when it ends: the sync has
+// already read the history it uploaded.
 func (a *Auto) OnHistoryChanged(ctx context.Context) {
-	if !a.initialDone.Load() || a.suppressed.Load() || a.busy.Load() || !a.CanSync() {
+	if !a.initialDone.Load() || a.suppressed.Load() || !a.CanSync() {
+		return
+	}
+	if a.busy.Load() {
+		a.pending.Store(true)
 		return
 	}
 	a.mu.Lock()

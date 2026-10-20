@@ -49,11 +49,24 @@ func (l Layout) Files() string    { return filepath.Join(l.Root, "files") }
 func (l Layout) Blobs() string    { return filepath.Join(l.Root, "blobs") }
 
 // BlobPath is where a blob with this SHA-256 lives locally:
-// blobs/aa/bb/<sha>.blob, the hash in lower case.
+// blobs/aa/bb/<sha>.blob, the hash in lower case. Anything that is not a
+// SHA-256 has no path: a hash in a crafted snapshot must not become one.
 func (l Layout) BlobPath(sha256 string) string {
 	n := strings.ToLower(strings.TrimSpace(sha256))
-	if len(n) < 4 {
+	if !isSHA256(n) {
 		return ""
 	}
 	return filepath.Join(l.Blobs(), n[:2], n[2:4], n+".blob")
+}
+
+func isSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }

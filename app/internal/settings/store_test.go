@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -113,5 +114,61 @@ func TestMarshalOfDefaults(t *testing.T) {
 	got, _ := model.DefaultSettings().Marshal()
 	if string(got) != want {
 		t.Errorf("\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// The file holds the tokens: it and its folder are private to this user, and
+// a save tightens what an older version left world-readable.
+func TestSavedSettingsArePrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits")
+	}
+	dir := filepath.Join(t.TempDir(), "Klip")
+	path := filepath.Join(dir, "settings.json")
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr("access")
+	s.AuthRefreshToken = model.Ptr("refresh")
+	if err := Save(path, s); err != nil {
+		t.Fatal(err)
+	}
+	checkMode(t, dir, 0o700)
+	checkMode(t, path, 0o600)
+
+	// What 1.0.10 with a 022 umask left behind: reading the file tightens it
+	// even before the next save.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatal(err)
+	}
+	checkMode(t, dir, 0o700)
+	checkMode(t, path, 0o600)
+
+	// And so does a save.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, s); err != nil {
+		t.Fatal(err)
+	}
+	checkMode(t, dir, 0o700)
+	checkMode(t, path, 0o600)
+}
+
+func checkMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Mode().Perm(); got != want {
+		t.Errorf("%s: mode %04o, want %04o", path, got, want)
 	}
 }
