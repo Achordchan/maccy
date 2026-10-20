@@ -639,3 +639,25 @@ func TestExportMatchesMigratedDocumentsByPosition(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Read creates the data root when the layout is fresh.
+func TestReadCreatesAMissingRoot(t *testing.T) {
+	src := paths.Layout{Root: t.TempDir()}
+	item := model.Item{ID: "0f8fad5b-d9cb-469f-a165-70867728950e", Kind: model.KindText, CapturedAt: model.Time{Time: time.Now()}, Text: model.Ptr("x"), CopyCount: 1}
+	snap := filepath.Join(src.Root, "snapshot.sqlite")
+	if _, err := Export(ctx, src, snap, []model.Item{item}, model.DefaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	l := paths.Layout{Root: filepath.Join(t.TempDir(), "missing", "root")}
+	if err := os.MkdirAll(filepath.Dir(l.Root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	res, applied, err := Read(ctx, l, snap, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied.Commit()
+	if len(res.Items) != 1 {
+		t.Errorf("%+v", res.Items)
+	}
+}

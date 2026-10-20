@@ -344,31 +344,35 @@ func (s *Syncer) pendingMergePath() string {
 	return filepath.Join(s.cfg.Layout.Root, "sync", "pending-merge.json")
 }
 
-func (s *Syncer) writePendingMerge(p pendingMergeState) {
+func (s *Syncer) writePendingMerge(p pendingMergeState) error {
 	dir := filepath.Dir(s.pendingMergePath())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return
+		return err
 	}
 	b, err := json.Marshal(p)
 	if err != nil {
-		return
+		return err
 	}
 	f, err := os.CreateTemp(dir, "pending-merge.json.tmp-*")
 	if err != nil {
-		return
+		return err
 	}
 	tmp := f.Name()
 	if _, err := f.Write(b); err != nil {
 		f.Close()
 		os.Remove(tmp)
-		return
+		return err
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
-		return
+		return err
 	}
 	_ = os.Chmod(tmp, 0o600)
-	_ = os.Rename(tmp, s.pendingMergePath())
+	if err := os.Rename(tmp, s.pendingMergePath()); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func (s *Syncer) clearPendingMerge() { _ = os.Remove(s.pendingMergePath()) }
@@ -381,7 +385,7 @@ func (s *Syncer) markPendingMergeCommitted() {
 		return
 	}
 	p.Committed = true
-	s.writePendingMerge(p)
+	_ = s.writePendingMerge(p)
 }
 
 func (s *Syncer) readPendingMerge() (pendingMergeState, bool) {
@@ -826,14 +830,28 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	if merged {
 		fingerprint = pendingFingerprint(preMerge, after)
 	}
-	s.writePendingMerge(pendingMergeState{
+	if werr := s.writePendingMerge(pendingMergeState{
 		Fingerprint: fingerprint,
 		Version:     sum,
 		SHA256:      sum,
 		Before:      Fingerprint(before),
 		After:       after,
 		Account:     account,
-	})
+	}); werr != nil {
+		rctx, rcancel := cleanupContext()
+		rerr := s.rollbackMutation(rctx, before, applied, oldSettings, limitPruned)
+		if rerr == nil {
+			rerr = s.cfg.Flush(rctx)
+		}
+		rcancel()
+		if rerr == nil && moves != nil {
+			moves.Rollback()
+		}
+		if rerr != nil {
+			return DownloadResult{}, fmt.Errorf("%w (history rollback failed: %v)", werr, rerr)
+		}
+		return DownloadResult{}, werr
+	}
 	// What the limits pruned is unreferenced too, including payloads this
 	// import just installed.
 	cleanup := append(append([]model.Item(nil), before...), applied...)
@@ -878,6 +896,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		moves.MarkCommitted()
 	}
 	if s.accountChanged(account) {
+		s.clearPendingMerge()
 		// The session changed while the new history was being saved: take
 		// this account's items out again and save that, so the new session
 		// cannot publish them later.
@@ -1112,7 +1131,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		updatedAt = model.FormatO(*basis.UpdatedAt)
 	}
 	after := s.Fingerprint()
-	s.writePendingMerge(pendingMergeState{
+	if werr := s.writePendingMerge(pendingMergeState{
 		Fingerprint: pendingFingerprint(preMergeFingerprint, after),
 		Version:     basis.Version,
 		UpdatedAt:   updatedAt,
@@ -1121,7 +1140,21 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		Before:      Fingerprint(before),
 		After:       after,
 		Account:     account,
-	})
+	}); werr != nil {
+		rctx, rcancel := cleanupContext()
+		rerr := s.rollbackMutation(rctx, before, merged, localSettings, limitPruned)
+		if rerr == nil {
+			rerr = s.cfg.Flush(rctx)
+		}
+		rcancel()
+		if rerr == nil && moves != nil {
+			moves.Rollback()
+		}
+		if rerr != nil {
+			return fmt.Errorf("%w (history rollback failed: %v)", werr, rerr)
+		}
+		return werr
+	}
 	report(progress, "persist_local", "persist local", 90)
 	if err := s.cfg.Flush(ctx); err != nil {
 		s.clearPendingMerge()

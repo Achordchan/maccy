@@ -467,6 +467,9 @@ type EnsureBlob func(sha256 string) (string, error)
 // The old cache of an item is not replaced in place, so a failed save leaves
 // the previous history and its files intact.
 func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure EnsureBlob) (ReadResult, *AppliedPayloads, error) {
+	if err := os.MkdirAll(l.Root, 0o700); err != nil {
+		return ReadResult{}, nil, err
+	}
 	root, err := os.MkdirTemp(l.Root, ".read-*")
 	if err != nil {
 		return ReadResult{}, nil, err

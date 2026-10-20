@@ -1446,8 +1446,9 @@ func TestDownloadDiscardsItemsWhenTheSessionChangesDuringFlush(t *testing.T) {
 	s.AuthRefreshToken = model.Ptr("ra")
 	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
 	h := &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}}
+	l := paths.Layout{Root: t.TempDir()}
 	syn := New(Config{
-		Layout: paths.Layout{Root: t.TempDir()},
+		Layout: l,
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
 			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
@@ -1470,6 +1471,9 @@ func TestDownloadDiscardsItemsWhenTheSessionChangesDuringFlush(t *testing.T) {
 	}
 	if len(h.items) != 0 {
 		t.Errorf("the old account's items were saved for the new session: %v", h.items)
+	}
+	if _, err := os.Stat(filepath.Join(l.Root, "sync", "pending-merge.json")); !os.IsNotExist(err) {
+		t.Errorf("the pending record of the discarded download survived: %v", err)
 	}
 }
 
@@ -2745,5 +2749,32 @@ func TestOrdinaryDownloadLeavesARecoverableBaseline(t *testing.T) {
 	syn.recoverPendingMerge(context.Background(), "")
 	if got := model.Str(s.SyncLastLocalFingerprint); got != dr.Fingerprint {
 		t.Errorf("fingerprint %q, want %q", got, dr.Fingerprint)
+	}
+}
+
+// A failed pending-state write stops the download and rolls the history back.
+func TestDownloadFailsWhenThePendingRecordCannotBeWritten(t *testing.T) {
+	remote := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "remote")
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{remote}))
+	defer srv.Close()
+	l := paths.Layout{Root: t.TempDir()}
+	syncDir := filepath.Join(l.Root, "sync")
+	if err := os.MkdirAll(filepath.Join(syncDir, "pending-merge.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h := &unitHistory{}
+	syn := New(Config{
+		Layout:   l,
+		Settings: syncclient.Settings{Get: func() model.Settings { return *signedIn(model.DefaultSettings()) }, Update: func(f func(*model.Settings)) {}},
+		History:  h,
+		Client:   syncclient.New(srv.URL),
+		BaseURL:  srv.URL,
+		Now:      time.Now,
+	})
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); err == nil {
+		t.Fatal("the download went on without its recovery record")
+	}
+	if len(h.items) != 0 {
+		t.Errorf("the history was not rolled back: %+v", h.items)
 	}
 }
