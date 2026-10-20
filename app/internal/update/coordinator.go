@@ -245,7 +245,7 @@ func (c *Coordinator) Apply(ctx context.Context) {
 	}
 
 	if !c.Supported {
-		fail("当前系统不能自动更新，请到发布页下载新版本：" + strings.TrimSpace(firstNonEmpty(info.InstallerURL, info.PackageURL)))
+		fail("当前系统不能自动更新，请到发布页下载新版本：" + strings.TrimSpace(c.manualURL(info)))
 		return
 	}
 	progress := func(read, total int64) {
@@ -312,6 +312,19 @@ func (c *Coordinator) Apply(ctx context.Context) {
 // can run: the installer of the release tool is for 64-bit Intel/AMD Windows.
 func (c *Coordinator) hasInstaller(i *Info) bool {
 	return strings.TrimSpace(i.InstallerURL) != "" && strings.EqualFold(c.Client.runtime(), "win-x64")
+}
+
+// manualURL is what a user who cannot be updated automatically is sent to: the
+// package made for this system when the release has one, else the installer
+// (which is for Windows), else whatever there is.
+func (c *Coordinator) manualURL(i *Info) string {
+	if i.HasSupportedPackage(c.Client.runtime()) {
+		return strings.TrimSpace(firstNonEmpty(i.PackageURL, i.InstallerURL))
+	}
+	if c.hasInstaller(i) {
+		return strings.TrimSpace(i.InstallerURL)
+	}
+	return strings.TrimSpace(firstNonEmpty(i.PackageURL, i.InstallerURL))
 }
 
 func (c *Coordinator) installDirWritable() bool {

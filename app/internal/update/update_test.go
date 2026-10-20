@@ -620,3 +620,15 @@ func TestFailedPreparationLeavesNothingStaged(t *testing.T) {
 		t.Fatalf("a failed package left %d staging folder(s)", len(left))
 	}
 }
+
+func TestManualUpdateLinkIsForThisSystem(t *testing.T) {
+	info := &Info{InstallerURL: "https://x/setup.exe", PackageKind: "zip", PackageRuntime: "linux-x64", PackageURL: "https://x/linux.zip", PackageSHA256: "AA"}
+	linux := &Coordinator{Client: &Client{Runtime: "linux-x64"}}
+	if got := linux.manualURL(info); got != "https://x/linux.zip" {
+		t.Errorf("a Linux user was sent to %q", got)
+	}
+	win := &Coordinator{Client: &Client{Runtime: "win-x64"}}
+	if got := win.manualURL(info); got != "https://x/setup.exe" {
+		t.Errorf("a Windows user without a package for it was sent to %q", got)
+	}
+}
