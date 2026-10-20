@@ -10,6 +10,7 @@
 | `internal/history` | `history.json` 读写；启动时按 `Normalize` 丢弃内容已不存在的条目、校正大小 |
 | `internal/snapshot` | 同步快照（SQLite，schema 2，兼容读 schema 1）的导出与导入 |
 | `internal/history`（服务） | 剪贴板历史列表（C# `ClipboardHistoryService` + `ClipboardPersistenceService`）：去重合并、置顶、备注、拖动排序、按条数/体积清理、被移出的条目的图片和文件缓存一起删除、`ReplaceAll`、防抖保存 `history.json` |
+| `internal/platform` | 系统相关的部分：MyGo 剪贴板接到 `capture.Clipboard`、剪贴板变化轮询（`Watcher`）、变化计数器、前台应用识别 |
 | `internal/capture` | 把剪贴板内容变成历史条目（`ClipboardCaptureService`）和把条目写回剪贴板（`ClipboardApplyService`）；剪贴板本身在接口后面，平台适配（MyGo）以后接 |
 | `internal/syncer` | 同步编排（C# `SyncService` 加上调用它的主窗口/偏好设置里的流程）：何时上传、本地与远端谁新、合并、冲突、`SyncLast*` 字段维护、指纹、错误文案、后台同步的触发时机 |
 | `internal/syncclient` | 同步服务器（nas-agent-py）的客户端：账号（登录/注册/刷新/改密码）、订阅状态与卡密、manifest、快照与 blob 的 gzip 上传下载、SSE 事件流，以及保存登录态并自动续期的 `Session`、断线重连的 `Watch` |
@@ -130,3 +131,26 @@ KLIP_NAS_PYTHON=/tmp/nasvenv/bin/python go test ./...   # 加上对真实 nas-ag
 与 C# 的差别：C# 里每次删除都发一次“已变化”通知，Go 里一次操作只发一次；Windows 的 DIB 手工转 BMP 没有移植（MyGo 的 `ReadImage` 已经处理）；“其他格式里找图片”的兜底只在剪贴板里没有文本和文件时才试，避免每次变化都多读一遍。
 
 测试里直接读 C# 源码核对：历史的默认限额、危险扩展名列表、哈希前缀、尝试的顺序、250 毫秒、`NNNN_名字` 的缓存命名。
+
+## 平台适配（internal/platform）
+
+- **`Clipboard`**：`capture.Clipboard` 的 MyGo 实现。MyGo 把每次剪贴板调用切到主线程，所以可以在轮询协程里用，但必须等应用就绪（`App.WhenReady`）之后。写图片时如果给了文件路径，同一条目里同时提供 PNG 和文件（粘贴到文件夹得到文件，粘贴到编辑器得到图片）。
+- **`Watcher` + `ChangeSeq`**：每 400 毫秒问一次变化计数器（macOS：`NSPasteboard.changeCount`；Windows：`GetClipboardSequenceNumber`），数字变了才调 `OnChange`。第一次只记数，所以启动前剪贴板里的内容不会被收进来（与 C# 一致）。没有计数器的平台（Linux）每次都看，靠捕获规则丢掉与最新一条相同的内容。C# 用的是 `AddClipboardFormatListener` 的事件；Go 这边用轮询，延迟最多 400 毫秒，空闲约 0.03% CPU（阶段 1 实测）。
+- **`ForegroundApp`**：来源应用。Windows 照 `TryGetForegroundApp`：前台窗口的进程，路径加不带扩展名的文件名；读不到路径的系统进程返回空（C# 会给出进程名，没有移植）。macOS 用 `NSWorkspace.frontmostApplication` 的本地化名称和 bundle 路径。Linux 返回空。
+
+### 测试
+
+- `watcher_test.go`：计数规则、无计数器时的退化、`Run` 的启动和停止（`-race`）。
+- `real_test.go`：**真实系统剪贴板**的端到端（macOS 本机跑过，连续三次通过）：文本、图片、文件的写入和读回；从另一个进程（`pbcopy`）复制 → 轮询 → 捕获 → 入历史；重复内容合并；应用到剪贴板后不会被再收进来；缓存文件；前台应用；计数器。这些测试会**覆盖剪贴板内容**，所以默认跳过，需要 `KLIP_REAL_CLIPBOARD=1`；测试结束会尽量把原来的文本放回去。它们在测试里启动一个无窗口的 MyGo 应用（`TestMain`）。
+
+```bash
+cd app && KLIP_REAL_CLIPBOARD=1 go test -count=1 -race ./internal/platform/
+```
+
+变异检查：去掉计数相等判断、去掉图片同时给文件、去掉应用时的“自己写的”标记，测试都能抓到。
+
+### 没有验证的
+
+- Windows 和 Linux 只验证了能编译（`GOOS=windows|linux go vet`）：`GetClipboardSequenceNumber`、`QueryFullProcessImageNameW`、Windows 上 MyGo 的文件和图片格式都没在真机上跑过。
+- macOS 上用 `osascript` 复制文件得到的格式里没有文本，所以先看文本的顺序没问题；**Finder 里真正按 Cmd+C 复制文件**会不会同时带文件名文本没有验证。如果带，会被当成文本收下，需要在 macOS 上把“文件优先”做成平台规则。
+- 前台应用是在复制发生之后才问的，所以复制后马上切换窗口会记成新窗口（C# 同样）。
