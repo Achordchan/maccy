@@ -56,11 +56,11 @@ func (h *fakeHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.It
 	return nil
 }
 func (h *fakeHistory) ApplyLimits(model.Settings) { h.mu.Lock(); h.limits++; h.mu.Unlock() }
-func (h *fakeHistory) ApplyLimitsAndSnapshot(model.Settings) []model.Item {
+func (h *fakeHistory) ApplyLimitsAndSnapshot(model.Settings) ([]model.Item, []string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.limits++
-	return append([]model.Item(nil), h.items...)
+	return append([]model.Item(nil), h.items...), nil
 }
 func (h *fakeHistory) add(it model.Item) {
 	h.mu.Lock()

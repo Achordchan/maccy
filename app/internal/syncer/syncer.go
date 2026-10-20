@@ -329,36 +329,15 @@ func pendingFingerprint(preMergeFingerprint, current string) string {
 // was not recorded yet. It is written before the history is flushed, so a
 // crash can resume the upload instead of merging the same items again.
 type pendingMergeState struct {
-	Fingerprint string   `json:"fingerprint"`
-	Version     string   `json:"version,omitempty"`
-	UpdatedAt   string   `json:"updatedAt,omitempty"`
-	SHA256      string   `json:"sha256,omitempty"`
-	Size        *int64   `json:"size,omitempty"`
-	Before      string   `json:"before"`
-	After       string   `json:"after,omitempty"`
-	AfterIDs    []string `json:"afterIds,omitempty"`
-	Account     string   `json:"account,omitempty"`
-}
-
-func itemIDs(items []model.Item) []string {
-	out := make([]string, 0, len(items))
-	for _, it := range items {
-		out = append(out, strings.ToLower(it.ID))
-	}
-	return out
-}
-
-func hasAllIDs(items []model.Item, ids []string) bool {
-	have := make(map[string]bool, len(items))
-	for _, it := range items {
-		have[strings.ToLower(it.ID)] = true
-	}
-	for _, id := range ids {
-		if !have[id] {
-			return false
-		}
-	}
-	return true
+	Fingerprint string `json:"fingerprint"`
+	Version     string `json:"version,omitempty"`
+	UpdatedAt   string `json:"updatedAt,omitempty"`
+	SHA256      string `json:"sha256,omitempty"`
+	Size        *int64 `json:"size,omitempty"`
+	Before      string `json:"before"`
+	After       string `json:"after,omitempty"`
+	Account     string `json:"account,omitempty"`
+	Committed   bool   `json:"committed,omitempty"`
 }
 
 func (s *Syncer) pendingMergePath() string {
@@ -394,6 +373,17 @@ func (s *Syncer) writePendingMerge(p pendingMergeState) {
 
 func (s *Syncer) clearPendingMerge() { _ = os.Remove(s.pendingMergePath()) }
 
+// markPendingMergeCommitted records that Flush returned successfully: from
+// then on the merged history is on disk even if captures change it later.
+func (s *Syncer) markPendingMergeCommitted() {
+	p, ok := s.readPendingMerge()
+	if !ok {
+		return
+	}
+	p.Committed = true
+	s.writePendingMerge(p)
+}
+
 func (s *Syncer) readPendingMerge() (pendingMergeState, bool) {
 	b, err := os.ReadFile(s.pendingMergePath())
 	if err != nil {
@@ -420,16 +410,10 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) {
 	}
 	items := s.cfg.History.Items()
 	current := Fingerprint(items)
-	switch {
-	case p.After != "" && current == p.After:
-		// exactly the merged history
-	case len(p.AfterIDs) > 0 && hasAllIDs(items, p.AfterIDs):
-		// the merged history plus captures made since
-	case p.Before != "" && current == p.Before:
-		return // the merged history was never saved
-	default:
-		// Cannot prove the merge reached the disk (for example a capture was
-		// persisted before the flush): leave the state alone.
+	if !p.Committed && (p.After == "" || current != p.After) {
+		// Only the marker written after a successful Flush, or the exact
+		// merged history, proves the merge reached the disk. A different
+		// fingerprint can be an unflushed capture.
 		return
 	}
 	m := ManifestInfo{Version: p.Version, SnapshotSHA256: p.SHA256, SnapshotSize: p.Size}
@@ -823,8 +807,8 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		EnsureSettingsCanHoldItems(&settings, applied)
 	}
 	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(settings) })
-	afterLimits := s.cfg.History.ApplyLimitsAndSnapshot(s.settings())
-	limitPruned := prunedItems(applied, afterLimits)
+	_, limitRemoved := s.cfg.History.ApplyLimitsAndSnapshot(s.settings())
+	limitPruned := removedSet(limitRemoved)
 	res := DownloadResult{
 		Fingerprint:         appliedFP,
 		SnapshotSHA256:      sum,
@@ -842,7 +826,6 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			SHA256:      sum,
 			Before:      Fingerprint(before),
 			After:       after,
-			AfterIDs:    itemIDs(s.cfg.History.Items()),
 			Account:     account,
 		})
 	}
@@ -884,6 +867,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			return DownloadResult{}, fmt.Errorf("%w (history rollback failed: %v)", err, rerr)
 		}
 		return DownloadResult{}, err
+	}
+	if merged {
+		s.markPendingMergeCommitted()
 	}
 	if moves != nil {
 		moves.MarkCommitted()
@@ -1112,8 +1098,8 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	EnsureSettingsCanHoldItems(&mergedSettings, merged)
 
 	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(mergedSettings) })
-	afterLimits := s.cfg.History.ApplyLimitsAndSnapshot(s.settings())
-	limitPruned := prunedItems(merged, afterLimits)
+	_, limitRemoved := s.cfg.History.ApplyLimitsAndSnapshot(s.settings())
+	limitPruned := removedSet(limitRemoved)
 	s.timing("merge", "merge_snapshot", started, fmt.Sprintf("%s;localItems=%d;remoteItems=%d;mergedItems=%d", reason, len(local), len(remote.Items), len(merged)))
 
 	cleanup := append(append([]model.Item(nil), before...), merged...)
@@ -1131,7 +1117,6 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		Size:        basis.SnapshotSize,
 		Before:      Fingerprint(before),
 		After:       after,
-		AfterIDs:    itemIDs(s.cfg.History.Items()),
 		Account:     account,
 	})
 	report(progress, "persist_local", "persist local", 90)
@@ -1165,6 +1150,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		}
 		return err
 	}
+	s.markPendingMergeCommitted()
 	if moves != nil {
 		moves.MarkCommitted()
 	}
@@ -1553,21 +1539,13 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 	return merged
 }
 
-// prunedItems is the applied items that the limits removed: they are not
-// user deletions, so a failed replacement restores them.
-func prunedItems(applied, current []model.Item) map[string]bool {
-	have := make(map[string]bool, len(current))
-	for _, it := range current {
-		have[strings.ToLower(it.ID)] = true
+// removedSet is the ids the limits removed under their lock.
+func removedSet(ids []string) map[string]bool {
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[strings.ToLower(id)] = true
 	}
-	pruned := map[string]bool{}
-	for _, it := range applied {
-		id := strings.ToLower(it.ID)
-		if !have[id] {
-			pruned[id] = true
-		}
-	}
-	return pruned
+	return out
 }
 
 // rollbackItems is the history after a failed mutation: the items before it,

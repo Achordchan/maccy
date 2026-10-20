@@ -56,9 +56,33 @@ func (h *unitHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.It
 
 func (h *unitHistory) ApplyLimits(model.Settings) {}
 
-func (h *unitHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+func idsOf(items []model.Item) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, strings.ToLower(it.ID))
+	}
+	return out
+}
+
+func removedIDs(before, after []string) []string {
+	have := make(map[string]bool, len(after))
+	for _, id := range after {
+		have[id] = true
+	}
+	var out []string
+	for _, id := range before {
+		if !have[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func (h *unitHistory) ApplyLimitsAndSnapshot(s model.Settings) ([]model.Item, []string) {
+	before := idsOf(h.Items())
 	h.ApplyLimits(s)
-	return h.Items()
+	after := h.Items()
+	return after, removedIDs(before, idsOf(after))
 }
 
 // changingHistory changes after the first read, as a capture does while an
@@ -88,9 +112,11 @@ func (h *changingHistory) Mutate(ctx context.Context, f func([]model.Item) ([]mo
 func (h *changingHistory) RemoveFiles([]string) error                     { return nil }
 func (h *changingHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
 
-func (h *changingHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+func (h *changingHistory) ApplyLimitsAndSnapshot(s model.Settings) ([]model.Item, []string) {
+	before := idsOf(h.Items())
 	h.ApplyLimits(s)
-	return h.Items()
+	after := h.Items()
+	return after, removedIDs(before, idsOf(after))
 }
 
 func (h *changingHistory) ApplyLimits(model.Settings) {}
@@ -350,9 +376,11 @@ func (h *mergeHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.I
 func (h *mergeHistory) RemoveFiles([]string) error                     { return nil }
 func (h *mergeHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
 
-func (h *mergeHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+func (h *mergeHistory) ApplyLimitsAndSnapshot(s model.Settings) ([]model.Item, []string) {
+	before := idsOf(h.Items())
 	h.ApplyLimits(s)
-	return h.Items()
+	after := h.Items()
+	return after, removedIDs(before, idsOf(after))
 }
 
 func (h *mergeHistory) ApplyLimits(model.Settings) {}
@@ -521,9 +549,11 @@ func (h *downloadArrivalHistory) Mutate(_ context.Context, f func([]model.Item) 
 func (h *downloadArrivalHistory) RemoveFiles([]string) error                     { return nil }
 func (h *downloadArrivalHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
 
-func (h *downloadArrivalHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+func (h *downloadArrivalHistory) ApplyLimitsAndSnapshot(s model.Settings) ([]model.Item, []string) {
+	before := idsOf(h.Items())
 	h.ApplyLimits(s)
-	return h.Items()
+	after := h.Items()
+	return after, removedIDs(before, idsOf(after))
 }
 
 func (h *downloadArrivalHistory) ApplyLimits(model.Settings) {}
@@ -985,9 +1015,11 @@ type pruningHistory struct {
 	downloadArrivalHistory
 }
 
-func (h *pruningHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+func (h *pruningHistory) ApplyLimitsAndSnapshot(s model.Settings) ([]model.Item, []string) {
+	before := idsOf(h.Items())
 	h.ApplyLimits(s)
-	return h.Items()
+	after := h.Items()
+	return after, removedIDs(before, idsOf(after))
 }
 
 func (h *pruningHistory) ApplyLimits(s model.Settings) {
@@ -2147,9 +2179,11 @@ type keepOnlyHistory struct {
 	armed bool
 }
 
-func (h *keepOnlyHistory) ApplyLimitsAndSnapshot(s model.Settings) []model.Item {
+func (h *keepOnlyHistory) ApplyLimitsAndSnapshot(s model.Settings) ([]model.Item, []string) {
+	before := idsOf(h.Items())
 	h.ApplyLimits(s)
-	return h.Items()
+	after := h.Items()
+	return after, removedIDs(before, idsOf(after))
 }
 
 func (h *keepOnlyHistory) ApplyLimits(model.Settings) {
@@ -2433,7 +2467,6 @@ func TestRecoverPendingMergeRecordsTheUpload(t *testing.T) {
 		SHA256:      "sha",
 		Before:      Fingerprint([]model.Item{old}),
 		After:       Fingerprint(merged),
-		AfterIDs:    itemIDs(merged),
 	})
 	syn.recoverPendingMerge(context.Background(), "")
 	if got := model.Str(s.SyncLastLocalFingerprint); got != "pending-upload" {
@@ -2481,7 +2514,6 @@ func TestRunRecoversAPendingMergeBeforeDeciding(t *testing.T) {
 		SHA256:      "sha",
 		Before:      Fingerprint([]model.Item{old}),
 		After:       Fingerprint(merged),
-		AfterIDs:    itemIDs(merged),
 	})
 	res, _ := syn.Run(context.Background(), nil, "test")
 	if res.Decision.Direction != Upload {
@@ -2532,7 +2564,6 @@ func TestRecoverPendingMergeDoesNotTrustAnUnflushedCapture(t *testing.T) {
 		SHA256:      "sha",
 		Before:      Fingerprint(before),
 		After:       Fingerprint(after),
-		AfterIDs:    itemIDs(after),
 	})
 	syn.recoverPendingMerge(context.Background(), "")
 	if s.SyncLastLocalFingerprint != nil {
@@ -2540,5 +2571,43 @@ func TestRecoverPendingMergeDoesNotTrustAnUnflushedCapture(t *testing.T) {
 	}
 	if _, err := os.Stat(syn.pendingMergePath()); !os.IsNotExist(err) {
 		t.Errorf("the pending file survived: %v", err)
+	}
+}
+
+// The committed marker is proof even if captures changed the history since.
+func TestRecoverPendingMergeUsesTheCommittedMarker(t *testing.T) {
+	s := signedIn(model.DefaultSettings())
+	old := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "old")
+	h := &unitHistory{items: []model.Item{old}} // changed by a capture after the flush
+	syn := unitSyncer(t, serveSnapshot(t, snapshotFile(t, nil)), s, h)
+	syn.writePendingMerge(pendingMergeState{
+		Fingerprint: "pending-upload",
+		Before:      Fingerprint([]model.Item{old}),
+		After:       "something-else",
+		Committed:   true,
+	})
+	syn.recoverPendingMerge(context.Background(), "")
+	if got := model.Str(s.SyncLastLocalFingerprint); got != "pending-upload" {
+		t.Errorf("fingerprint %q: the committed marker was not trusted", got)
+	}
+}
+
+// A metadata-only merge has the same ids before and after; ID presence alone
+// is not proof that the merge was saved.
+func TestRecoverPendingMergeRequiresProofForSameIDs(t *testing.T) {
+	s := signedIn(model.DefaultSettings())
+	old := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "old")
+	h := &unitHistory{items: []model.Item{old}}
+	syn := unitSyncer(t, serveSnapshot(t, snapshotFile(t, nil)), s, h)
+	merged := []model.Item{old}
+	merged[0].Note = model.Ptr("merged note")
+	syn.writePendingMerge(pendingMergeState{
+		Fingerprint: "pending-upload",
+		Before:      Fingerprint([]model.Item{old}),
+		After:       Fingerprint(merged),
+	})
+	syn.recoverPendingMerge(context.Background(), "")
+	if s.SyncLastLocalFingerprint != nil {
+		t.Errorf("state was recovered for an unsaved metadata-only merge: %+v", s)
 	}
 }
