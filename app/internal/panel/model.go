@@ -22,6 +22,10 @@ type Host interface {
 	SyncNow()
 	// ShowPrefs opens the preferences window.
 	ShowPrefs()
+	// UpdateAvailable is the version of a newer release that is known, or "".
+	UpdateAvailable() string
+	// ShowUpdate opens the update window.
+	ShowUpdate()
 	// Quit ends the program.
 	Quit()
 }

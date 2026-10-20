@@ -5,6 +5,7 @@ package main
 import (
 	_ "embed"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -16,6 +17,8 @@ import (
 	"klip/internal/paths"
 	"klip/internal/platform"
 	"klip/internal/prefswin"
+	"klip/internal/update"
+	"klip/internal/updatewin"
 )
 
 //go:embed icon.png
@@ -32,12 +35,23 @@ type program struct {
 
 	prefs    *prefswin.Model
 	prefsWin *mygo.Window
+	upd      *updatewin.Model
+	updWin   *mygo.Window
 	layout   paths.Layout
 }
 
 func main() {
+	// Started as the helper of an update: replace the files and start the
+	// program again. This comes before everything else, as a second
+	// instance must not be told to show itself.
+	if handled, code := update.HelperMain(os.Args, update.Hooks{}); handled {
+		os.Exit(code)
+	}
 	if !mygo.App.RequestSingleInstanceLock() {
 		return // the Klip that runs shows itself (OnSecondInstance)
+	}
+	if platform.HoldAppMutex() {
+		return // another instance holds the named mutex of 1.0.10 and the installer
 	}
 	mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
 	mygo.App.OnWindowAllClosed(func() {})
@@ -60,6 +74,7 @@ func (p *program) ready() {
 		Foreground: platform.ForegroundApp,
 		ChangeSeq:  platform.ChangeSeq,
 		Autostart:  platform.Autostart(),
+		Quit:       func() { mygo.App.Quit() },
 		Changed:    func() { p.redraw() },
 	})
 	if err != nil {
@@ -112,6 +127,7 @@ func (p *program) ready() {
 			{Label: "显示 Klip", Click: func(*mygo.MenuItem, *mygo.Window) { p.show() }},
 			{Label: "立即同步", Click: func(*mygo.MenuItem, *mygo.Window) { p.app.SyncNow() }},
 			{Label: "偏好设置…", Click: func(*mygo.MenuItem, *mygo.Window) { p.showPrefs() }},
+			{Label: "检查更新…", Click: func(*mygo.MenuItem, *mygo.Window) { p.checkUpdates() }},
 			mygo.Separator(),
 			{Role: mygo.RoleQuit},
 		}),
@@ -132,6 +148,9 @@ func (p *program) redraw() {
 	if p.prefsWin != nil && p.prefsWin.IsVisible() {
 		p.prefsWin.Update(func() {})
 	}
+	if p.updWin != nil && p.updWin.IsVisible() {
+		p.updWin.Update(func() {})
+	}
 }
 
 // applyTheme sets the look of the windows from the setting: "System",
@@ -145,6 +164,34 @@ func applyTheme(v string) {
 	default:
 		mygo.Theme.SetSource(mygo.ThemeSystem)
 	}
+}
+
+// showUpdate opens the update window: it shows what the coordinator knows.
+func (p *program) showUpdate() {
+	if p.updWin == nil {
+		p.upd = updatewin.New(p.app.Updates, updHost{p})
+		p.updWin = mygo.NewWindow(mygo.WindowOptions{
+			Title:         "Klip 更新",
+			Width:         480,
+			Height:        400,
+			DisableResize: true,
+			Content:       ui.View(p.upd.View),
+		})
+		p.updWin.OnClose(func(e *mygo.CloseEvent) {
+			e.PreventDefault()
+			p.app.Updates.Dismiss()
+			p.updWin.Hide()
+		})
+	}
+	p.win.Hide()
+	p.updWin.Show()
+	p.updWin.Focus()
+}
+
+// checkUpdates is the user asking: the window shows the check.
+func (p *program) checkUpdates() {
+	p.showUpdate()
+	p.upd.CheckNow()
 }
 
 // showPrefs opens the preferences window, made on first use and then only
@@ -195,7 +242,14 @@ func (h host) Apply(it model.Item) { h.p.app.Apply(it) }
 func (h host) Hide()               { h.p.win.Hide() }
 func (h host) SyncNow()            { h.p.app.SyncNow() }
 func (h host) ShowPrefs()          { h.p.showPrefs() }
-func (h host) Quit()               { mygo.App.Quit() }
+func (h host) ShowUpdate()         { h.p.showUpdate() }
+func (h host) UpdateAvailable() string {
+	if i := h.p.app.Updates.Available(); i != nil {
+		return i.Version
+	}
+	return ""
+}
+func (h host) Quit() { mygo.App.Quit() }
 
 // prefsHost is what the preferences window asks of the program.
 type prefsHost struct{ p *program }
@@ -205,3 +259,9 @@ func (h prefsHost) CheckUpdates() func()   { return nil } // the update module c
 func (h prefsHost) SyncNow()               { h.p.app.SyncNow() }
 func (h prefsHost) AccountChanged(in bool) { h.p.app.AccountChanged(in) }
 func (h prefsHost) Close()                 { h.p.prefsWin.Hide() }
+
+// updHost is what the update window asks of the program.
+type updHost struct{ p *program }
+
+func (h updHost) Close() { h.p.updWin.Hide() }
+func (h updHost) Quit()  { mygo.App.Quit() }

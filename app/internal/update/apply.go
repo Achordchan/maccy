@@ -1,0 +1,397 @@
+package update
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// Plan is what the helper needs to put an update in place after the program
+// has exited. It is written as JSON by the program and read by the helper.
+type Plan struct {
+	// PID is the program to wait for.
+	PID int `json:"pid"`
+	// InstallDir is where the program's files are.
+	InstallDir string `json:"installDir"`
+	// StagingDir and PackageManifest are the unpacked package.
+	StagingDir      string `json:"stagingDir"`
+	PackageManifest string `json:"packageManifest"`
+	// InstalledManifest remembers what the last package put there, so the
+	// next one can remove the files it no longer has.
+	InstalledManifest string `json:"installedManifest"`
+	BackupDir         string `json:"backupDir"`
+	LogPath           string `json:"logPath"`
+	// Installer, when set, is a full installer to start instead of copying
+	// files.
+	Installer string `json:"installer,omitempty"`
+}
+
+// Hooks are the parts of Apply that touch the system, for tests.
+type Hooks struct {
+	// WaitExit blocks until the process is gone.
+	WaitExit func(pid int)
+	// Sleep is time.Sleep.
+	Sleep func(time.Duration)
+	// Launch starts a program and does not wait for it.
+	Launch func(path string) error
+	// Alert tells the user that the update failed.
+	Alert func(title, msg string)
+	// Now is time.Now.
+	Now func() time.Time
+	// Copy puts a file in place (copyFileRetry); tests make it fail.
+	Copy func(src, dst string) error
+}
+
+func (h Hooks) fill() Hooks {
+	if h.WaitExit == nil {
+		h.WaitExit = waitExit
+	}
+	if h.Sleep == nil {
+		h.Sleep = time.Sleep
+	}
+	if h.Launch == nil {
+		h.Launch = launch
+	}
+	if h.Alert == nil {
+		h.Alert = alert
+	}
+	if h.Now == nil {
+		h.Now = time.Now
+	}
+	if h.Copy == nil {
+		h.Copy = func(src, dst string) error { return copyFileRetry(src, dst, h.Sleep) }
+	}
+	return h
+}
+
+// ReadPlan loads a plan file.
+func ReadPlan(path string) (Plan, error) {
+	var p Plan
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return p, err
+	}
+	return p, json.Unmarshal(b, &p)
+}
+
+// WritePlan stores a plan file.
+func WritePlan(path string, p Plan) error {
+	b, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
+}
+
+type logger struct {
+	path string
+	now  func() time.Time
+}
+
+func (l logger) say(msg string) {
+	_ = os.MkdirAll(filepath.Dir(l.path), 0o755)
+	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "[%s] %s\n", l.now().Format("2006-01-02T15:04:05"), msg)
+}
+
+type rollbackItem struct {
+	path, backup string
+	existed      bool
+}
+
+// RunPlan is the helper: it waits for the program to exit and then, as the
+// PowerShell script of the C# client does, checks the package once more,
+// backs up and copies each file, checks the copies, removes what the
+// previous package had and this one has not, remembers the list, and starts
+// the program again. On any failure it puts everything back, tells the user
+// and starts the old program. It returns the error.
+func RunPlan(p Plan, h Hooks) error {
+	h = h.fill()
+	lg := logger{p.LogPath, h.Now}
+	_ = os.Remove(p.LogPath)
+	lg.say("waiting for app exit")
+	if p.PID > 0 {
+		h.WaitExit(p.PID)
+	}
+	h.Sleep(300 * time.Millisecond)
+
+	if p.Installer != "" {
+		lg.say("starting installer " + p.Installer)
+		if err := h.Launch(p.Installer); err != nil {
+			lg.say("failed: " + err.Error())
+			h.Alert("Klip 更新失败", "无法启动安装程序："+err.Error())
+			return err
+		}
+		return nil
+	}
+
+	var rollback []rollbackItem
+	err := applyFiles(p, h, lg, &rollback)
+	if err == nil {
+		lg.say("light update applied")
+		return h.Launch(filepath.Join(p.InstallDir, ExeName))
+	}
+	lg.say("failed: " + err.Error())
+	for i := len(rollback) - 1; i >= 0; i-- {
+		it := rollback[i]
+		var rerr error
+		if it.existed {
+			if rerr = os.MkdirAll(filepath.Dir(it.path), 0o755); rerr == nil {
+				rerr = copyFile(it.backup, it.path)
+			}
+		} else if _, serr := os.Stat(it.path); serr == nil {
+			rerr = os.Remove(it.path)
+		}
+		if rerr != nil {
+			lg.say("rollback failed: " + rerr.Error())
+		}
+	}
+	h.Alert("Klip 更新失败", "轻量更新失败，已尝试回滚。日志："+p.LogPath)
+	if exe := filepath.Join(p.InstallDir, ExeName); fileExists(exe) {
+		_ = h.Launch(exe)
+	}
+	return err
+}
+
+func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
+	data, err := os.ReadFile(p.PackageManifest)
+	if err != nil {
+		return err
+	}
+	m, err := ParsePackageManifest(data)
+	if err != nil {
+		return err
+	}
+	if len(m.Files) < 1 {
+		return errors.New("package file list is empty")
+	}
+	newFiles := map[string]bool{}
+	type entry struct{ rel, src, dest, sha string }
+	var entries []entry
+	for _, f := range m.Files {
+		rel, err := NormalizePath(f.Path)
+		if err != nil {
+			return err
+		}
+		if IsProtected(rel) {
+			return errors.New("protected path in package: " + f.Path)
+		}
+		src, err := insideRoot(p.StagingDir, rel)
+		if err != nil {
+			return err
+		}
+		if !fileExists(src) {
+			return errors.New("package file missing: " + f.Path)
+		}
+		want := strings.ToUpper(strings.TrimSpace(f.SHA256))
+		if want == "" {
+			return errors.New("missing sha256: " + f.Path)
+		}
+		if got, err := SHA256File(src); err != nil || got != want {
+			return errors.New("sha256 mismatch before copy: " + f.Path)
+		}
+		dest, err := insideRoot(p.InstallDir, rel)
+		if err != nil {
+			return err
+		}
+		newFiles[key(rel)] = true
+		entries = append(entries, entry{rel, src, dest, want})
+	}
+	if !newFiles[strings.ToLower(ExeName)] {
+		return errors.New("package missing " + ExeName)
+	}
+	if err := os.MkdirAll(p.BackupDir, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		backup, err := insideRoot(p.BackupDir, e.rel)
+		if err != nil {
+			return err
+		}
+		existed := fileExists(e.dest)
+		if existed {
+			if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
+				return err
+			}
+			if err := copyFile(e.dest, backup); err != nil {
+				return err
+			}
+		}
+		*rollback = append(*rollback, rollbackItem{e.dest, backup, existed})
+		if err := os.MkdirAll(filepath.Dir(e.dest), 0o755); err != nil {
+			return err
+		}
+		if err := h.Copy(e.src, e.dest); err != nil {
+			return err
+		}
+	}
+	for _, e := range entries {
+		if got, err := SHA256File(e.dest); err != nil || got != e.sha {
+			return errors.New("sha256 mismatch after copy: " + e.rel)
+		}
+	}
+
+	// What the previous package had and this one does not.
+	var gone []string
+	if prev, err := os.ReadFile(p.InstalledManifest); err == nil {
+		if pm, err := ParsePackageManifest(prev); err == nil {
+			for _, f := range pm.Files {
+				gone = append(gone, f.Path)
+			}
+		}
+	}
+	gone = append(gone, m.LegacyFiles...)
+	for _, old := range gone {
+		rel, err := NormalizePath(old)
+		if err != nil {
+			return err
+		}
+		if newFiles[key(rel)] || IsProtected(rel) {
+			continue
+		}
+		dest, err := insideRoot(p.InstallDir, rel)
+		if err != nil {
+			return err
+		}
+		if !fileExists(dest) {
+			continue
+		}
+		backup, err := insideRoot(p.BackupDir, filepath.Join("_deleted", rel))
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
+			return err
+		}
+		if err := copyFile(dest, backup); err != nil {
+			return err
+		}
+		*rollback = append(*rollback, rollbackItem{dest, backup, true})
+		if err := os.Remove(dest); err != nil {
+			return err
+		}
+	}
+
+	// The list is kept without the legacy part: that is done now.
+	keep := *m
+	keep.LegacyFiles = nil
+	if err := os.MkdirAll(filepath.Dir(p.InstalledManifest), 0o755); err != nil {
+		return err
+	}
+	return writeJSON(p.InstalledManifest, keep)
+}
+
+func key(rel string) string { return strings.ToLower(strings.ReplaceAll(rel, "\\", "/")) }
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
+}
+
+func writeJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// copyFileRetry is copyFile, tried again a few times: a virus scanner may
+// hold a file that was just written.
+func copyFileRetry(src, dst string, sleep func(time.Duration)) error {
+	var err error
+	for i := 0; i < 5; i++ {
+		if err = copyFile(src, dst); err == nil {
+			return nil
+		}
+		sleep(200 * time.Millisecond)
+	}
+	return err
+}
+
+// CleanLegacy removes the files of the earlier program that the installed
+// package lists as legacy (see PackageManifest.LegacyFiles), once: the list
+// is dropped from the remembered manifest afterwards. 1.0.10 puts the
+// package's list there verbatim when it applies the first light update, but
+// it knows nothing of the legacy list, so the 1.0.11 program does it on its
+// first start. It returns the paths it removed.
+func CleanLegacy(installDir, installedManifest string) ([]string, error) {
+	data, err := os.ReadFile(installedManifest)
+	if err != nil {
+		return nil, nil // nothing installed by a package: nothing to clean
+	}
+	m, err := ParsePackageManifest(data)
+	if err != nil || len(m.LegacyFiles) == 0 {
+		return nil, nil
+	}
+	own := map[string]bool{}
+	for _, f := range m.Files {
+		if rel, err := NormalizePath(f.Path); err == nil {
+			own[key(rel)] = true
+		}
+	}
+	var removed []string
+	for _, old := range m.LegacyFiles {
+		rel, err := NormalizePath(old)
+		if err != nil || own[key(rel)] || IsProtected(rel) {
+			continue
+		}
+		dest, err := insideRoot(installDir, rel)
+		if err != nil || !fileExists(dest) {
+			continue
+		}
+		if err := os.Remove(dest); err != nil {
+			return removed, err
+		}
+		removed = append(removed, rel)
+	}
+	m.LegacyFiles = nil
+	return removed, writeJSON(installedManifest, m)
+}
+
+// HelperMain runs the program as the helper when it was started as one
+// (maccy.exe --apply-update plan.json). It says whether it was; if so the
+// caller must exit with the code.
+func HelperMain(args []string, h Hooks) (handled bool, code int) {
+	if len(args) < 3 || args[1] != "--apply-update" {
+		return false, 0
+	}
+	plan, err := ReadPlan(args[2])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "apply-update:", err)
+		return true, 2
+	}
+	if err := RunPlan(plan, h); err != nil {
+		return true, 1
+	}
+	return true, 0
+}

@@ -97,6 +97,11 @@ func (m *Model) View(c *ui.Context) {
 				}
 			}
 			ui.Text(c, status).FontSize(11).TextColor(t.TextMuted).SingleLine().Grow(1)
+			if v := m.Host.UpdateAvailable(); v != "" {
+				if ui.Button(c, "新版本 "+v).Label("有新版本").Clicked() {
+					m.Host.ShowUpdate()
+				}
+			}
 			if ui.Button(c, "同步").Label("立即同步").Clicked() {
 				m.Host.SyncNow()
 			}

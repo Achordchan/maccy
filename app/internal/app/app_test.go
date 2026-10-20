@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -310,4 +312,47 @@ func TestPrefsAndAccountAreWired(t *testing.T) {
 	if e := a.Prefs.SetMaxItems("7"); !e.Changed || a.History.Limits().MaxItems == nil || *a.History.Limits().MaxItems != 7 {
 		t.Fatalf("a setting changed in the preferences must reach the history: %+v", e)
 	}
+}
+
+// A newer version on the manifest is found a little after the start, quietly,
+// and the files of the old program are cleaned once.
+func TestStartChecksForUpdatesAndCleansLegacyFiles(t *testing.T) {
+	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"appId":"maccy","latest":{"version":"99.0.0","notes":"n","installer":{"url":"http://x/setup.exe"}}}`))
+	}))
+	defer manifest.Close()
+
+	root := t.TempDir()
+	install := t.TempDir()
+	exe := filepath.Join(install, "maccy.exe")
+	_ = os.WriteFile(exe, []byte("exe"), 0o755)
+	_ = os.WriteFile(filepath.Join(install, "maccy.dll"), []byte("net"), 0o644)
+	_ = os.WriteFile(filepath.Join(install, "settings.json"), []byte("{}"), 0o644)
+	_ = os.MkdirAll(filepath.Join(root, "updates", "helper"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "updates", "helper", "old.exe"), []byte("x"), 0o755)
+	list := `{"appId":"maccy","version":"1.0.11","runtime":"win-x64","files":[{"path":"maccy.exe"}],"legacyFiles":["maccy.dll","settings.json"]}`
+	_ = os.WriteFile(filepath.Join(root, "updates", "installed-package-files.json"), []byte(list), 0o644)
+
+	var changed atomic.Int32
+	a, err := New(Config{Layout: paths.Layout{Root: root}, Clipboard: &fakeClip{}, ChangeSeq: (&fakeClip{}).seq.Load,
+		Interval: 5 * time.Millisecond, BaseURL: "http://127.0.0.1:1", Logf: t.Logf,
+		Exe: exe, ManifestURL: manifest.URL, UpdateFirst: 20 * time.Millisecond, UpdateEvery: time.Hour,
+		Changed: func() { changed.Add(1) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Start()
+	defer a.Stop()
+	waitFor(t, "update found", func() bool { return a.Updates.Available() != nil })
+	if v := a.Updates.Available().Version; v != "99.0.0" {
+		t.Fatalf("version %q", v)
+	}
+	if changed.Load() == 0 {
+		t.Fatal("the windows were not told")
+	}
+	waitFor(t, "legacy cleanup", func() bool { _, err := os.Stat(filepath.Join(install, "maccy.dll")); return err != nil })
+	if b, _ := os.ReadFile(filepath.Join(install, "settings.json")); string(b) != "{}" {
+		t.Fatal("data removed")
+	}
+	waitFor(t, "helper dir cleaned", func() bool { _, err := os.Stat(filepath.Join(root, "updates", "helper")); return err != nil })
 }

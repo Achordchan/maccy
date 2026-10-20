@@ -15,6 +15,9 @@
 | `internal/autostart` | 开机启动：Windows 注册表值 `maccy`（与 1.0.10 同一条），Linux 的 XDG 条目；macOS 用 MyGo 的登录项（`platform.Autostart`） |
 | `internal/prefs` | 偏好设置的规则：勾选和数字怎么写进设置、怎么校正、打开窗口时修什么 |
 | `internal/prefswin` | 偏好设置窗口（通用 / 内容 / 货架 / 云同步 + 密码对话框） |
+| `internal/update` | 检查更新与应用更新：清单、包清单、版本比较、下载校验、解包、`--apply-update` 辅助程序（替换文件、回滚）、旧 .NET 文件清理、协调器 |
+| `internal/updatewin` | 更新窗口（检查中 / 已最新 / 发现新版本 / 下载进度 / 失败重试） |
+| `internal/version` | 当前版本，构建时用 `-ldflags -X` 写入 |
 | `internal/panel` | 主面板的界面（MyGo 原生 UI）：搜索、列表、置顶、备注、删除、点击应用；对着 `history.Service`，不依赖窗口，用 `ui.NewTester` 测 |
 | `internal/app` | 把各部分接成一个不带窗口的程序：设置、历史及其文件、捕获、同步（启动时、服务器事件、历史变化后）、状态文字 |
 | `cmd/klip` | 程序入口：托盘、全局快捷键 `Ctrl+Alt+2`、面板窗口 |
@@ -223,3 +226,23 @@ cd app && KLIP_REAL_CLIPBOARD=1 go test -count=1 -race ./internal/platform/
 **这一阶段顺带修的另外两处**
 - 漏收：见上面“一次看不到不等于没有”。在此之前，两次间隔很短的复制有一定概率漏掉第二次（实测约四成的整组运行里出现），之前三次全过只是运气。
 - `ForegroundApp`（macOS）里创建的自动释放池必须在同一个线程上释放，而 goroutine 可能在两次原生调用之间换线程；现在在函数内固定到当前线程（`runtime.LockOSThread`），此前偶发的 SIGSEGV 没有再出现。
+
+## 更新与发布（internal/update、updatewin、tools/release_go.py）
+
+**客户端**：启动 6 秒后、之后每 12 小时静默检查一次清单（`https://gitee.com/Achordchan/maccy/raw/master/docs/updates/manifest.json`，1.0.10 读的同一个地址）；发现新版本时面板页脚出现“新版本 x.y.z”按钮，托盘和偏好设置里也有“检查更新”。更新窗口显示更新内容，“立即更新”先下载轻量包（zip），校验大小和 SHA-256，解到暂存目录再逐文件校验；然后把自己复制一份当辅助程序（`updates/helper/`），写下计划文件，退出；辅助程序等进程结束，再次校验、备份、拷贝、拷后校验、删上一版清单里有而新版没有的文件和 `legacyFiles`、记下新清单、重新启动 `maccy.exe`，任何一步失败都回滚、弹窗、重启旧程序。轻量包失败时若有安装包就改用安装包（辅助程序等退出后启动它）。规则和文字全部照 1.0.10 的 `UpdateService` / `UpdateCoordinator`，只有两点不同：辅助程序是 Go 不是 PowerShell；拷贝失败会重试几次（杀毒软件刚写完的文件可能被占）。
+
+**1.0.10 → 1.0.11 的第一跳**由 1.0.10 自己的 PowerShell 脚本完成，所以包必须符合它认的格式：`maccy.exe`、`maccy-package.json`（`appId: maccy`、版本、runtime、每个文件的 `path/sha256/size`）、不含用户数据路径。1.0.10 是依赖 .NET 运行时的发布，更新后目录里会剩下 41 个旧文件（`maccy.dll`、Avalonia 的 dll 等），它们的名字写在包清单的 `legacyFiles` 里（1.0.10 读不懂也不管），新程序第一次启动时清掉（`update.CleanLegacy`）；用安装包升级则由 `installer/klip.iss` 的 `[InstallDelete]` 清。
+
+**发布**：`python tools/release_go.py release --version 1.0.11 --notes-file notes.txt --legacy-from manifest`（Windows，需要 Inno Setup；`--publish-gitee --yes` 同时上传并推送）。它交叉编译 `maccy.exe`（GUI 子系统、`-trimpath -s -w`、写入版本、用 `go-winres` 嵌入图标与文件/产品版本）、从 MyGo 的清单下载并校验 `mygo-sqlite3.dll`、编安装包、打 zip、更新 `docs/updates/manifest.json`。`build` 和 `package` 子命令在任何装有 Go 的系统上都能跑。`--legacy-from manifest` 会下载清单里现在那个包，取它的文件清单。清单的 `packages` 数组是给以后多平台用的（1.0.10 不读）；现在只写 `package`（win-x64）。
+
+**程序**：`maccy.exe` 约 13 MB（含 MyGo 的界面引擎），加 `mygo-sqlite3.dll` 1.4 MB；zip 约 6 MB。启动时在 Windows 上取命名互斥体 `maccy_mutex`（与 1.0.10 和安装程序的 `AppMutex` 一致，安装程序据此要求关闭正在运行的程序）。
+
+**升级验证**：见 [`docs/upgrade-verification-1.0.11.md`](../docs/upgrade-verification-1.0.11.md)。`cmd/klip-testbed` 是个小服务，让 1.0.10（地址写死为 gitee.com）去一个本机的、还没发布的 1.0.11 更新：hosts 指向本机、信任它生成的自签名证书、以管理员运行。
+
+**测试**：
+- `internal/update`：版本、保护路径与 C# 源码对照、检查的各种结果与重试超时、下载校验、zip 校验的每条规则、zip-slip、应用更新（成功、保留用户数据、删旧文件、中途失败回滚、拷后校验失败回滚、保护路径拒绝、安装包计划）、`CleanLegacy`、协调器全流程；加上**发布工具（Python）打出的 zip 与清单被 Go 客户端接受**。变异检查：保护路径、回滚、拷后校验、重试状态码、版本修订号、大小校验、zip 重名都能被抓到。
+- `cmd/klip`：编译真实程序，当辅助程序跑一遍（换文件、删旧文件、保留数据、重启新程序）。
+- `cmd/klip-testbed`：测试服务的路径映射和证书。
+- `internal/updatewin`：窗口各状态。
+
+**没有验证的**：Windows 上的任何真实运行——1.0.10 的 PowerShell 脚本吃这个包、辅助程序在 Windows 上等进程退出和重启、Inno 脚本的编译与覆盖安装（`[InstallDelete]` 的通配符）、`go-winres` 嵌入的图标在资源管理器里的样子（只验证了版本信息进了 exe）、未签名程序被 Defender/SmartScreen 拦不拦。这些都列在升级验证方案里，需要一台 Windows 虚拟机。macOS 和 Linux 没有轻量更新：检查更新照常，“立即更新”会给出发布页地址。

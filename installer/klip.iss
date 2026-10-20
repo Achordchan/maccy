@@ -4,9 +4,9 @@
 #define MyPublishDir SourcePath + "..\artifacts\publish\win-x64"
 #define MyExePath MyPublishDir + "\\" + MyAppExeName
 #if !FileExists(MyExePath)
-  #error "Published EXE not found: " + MyExePath + " (run: dotnet publish -c Release -r win-x64 -o artifacts\\publish\\win-x64)"
+  #error "Published EXE not found: " + MyExePath + " (run: python tools/release_go.py build --version <x.y.z>)"
 #endif
-#define MyAppVersionShort "1.0.10"
+#define MyAppVersionShort "1.0.11"
 #define MyAppId "{{4F6E38C4-29B6-4C3C-9D36-9B0D2F38C4F1}}"
 
 [Setup]
@@ -38,6 +38,21 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [Files]
 Source: "{#MyPublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; 1.0.11 is a Go program: what the .NET program of 1.0.10 and older left in
+; the folder is of no use. Only program files are named here: the user's data
+; (settings.json, history.json, images, files, blobs, sync, updates) is in the
+; same folder in a default installation and is never touched. The SQLite
+; library of the new program is installed after this, by [Files].
+Type: files; Name: "{app}\*.dll"
+Type: files; Name: "{app}\*.pdb"
+Type: files; Name: "{app}\*.deps.json"
+Type: files; Name: "{app}\*.runtimeconfig.json"
+Type: filesandordirs; Name: "{app}\runtimes"
+; the shortcuts that were called Maccy before the program was renamed Klip
+Type: files; Name: "{userprograms}\Maccy.lnk"
+Type: files; Name: "{userdesktop}\Maccy.lnk"
 
 [Icons]
 Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

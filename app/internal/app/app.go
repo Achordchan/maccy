@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -22,6 +24,8 @@ import (
 	"klip/internal/settings"
 	"klip/internal/syncclient"
 	"klip/internal/syncer"
+	"klip/internal/update"
+	"klip/internal/version"
 )
 
 // Config says what the App is made of. Clipboard is required; the rest has
@@ -38,11 +42,24 @@ type Config struct {
 	BaseURL string
 	// Autostart is the start at sign-in (autostart.Default when nil).
 	Autostart autostart.Service
+	// Quit ends the program (an update asks for it); nil does nothing.
+	Quit func()
+	// Exe is the running program (os.Executable when empty).
+	Exe string
+	// ManifestURL is the update manifest (UpdateManifestURL when empty).
+	ManifestURL string
+	// UpdateFirst and UpdateEvery time the check for a new version (6 s and
+	// 12 h unless a test sets them).
+	UpdateFirst, UpdateEvery time.Duration
 	// Changed is called, from any goroutine, when something the windows show
 	// changed (the sync status; history changes are seen through the history).
 	Changed func()
 	Logf    func(format string, args ...any)
 }
+
+// UpdateManifestURL is where the update manifest is published: the address
+// that 1.0.10 and older read, which stays the release channel.
+const UpdateManifestURL = "https://gitee.com/Achordchan/maccy/raw/master/docs/updates/manifest.json"
 
 // App is the program without windows.
 type App struct {
@@ -56,6 +73,7 @@ type App struct {
 	Auto      *syncer.Auto
 	Account   *account.Service
 	Prefs     *prefs.Controller
+	Updates   *update.Coordinator
 
 	mu      sync.Mutex
 	status  string
@@ -116,6 +134,22 @@ func New(cfg Config) (*App, error) {
 		cfg.Autostart = autostart.Default()
 	}
 	a.Prefs = &prefs.Controller{Settings: a.Settings, Autostart: cfg.Autostart}
+
+	manifestURL := cfg.ManifestURL
+	if manifestURL == "" {
+		manifestURL = UpdateManifestURL
+	}
+	exe := cfg.Exe
+	if exe == "" {
+		exe, _ = os.Executable()
+	}
+	a.Updates = update.NewCoordinator(&update.Client{ManifestURL: manifestURL, Current: version.Version},
+		filepath.Join(cfg.Layout.Root, "updates"), exe, func() {
+			if cfg.Quit != nil {
+				cfg.Quit()
+			}
+		})
+	a.Updates.OnChange = a.changed
 	return a, nil
 }
 
@@ -166,6 +200,41 @@ func (a *App) Start() {
 		sess.Client.Watch(ctx, sess, syncclient.WatchOptions{}, func() { a.Auto.OnRemoteUpdated(ctx) })
 	}()
 	a.Auto.Startup(ctx)
+
+	// What earlier updates left, and what the .NET program left; then the
+	// check for a new version, a little after the start and every 12 hours,
+	// without a word to the user.
+	go func() {
+		a.Updates.CleanOld()
+		installDir := filepath.Dir(a.Updates.Exe)
+		if removed, err := update.CleanLegacy(installDir, filepath.Join(a.Updates.Root, "installed-package-files.json")); err != nil {
+			a.cfg.Logf("legacy files: %v", err)
+		} else if len(removed) > 0 {
+			a.cfg.Logf("removed %d files of the old program", len(removed))
+		}
+	}()
+	a.done.Add(1)
+	go func() {
+		defer a.done.Done()
+		first, every := a.cfg.UpdateFirst, a.cfg.UpdateEvery
+		if first <= 0 {
+			first = 6 * time.Second
+		}
+		if every <= 0 {
+			every = 12 * time.Hour
+		}
+		t := time.NewTimer(first)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				a.Updates.Refresh(ctx)
+				t.Reset(every)
+			}
+		}
+	}()
 }
 
 // Stop ends the background work and writes the history.

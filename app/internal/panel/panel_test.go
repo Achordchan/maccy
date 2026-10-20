@@ -102,13 +102,17 @@ type fakeHost struct {
 	synced  int
 	prefs   int
 	quit    int
+	update  string
+	updates int
 }
 
-func (h *fakeHost) Apply(it model.Item) { h.applied = append(h.applied, model.Str(it.Text)) }
-func (h *fakeHost) Hide()               { h.hidden++ }
-func (h *fakeHost) SyncNow()            { h.synced++ }
-func (h *fakeHost) ShowPrefs()          { h.prefs++ }
-func (h *fakeHost) Quit()               { h.quit++ }
+func (h *fakeHost) Apply(it model.Item)     { h.applied = append(h.applied, model.Str(it.Text)) }
+func (h *fakeHost) Hide()                   { h.hidden++ }
+func (h *fakeHost) SyncNow()                { h.synced++ }
+func (h *fakeHost) ShowPrefs()              { h.prefs++ }
+func (h *fakeHost) UpdateAvailable() string { return h.update }
+func (h *fakeHost) ShowUpdate()             { h.updates++ }
+func (h *fakeHost) Quit()                   { h.quit++ }
 
 type rig struct {
 	t  *testing.T
@@ -391,5 +395,20 @@ func TestKeyboardPinAndDelete(t *testing.T) {
 	}
 	if len(r.texts()) != 2 {
 		t.Fatalf("texts = %v", r.texts())
+	}
+}
+
+func TestUpdateButtonShowsOnlyWhenThereIsAnUpdate(t *testing.T) {
+	r := newRig(t, "one")
+	if r.tt.HasText("新版本 1.0.12") {
+		t.Fatal("a button without an update")
+	}
+	r.ho.update = "1.0.12"
+	r.tt.Frame()
+	if err := r.tt.Click("新版本 1.0.12"); err != nil {
+		t.Fatalf("%v (%q)", err, r.tt.Texts())
+	}
+	if r.ho.updates != 1 {
+		t.Fatal("not opened")
 	}
 }
