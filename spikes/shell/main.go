@@ -328,7 +328,13 @@ func (k *klip) capture() {
 	k.panel.Update(func() {
 		k.reads++
 		k.lastFmts = fmt.Sprint(formats)
-		if h == k.lastHash || h == k.ownHash || (kind == kindText && strings.TrimSpace(text) == "") {
+		if h == k.ownHash {
+			// our own write, seen once: remember it as the last content, but
+			// do not let it hide a later copy of the same thing
+			k.ownHash, k.lastHash = "", h
+			return
+		}
+		if h == k.lastHash || (kind == kindText && strings.TrimSpace(text) == "") {
 			return
 		}
 		k.lastHash = h
