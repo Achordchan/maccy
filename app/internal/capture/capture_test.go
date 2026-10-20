@@ -758,3 +758,27 @@ func TestRetryBudgetStartsOverAfterAGoodRead(t *testing.T) {
 		t.Fatalf("%d retries after a good read, want 6", got)
 	}
 }
+
+func TestFallbackCaptureCancelsRetry(t *testing.T) {
+	r := newRig(t)
+	var n atomic.Int32
+	r.s.Retry = func() { n.Add(1) }
+	r.clip.formats, r.clip.text, r.clip.image = []string{"text/plain", "image/png"}, "", tinyPNG(t)
+	r.s.Capture(context.Background())
+	time.Sleep(500 * time.Millisecond)
+	if r.h.Len() != 1 || n.Load() != 0 {
+		t.Fatalf("%d items, %d retries: a picture beside empty text is captured once", r.h.Len(), n.Load())
+	}
+}
+
+func TestAdvertisedImageThatDoesNotComeIsRetried(t *testing.T) {
+	r := newRig(t)
+	var n atomic.Int32
+	r.s.Retry = func() { n.Add(1) }
+	r.clip.formats, r.clip.image = []string{"image/png"}, nil
+	r.s.Capture(context.Background())
+	time.Sleep(500 * time.Millisecond)
+	if n.Load() != 1 {
+		t.Fatalf("%d retries, want 1", n.Load())
+	}
+}

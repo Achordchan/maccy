@@ -320,6 +320,7 @@ func (s *Service) Capture(ctx context.Context) error {
 			}
 			return
 		}
+		wantRetry = false // something was captured: nothing to look at again
 		now := model.Time{Time: s.Now()}
 		it.CapturedAt, it.FirstCapturedAt = now, &now
 		if app != nil {
@@ -380,7 +381,11 @@ func (s *Service) Capture(ctx context.Context) error {
 		// formats are named: screenshot tools use odd names, and blank text
 		// or a text flavour beside the picture must not hide it (the C#
 		// fallback loop does the same).
-		if data := s.Clipboard.ReadImage(); len(data) > 0 {
+		data := s.Clipboard.ReadImage()
+		if len(data) == 0 && has(set, imageFormats) {
+			wantRetry = true // an image is advertised but did not come
+		}
+		if len(data) > 0 {
 			if p, h, size, err := s.savePNG(data); err == nil {
 				add(model.Item{ID: s.NewID(), Kind: model.KindImage, ApproxBytes: size, ImageFilePath: &p, CopyCount: 1, ContentHash: &h})
 				return nil
