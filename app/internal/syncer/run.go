@@ -80,7 +80,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 			// merge has unpublished items, so upload it as a merge does. The
 			// pending state is recorded first, so a failed upload is retried
 			// as a local change and not mistaken for the downloaded snapshot.
-			s.persistPendingMerge(dr.PreMergeFingerprint, snapshotState(dr, d.Manifest, s.cfg.Now().UTC()))
+			s.persistPendingMerge(dr.PreMergeFingerprint, s.downloadState(ctx, dr, d.Manifest))
 			up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_download_merge_upload", account)
 			if err != nil {
 				return res, err
@@ -94,7 +94,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		if s.accountChanged(account) {
 			return res, ErrSessionChanged
 		}
-		s.PersistSyncState(dr.Fingerprint, snapshotState(dr, d.Manifest, s.cfg.Now().UTC()))
+		s.PersistSyncState(dr.Fingerprint, s.downloadState(ctx, dr, d.Manifest))
 
 	case Merge:
 		if err := s.mergeAndApply(ctx, d.Manifest, d.LocalFingerprint, progress, reason, account); err != nil {
@@ -234,7 +234,7 @@ func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) er
 	if s.accountChanged(dr.Account) {
 		return ErrSessionChanged
 	}
-	state := snapshotState(dr, m, s.cfg.Now().UTC())
+	state := s.downloadState(ctx, dr, m)
 	if dr.Merged {
 		// A restore that had to merge a local capture has items that were
 		// never uploaded: remember the pending upload, not a synchronized
@@ -245,6 +245,23 @@ func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) er
 	}
 	_ = s.bindAccount(dr.Account)
 	return nil
+}
+
+// downloadState is the state to remember after a download. When the manifest
+// no longer names the downloaded file, a manifest fetched for that file is
+// used; if the server changed again, the hash is recorded as the version, so
+// the next run downloads instead of treating the state as a first sync (which
+// would merge the same items twice).
+func (s *Syncer) downloadState(ctx context.Context, dr DownloadResult, basis ManifestInfo) ManifestInfo {
+	state := snapshotState(dr, basis, s.cfg.Now().UTC())
+	if state.Version != "" || dr.SnapshotSHA256 == "" {
+		return state
+	}
+	if m, err := s.ManifestInfo(ctx); err == nil && strings.EqualFold(strings.TrimSpace(m.SnapshotSHA256), dr.SnapshotSHA256) {
+		return m
+	}
+	state.Version = dr.SnapshotSHA256
+	return state
 }
 
 // snapshotState is the server state to remember after a download: the

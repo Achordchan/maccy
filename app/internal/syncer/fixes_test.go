@@ -431,8 +431,10 @@ func TestRestoreStateIsBoundToTheDownloadedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := model.Str(s.SyncLastRemoteVersion); got != "" {
+	if got := model.Str(s.SyncLastRemoteVersion); got == "v2" {
 		t.Errorf("version %q: another device's snapshot was recorded", got)
+	} else if got != "aaa" {
+		t.Errorf("version %q: the downloaded hash was not used as the marker", got)
 	}
 	if got := model.Str(s.SyncLastRemoteSha256); got != "aaa" {
 		t.Errorf("sha %q", got)
@@ -1692,5 +1694,65 @@ func TestRollbackKeepsDuplicateItems(t *testing.T) {
 	counts := map[int32]bool{h.items[0].CopyCount: true, h.items[1].CopyCount: true}
 	if !counts[1] || !counts[4] {
 		t.Errorf("copy counts changed: %+v", h.items)
+	}
+}
+
+// The session-change cleanup runs on its own context: a cancelled sync must
+// still remove the items it applied.
+func TestSessionCleanupSurvivesCancelledFlush(t *testing.T) {
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "account a data")}))
+	defer srv.Close()
+	var mu sync.Mutex
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	s.AuthRefreshToken = model.Ptr("ra")
+	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	h := &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}}
+	syn := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()},
+		Settings: syncclient.Settings{
+			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
+			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+		},
+		History: h,
+		Client:  syncclient.New(srv.URL),
+		BaseURL: srv.URL,
+		Now:     time.Now,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	syn.cfg.Flush = func(context.Context) error {
+		cancel()
+		mu.Lock()
+		s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+		s.AuthRefreshToken = model.Ptr("rb")
+		mu.Unlock()
+		return context.Canceled
+	}
+	if _, err := syn.DownloadAndApply(ctx, nil, "test", ""); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("a cancelled flush with a session change: %v", err)
+	}
+	if len(h.items) != 0 {
+		t.Errorf("the applied items were left behind: %+v", h.items)
+	}
+}
+
+func TestDownloadStateUsesAFreshManifestOrTheHash(t *testing.T) {
+	var sha atomic.Value
+	sha.Store("sha-1")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"latest":{"version":"v9","updatedAt":"2026-05-30T12:00:00+00:00","snapshot":{"sha256":"`+sha.Load().(string)+`","size":1}}}`)
+	}))
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, &unitHistory{})
+	dr := DownloadResult{SnapshotSHA256: "sha-1"}
+	basis := ManifestInfo{Version: "v1", SnapshotSHA256: "other"}
+
+	if got := syn.downloadState(context.Background(), dr, basis); got.Version != "v9" {
+		t.Errorf("version %q: the manifest for the downloaded file was not used", got.Version)
+	}
+	sha.Store("other2")
+	if got := syn.downloadState(context.Background(), dr, basis); got.Version != "sha-1" {
+		t.Errorf("version %q: the hash marker was not used", got.Version)
 	}
 }

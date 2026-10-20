@@ -20,6 +20,10 @@ import (
 // history.
 func Load(l paths.Layout) ([]model.Item, error) {
 	data, err := os.ReadFile(l.History())
+	if err == nil {
+		_ = os.Chmod(filepath.Dir(l.History()), 0o700)
+		_ = os.Chmod(l.History(), 0o600)
+	}
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -49,14 +53,34 @@ func Save(l paths.Layout, items []model.Item) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(l.History()), 0o755); err != nil {
+	dir := filepath.Dir(l.History())
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	// Clipboard history holds what the user copied: it is for this user only,
+	// also when an older version created the folder world-readable.
+	_ = os.Chmod(dir, 0o700)
 	tmp := l.History() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	_ = os.Remove(tmp)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, l.History())
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, l.History()); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	_ = os.Chmod(l.History(), 0o600)
+	return nil
 }
 
 // marshal does not escape <, > and &, which Go's encoder does by default;

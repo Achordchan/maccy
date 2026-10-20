@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -149,4 +150,41 @@ func TestEmptyHistoryIsAnEmptyList(t *testing.T) {
 	if string(b) != "[]" {
 		t.Errorf("%q", b)
 	}
+}
+
+// The history holds what the user copied: the file and its folder are private
+// to this user, also on a fresh install where settings.json was never saved.
+func TestHistoryIsPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits")
+	}
+	l := paths.Layout{Root: filepath.Join(t.TempDir(), "Klip")}
+	if err := Save(l, []model.Item{}); err != nil {
+		t.Fatal(err)
+	}
+	checkMode := func(path string, want os.FileMode) {
+		t.Helper()
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := st.Mode().Perm(); got != want {
+			t.Errorf("%s: mode %04o, want %04o", path, got, want)
+		}
+	}
+	checkMode(l.Root, 0o700)
+	checkMode(l.History(), 0o600)
+
+	// What an older version left behind is tightened when it is read.
+	if err := os.Chmod(l.Root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(l.History(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(l); err != nil {
+		t.Fatal(err)
+	}
+	checkMode(l.Root, 0o700)
+	checkMode(l.History(), 0o600)
 }
