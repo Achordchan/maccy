@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"log"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -17,6 +18,8 @@ import (
 	"klip/internal/paths"
 	"klip/internal/platform"
 	"klip/internal/prefswin"
+	"klip/internal/shelf"
+	"klip/internal/shelfwin"
 	"klip/internal/update"
 	"klip/internal/updatewin"
 )
@@ -37,7 +40,10 @@ type program struct {
 	prefsWin *mygo.Window
 	upd      *updatewin.Model
 	updWin   *mygo.Window
-	layout   paths.Layout
+
+	shelves *shelfwin.Manager
+	shelf   *shelf.Service
+	layout  paths.Layout
 }
 
 func main() {
@@ -136,8 +142,44 @@ func (p *program) ready() {
 		log.Println("tray:", err)
 	}
 
+	p.startShelf()
+	mygo.App.OnQuit(p.stopShelf)
 	mygo.App.OnQuit(p.app.Stop)
 	p.app.Start()
+}
+
+// startShelf makes the shelf follow the settings. It is a Windows feature: it
+// listens to the mouse everywhere.
+func (p *program) startShelf() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	p.shelves = shelfwin.NewManager()
+	p.shelf = &shelf.Service{
+		Settings: p.shelfSettings,
+		Spawn:    p.shelves.Spawn,
+	}
+	follow := func() {
+		if err := p.shelf.Follow(p.shelfSettings()); err != nil {
+			log.Println("shelf:", err)
+		}
+	}
+	follow()
+	p.app.Settings.OnChange(func(model.Settings) { follow() })
+}
+
+func (p *program) shelfSettings() shelf.Settings {
+	st := p.app.Settings.Get()
+	return shelf.FromSettings(st.ShelfEnabled, st.ShelfTriggerModifier)
+}
+
+func (p *program) stopShelf() {
+	if p.shelf != nil {
+		p.shelf.Stop()
+	}
+	if p.shelves != nil {
+		p.shelves.CloseAll()
+	}
 }
 
 // redraw asks the visible windows for a frame; any goroutine may call it.
