@@ -153,6 +153,10 @@ const (
 	// cannot be told beforehand) gets a tenth of it.
 	thumbMaxBytes        = 256 << 20
 	thumbMaxUnknownBytes = 32 << 20
+	// thumbMaxUnknownPixels is the largest picture of such a format that is
+	// kept: MyGo's bitmap cannot be cut down, so the cache would hold it whole
+	// (thumbLimit of them), and its size is only known once it is decoded.
+	thumbMaxUnknownPixels = 2_000_000
 )
 
 // get returns the thumbnail, or nil while it is being made (the window is
@@ -233,6 +237,11 @@ func smallBitmap(path string) *ui.Bitmap {
 	}
 	if !known || err != nil {
 		bm, _ := ui.DecodeBitmap(data) // a format only MyGo knows
+		if bm != nil {
+			if w, h := bm.Size(); w*h > thumbMaxUnknownPixels {
+				return nil
+			}
+		}
 		return bm
 	}
 	b := img.Bounds()
