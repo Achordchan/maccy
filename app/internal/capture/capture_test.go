@@ -918,3 +918,14 @@ type moveOnImage struct {
 }
 
 func (m *moveOnImage) ReadImage() []byte { m.move(); return m.fakeClip.ReadImage() }
+
+func TestRecurringContentIsNotARepeat(t *testing.T) {
+	r := newRig(t)
+	r.s.Token = func() string { return "same picture" } // no counter: a content token
+	r.clip.formats, r.clip.image = []string{"image/png"}, tinyPNG(t)
+	r.s.Capture(context.Background())
+	r.s.Capture(context.Background()) // copied again later: the token is the same, the change is not
+	if items := r.h.Items(); len(items) != 1 || items[0].CopyCount != 2 {
+		t.Fatalf("%d items: the second copy of the same picture must count", len(items))
+	}
+}

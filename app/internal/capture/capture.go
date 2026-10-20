@@ -320,7 +320,7 @@ func (s *Service) Capture(ctx context.Context) error {
 	// already moved on, so look again a little later: up to five times in a
 	// row, the count starting over with the next clipboard that reads well.
 	key := s.changeKey() // taken before any read: it is the change being looked at
-	if key != "" && s.lastDone.Load() == any(key) {
+	if strings.HasPrefix(key, "seq:") && s.lastDone.Load() == any(key) {
 		return nil // this change was taken already (the watcher saw it late)
 	}
 	wantRetry := false
@@ -357,8 +357,11 @@ func (s *Service) Capture(ctx context.Context) error {
 			s.discard(it)
 			return
 		}
-		if key != "" {
-			s.lastDone.Store(key) // the next look at this same change is a repeat
+		if strings.HasPrefix(key, "seq:") {
+			// The counter gives every change its own number, so a second look
+			// at the same number is a repeat. A content token is not that: the
+			// same picture copied again has the same token.
+			s.lastDone.Store(key)
 		}
 		wantRetry = false // something was captured: nothing to look at again
 		now := model.Time{Time: s.Now()}
