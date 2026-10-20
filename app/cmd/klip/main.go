@@ -51,7 +51,7 @@ type program struct {
 	prefs    *prefswin.Model
 	prefsWin *mygo.Window
 	upd      *updatewin.Model
-	updWin   *mygo.Window
+	updWins  *updatewin.Manager
 
 	about   *aboutwin.Manager
 	preview *previewwin.Manager
@@ -60,11 +60,12 @@ type program struct {
 	shelf   *shelf.Service
 	layout  paths.Layout
 
+	lastTrayClick time.Time
+
 	redrawPending  atomic.Bool // a redraw is queued for the UI thread
 	followShelf    func()      // starts or stops the shelf as the settings say
 	mandatoryShown atomic.Bool // the window for a mandatory update was put up
 	quitting       atomic.Bool // set when the program is quitting, see OnBeforeQuit
-	lastTrayClick  time.Time
 }
 
 func main() {
@@ -261,10 +262,54 @@ func (p *program) redraw() {
 		if p.prefsWin != nil && p.prefsWin.IsVisible() {
 			p.prefsWin.Update(func() {})
 		}
-		if p.updWin != nil && p.updWin.IsVisible() {
-			p.updWin.Update(func() {})
+		if p.updWins != nil {
+			p.updWins.Sync()
 		}
 	})
+}
+
+// mandatoryPending says whether a mandatory update is known: until it is
+// installed (or the program quit) the rest of the program stays shut, and the
+// update window is what shows.
+func (p *program) mandatoryPending() bool {
+	if p.app == nil || p.app.Updates == nil {
+		return false
+	}
+	if p.app.Updates.MustUpdate() == nil {
+		return false
+	}
+	p.updates()
+	p.updWins.Sync()
+	return true
+}
+
+// gateMandatory is called when the state of the program changed: a mandatory
+// update found by the quiet check puts its window up at once. Any goroutine.
+func (p *program) gateMandatory() {
+	if p.app == nil || p.app.Updates == nil {
+		return
+	}
+	if p.app.Updates.MustUpdate() == nil {
+		// The mandatory update is gone (withdrawn, or installed): the gate opens
+		// again and the shelf comes back as the settings have it.
+		if p.mandatoryShown.Swap(false) && p.followShelf != nil {
+			p.followShelf()
+		}
+		return
+	}
+	if p.mandatoryShown.CompareAndSwap(false, true) {
+		mygo.RunOnMain(func() {
+			// Whatever is open is shut: preferences, the shelves, the shelf
+			// trigger; the update window is all that is left.
+			p.hide()
+			if p.prefsWin != nil {
+				p.prefsWin.Hide()
+			}
+			p.stopShelf()
+			p.updates()
+			p.updWins.Sync()
+		})
+	}
 }
 
 // hide hides the main window, and the windows that belong to it.
@@ -288,83 +333,29 @@ func applyTheme(v string) {
 	}
 }
 
-// mandatoryPending says whether a mandatory update is known: until it is
-// installed (or the program quit) the rest of the program stays shut, and the
-// update window is what shows.
-func (p *program) mandatoryPending() bool {
-	if p.app == nil || p.app.Updates == nil {
-		return false
-	}
-	if p.app.Updates.MustUpdate() == nil {
-		return false
-	}
-	p.showUpdate()
-	return true
-}
-
-// gateMandatory is called when the state of the program changed: a mandatory
-// update found by the quiet check puts its window up at once. Any goroutine.
-func (p *program) gateMandatory() {
-	if p.app == nil || p.app.Updates == nil {
-		return
-	}
-	if p.app.Updates.MustUpdate() == nil {
-		// The mandatory update is gone (withdrawn, or installed): the gate opens
-		// again and the shelf comes back as the settings have it.
-		if p.mandatoryShown.Swap(false) && p.followShelf != nil {
-			p.followShelf()
-		}
-		return
-	}
-	if p.mandatoryShown.CompareAndSwap(false, true) {
-		mygo.RunOnMain(func() {
-			// Whatever is open is shut: preferences, the shelves, the shelf
-			// trigger; the update window is all that is left.
-			p.win.Hide()
-			if p.prefsWin != nil {
-				p.prefsWin.Hide()
-			}
-			p.stopShelf()
-			p.showUpdate()
-		})
-	}
-}
-
-// showUpdate opens the update window: it shows what the coordinator knows.
-func (p *program) showUpdate() {
-	if p.updWin == nil {
+// updates makes the windows of the update on first use.
+func (p *program) updates() *updatewin.Model {
+	if p.upd == nil {
 		p.upd = updatewin.New(p.app.Updates, updHost{p})
-		p.updWin = mygo.NewWindow(mygo.WindowOptions{
-			Title:         "Klip 更新",
-			Width:         480,
-			Height:        400,
-			DisableResize: true,
-			Content:       ui.View(p.upd.View),
-		})
-		p.updWin.OnClose(func(e *mygo.CloseEvent) {
-			if p.quitting.Load() {
-				return
-			}
-			e.PreventDefault()
-			// A mandatory update leaves two ways out, the window's own
-			// buttons: update, or quit. The close box is the second.
-			if p.app.Updates.MustUpdate() != nil {
-				mygo.App.Quit()
-				return
-			}
-			p.app.Updates.Dismiss()
-			p.updWin.Hide()
-		})
+		p.upd.Quitting = p.quitting.Load
+		p.updWins = &updatewin.Manager{Model: p.upd}
 	}
-	p.hide()
-	p.updWin.Show()
-	p.updWin.Focus()
+	return p.upd
 }
 
-// checkUpdates is the user asking: the window shows the check.
+// showUpdate is the update button of the main window: the new version is
+// downloaded at once (with a window for the progress).
+func (p *program) showUpdate() {
+	p.hide()
+	p.updates().ApplyNow()
+	p.updWins.Sync()
+}
+
+// checkUpdates is the user asking (the tray, the preferences): the windows
+// show the check and what it finds.
 func (p *program) checkUpdates() {
-	p.showUpdate()
-	p.upd.CheckNow()
+	p.updates().CheckNow()
+	p.updWins.Sync()
 }
 
 // showPrefs opens the preferences window, made on first use and then only
@@ -379,10 +370,11 @@ func (p *program) showPrefs() {
 		p.prefs.Redraw = p.redraw
 		p.prefs.SyncStatus = p.app.SyncStatus
 		p.prefsWin = mygo.NewWindow(mygo.WindowOptions{
-			Title:   "Klip 偏好设置",
-			Width:   640,
-			Height:  640,
-			Content: ui.View(p.prefs.View),
+			Title:         "设置",
+			Width:         prefswin.Width,
+			Height:        prefswin.Height,
+			DisableResize: true,
+			Content:       ui.View(p.prefs.View),
 		})
 		p.prefsWin.OnClose(func(e *mygo.CloseEvent) {
 			if p.quitting.Load() {
@@ -490,8 +482,7 @@ func (h prefsHost) SyncNow()               { h.p.app.SyncNow() }
 func (h prefsHost) AccountChanged(in bool) { h.p.app.AccountChanged(in) }
 func (h prefsHost) Close()                 { h.p.prefsWin.Hide() }
 
-// updHost is what the update window asks of the program.
+// updHost is what the update windows ask of the program.
 type updHost struct{ p *program }
 
-func (h updHost) Close() { h.p.updWin.Hide() }
-func (h updHost) Quit()  { mygo.App.Quit() }
+func (h updHost) Quit() { mygo.App.Quit() }

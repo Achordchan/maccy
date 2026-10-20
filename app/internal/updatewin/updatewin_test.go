@@ -1,6 +1,7 @@
 package updatewin
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,10 +19,9 @@ import (
 	"klip/internal/update"
 )
 
-type host struct{ closed, quit int }
+type host struct{ quit int }
 
-func (h *host) Close() { h.closed++ }
-func (h *host) Quit()  { h.quit++ }
+func (h *host) Quit() { h.quit++ }
 
 type rig struct {
 	t       *testing.T
@@ -91,12 +91,30 @@ func TestManualCheckUpToDate(t *testing.T) {
 	r := newRig(t, "1.0.11", update.Release{Version: "1.0.11"})
 	r.m.CheckNow()
 	r.wait()
-	if !r.tt.HasText("当前已经是最新版本。") {
-		t.Fatalf("%q", r.tt.Texts())
+	if r.m.Kind() != Message || !r.tt.HasText("检查更新") || !r.tt.HasText("当前已经是最新版本。") {
+		t.Fatalf("%v %q", r.m.Kind(), r.tt.Texts())
 	}
-	r.click("好")
-	if r.h.closed != 1 || r.co.State().Phase != update.Idle {
-		t.Fatalf("closed %d, %+v", r.h.closed, r.co.State())
+	r.click("确定")
+	if r.m.Kind() != None || r.m.Active() || r.co.State().Phase != update.Idle {
+		t.Fatalf("%v active=%v %+v", r.m.Kind(), r.m.Active(), r.co.State())
+	}
+}
+
+func TestCheckWindowText(t *testing.T) {
+	r := newRig(t, "1.0.10", update.Release{Version: "1.0.11"})
+	cu := ui.NewTester(r.m.ViewCheck, Sizes[Check][0], Sizes[Check][1])
+	for _, s := range []string{"检查更新中", "正在连接更新服务器，请稍候..."} {
+		if !cu.HasText(s) {
+			t.Fatalf("missing %q: %q", s, cu.Texts())
+		}
+	}
+}
+
+func TestSilentFindIsNoWindow(t *testing.T) {
+	r := newRig(t, "1.0.10", update.Release{Version: "1.0.11"})
+	r.co.Refresh(context.Background())
+	if r.co.Available() == nil || r.m.Kind() != None {
+		t.Fatalf("a version found by the silent check opens a window: %v", r.m.Kind())
 	}
 }
 
@@ -104,7 +122,10 @@ func TestAvailableShowsNotesAndLater(t *testing.T) {
 	r := newRig(t, "1.0.10", update.Release{Version: "1.0.11", Notes: "- 全新的内核\n- 更小更快"})
 	r.m.CheckNow()
 	r.wait()
-	for _, s := range []string{"发现新版本", "版本：1.0.11", "更新内容：", "稍后", "立即更新"} {
+	if r.m.Kind() != Prompt || r.m.Title(Prompt) != "发现新版本" {
+		t.Fatalf("%v %q", r.m.Kind(), r.m.Title(Prompt))
+	}
+	for _, s := range []string{"发现新版本", "版本：1.0.11", "更新内容：", "稍后", "取消", "立即更新"} {
 		if !r.tt.HasText(s) {
 			t.Fatalf("missing %q: %q", s, r.tt.Texts())
 		}
@@ -112,12 +133,22 @@ func TestAvailableShowsNotesAndLater(t *testing.T) {
 	if !strings.Contains(strings.Join(r.tt.Texts(), "|"), "全新的内核") {
 		t.Fatalf("notes not shown: %q", r.tt.Texts())
 	}
-	if r.tt.HasText("退出") {
-		t.Fatal("a normal update has no quit button")
-	}
 	r.click("稍后")
-	if r.h.closed != 1 || r.co.Available() == nil {
-		t.Fatalf("later must keep the version known: closed %d, %+v", r.h.closed, r.co.State())
+	if r.m.Kind() != None || r.co.Available() == nil {
+		t.Fatalf("later must keep the version known: %v %+v", r.m.Kind(), r.co.State())
+	}
+}
+
+func TestNoticeWithoutNotes(t *testing.T) {
+	r := newRig(t, "1.0.10", update.Release{Version: "1.0.11"})
+	r.m.CheckNow()
+	r.wait()
+	if !r.tt.HasText("（无）") {
+		t.Fatalf("%q", r.tt.Texts())
+	}
+	r.click("取消") // a normal update: cancel is the same as later
+	if r.m.Kind() != None || r.h.quit != 0 {
+		t.Fatalf("%v quit %d", r.m.Kind(), r.h.quit)
 	}
 }
 
@@ -125,32 +156,37 @@ func TestMandatoryUpdateCanBeDeclinedOnlyByQuitting(t *testing.T) {
 	r := newRig(t, "1.0.10", update.Release{Version: "1.0.11", Mandatory: true})
 	r.m.CheckNow()
 	r.wait()
-	if r.tt.HasText("稍后") || !r.tt.HasText("退出") || !r.tt.HasText("这是必须安装的更新。") {
+	if r.m.Title(Prompt) != "需要更新" || r.tt.HasText("稍后") || !r.tt.HasText("退出") {
 		t.Fatalf("%q", r.tt.Texts())
 	}
 	r.click("退出")
 	if r.h.quit != 1 {
 		t.Fatal("quit")
 	}
+	// the close button of the window is the same
+	r.h.quit = 0
+	r.m.WindowClosed(Prompt)
+	if r.h.quit != 1 {
+		t.Fatal("closing the window of a mandatory update must quit")
+	}
 }
 
-func TestApplyShowsProgressThenRestarts(t *testing.T) {
-	r := newRig(t, "1.0.10", update.Release{Version: "1.0.11", Notes: "n"})
-	r.m.CheckNow()
-	r.wait()
+func TestButtonStartsTheDownloadAtOnce(t *testing.T) {
+	r := newRig(t, "1.0.10", update.Release{Version: "1.0.11"})
+	r.co.Refresh(context.Background())
 	r.gate = make(chan struct{})
-	r.click("立即更新")
+	r.m.ApplyNow()
 	deadline := time.Now().Add(3 * time.Second)
 	for r.co.State().Read < 12 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	r.tt.Frame()
-	if !r.tt.HasText("正在下载更新") || !r.tt.HasText("12 B / 24 B（50%）") {
-		t.Fatalf("progress: %q", r.tt.Texts())
+	if r.m.Kind() != Progress || r.m.Title(Progress) != "正在下载更新" || !r.tt.HasText("正在下载...") || !r.tt.HasText("12 B / 24 B") {
+		t.Fatalf("%v: %q", r.m.Kind(), r.tt.Texts())
 	}
 	close(r.gate)
 	r.wait()
-	if r.shut != 1 || len(r.helpers) != 1 || !r.tt.HasText("正在更新") || !r.tt.HasText("正在重启以完成更新...") {
+	if r.shut != 1 || len(r.helpers) != 1 || !r.tt.HasText("正在重启以完成更新...") {
 		t.Fatalf("shut %d helpers %v: %q", r.shut, r.helpers, r.tt.Texts())
 	}
 }
@@ -159,21 +195,18 @@ func TestFailureIsShownAndCanBeRetried(t *testing.T) {
 	r := newRig(t, "1.0.10", update.Release{Version: "1.0.11"})
 	r.m.CheckNow()
 	r.wait()
-	// A manifest that promises another size than the file has.
-	info := r.co.Available()
-	_ = info
 	st := r.co.State()
-	st.Info.InstallerSize = 3 // st.Info is the coordinator's own
+	st.Info.InstallerSize = 3 // a manifest that promises another size than the file has
 	r.click("立即更新")
 	r.wait()
-	if r.shut != 0 || !r.tt.HasText("更新失败") || !r.tt.HasText("下载失败：file size mismatch") || !r.tt.HasText("重试") {
-		t.Fatalf("shut %d: %q", r.shut, r.tt.Texts())
+	if r.shut != 0 || r.m.Kind() != Message || r.m.Title(Message) != "下载失败" || !r.tt.HasText("下载失败") ||
+		!strings.Contains(strings.Join(r.tt.Texts(), "|"), "file size mismatch") || !r.tt.HasText("重试") {
+		t.Fatalf("shut %d %v: %q", r.shut, r.m.Kind(), r.tt.Texts())
 	}
-	// Put right, and again.
 	st.Info.InstallerSize = 24
 	r.click("重试")
 	r.wait()
-	if r.shut != 1 || !r.tt.HasText("正在更新") {
+	if r.shut != 1 || !r.tt.HasText("正在重启以完成更新...") {
 		t.Fatalf("shut %d: %q", r.shut, r.tt.Texts())
 	}
 }
@@ -183,11 +216,19 @@ func TestCheckFailureShowsTheMessage(t *testing.T) {
 	r.co.Client.ManifestURL = r.srv.URL + "/nope.json"
 	r.m.CheckNow()
 	r.wait()
-	if !r.tt.HasText("更新失败") || !strings.Contains(strings.Join(r.tt.Texts(), "|"), "检查更新失败：") {
+	if r.m.Title(Message) != "检查更新失败" || !r.tt.HasText("检查更新失败") || r.tt.HasText("重试") {
 		t.Fatalf("%q", r.tt.Texts())
 	}
-	r.click("关闭")
-	if r.h.closed != 1 || r.co.State().Phase != update.Idle {
-		t.Fatalf("%d %+v", r.h.closed, r.co.State())
+	r.click("确定")
+	if r.m.Active() || r.co.State().Phase != update.Idle {
+		t.Fatalf("%v %+v", r.m.Active(), r.co.State())
+	}
+}
+
+func TestSize(t *testing.T) {
+	for n, want := range map[int64]string{0: "0 B", 1023: "1023 B", 1024: "1.00 KB", 1536: "1.50 KB", 5 << 20: "5.00 MB", 3 << 30: "3.00 GB"} {
+		if got := size(n); got != want {
+			t.Errorf("size(%d) = %q, want %q", n, got, want)
+		}
 	}
 }

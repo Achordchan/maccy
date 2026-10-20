@@ -63,7 +63,7 @@ func newRig(t *testing.T, base string) *rig {
 	// the UI thread would between frames.
 	r.m.Post = func(f func()) { r.mu.Lock(); r.posts = append(r.posts, f); r.mu.Unlock() }
 	r.m.Open()
-	r.tt = ui.NewTester(r.m.View, 640, 640)
+	r.tt = ui.NewTester(r.m.View, Width, Height)
 	return r
 }
 
@@ -106,8 +106,8 @@ func TestTabsAndDefaults(t *testing.T) {
 	if !r.has("开机启动") || !r.has("主题") || !r.has("跟随系统") {
 		t.Fatalf("general: %q", r.tt.Texts())
 	}
-	if r.has("检查更新") {
-		t.Fatal("no update check yet: the row must be hidden")
+	if !r.has("检查更新") || !r.has("检查") {
+		t.Fatalf("the row of the update check is always there: %q", r.tt.Texts())
 	}
 	r.click("内容")
 	for _, s := range []string{"合并重复内容", "收藏项不计入上限", "最大条目", "最大容量（MB）", "存储位置", "捕获文本", "文件后缀", "单文件上限（MB）"} {
@@ -123,9 +123,15 @@ func TestTabsAndDefaults(t *testing.T) {
 		t.Fatalf("shelf: %q", r.tt.Texts())
 	}
 	r.click("云同步")
-	for _, s := range []string{"未登录", "登录", "注册", "忘记密码", "立即同步", "订阅状态", "兑换卡密"} {
+	for _, s := range []string{"未登录", "登录", "注册", "忘记密码", "登录后即可启用云同步，剪贴板历史将自动同步到云端。"} {
 		if !r.has(s) {
 			t.Fatalf("cloud page lacks %q: %q", s, r.tt.Texts())
+		}
+	}
+	// the sync and the plan are for a signed-in user only
+	for _, s := range []string{"立即同步", "订阅状态", "兑换卡密"} {
+		if r.has(s) {
+			t.Fatalf("signed out, the cloud page shows %q", s)
 		}
 	}
 	r.click("关闭")
@@ -134,7 +140,7 @@ func TestTabsAndDefaults(t *testing.T) {
 	}
 }
 
-func TestUpdateRowAppearsWhenHostCanCheck(t *testing.T) {
+func TestUpdateCheckButton(t *testing.T) {
 	r := newRig(t, "")
 	called := 0
 	r.host.updates = func() { called++ }
@@ -224,6 +230,13 @@ func TestStorageAndSyncButtons(t *testing.T) {
 	r := newRig(t, "")
 	r.click("内容")
 	r.click("打开")
+	// the sync buttons are for a signed-in user
+	_ = r.set.Update(func(s *model.Settings) {
+		s.AuthRefreshToken = model.Ptr("r")
+		s.AuthUserEmail = model.Ptr("me@example.com")
+	})
+	r.m.Open()
+	r.tt.Frame()
 	r.click("云同步")
 	r.click("立即同步")
 	if r.host.storage != 1 || r.host.sync != 1 {

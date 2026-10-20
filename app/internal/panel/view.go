@@ -122,6 +122,12 @@ func hline(c *ui.Context, p Palette) {
 // button is a Button of the window: the face of a control, a border, the
 // hover and the pressed colour.
 func button(c *ui.Context, p Palette, label string) ui.Element {
+	return Button(c, p, label, 4, 10, 12)
+}
+
+// Button is the Button of the windows of Klip, with the padding and text
+// size the window asks for.
+func Button(c *ui.Context, p Palette, label string, padV, padH, font float32) ui.Element {
 	b := ui.ButtonBase(c)
 	bg := p.Control
 	switch {
@@ -130,8 +136,8 @@ func button(c *ui.Context, p Palette, label string) ui.Element {
 	case b.Hovered():
 		bg = p.Hover
 	}
-	return b.Padding(4, 10).Radius(4).Border(1, p.Border).Background(bg).Center().Children(func() {
-		ui.Text(c, label).FontSize(12).TextColor(p.Text).SingleLine()
+	return b.Padding(padV, padH).Radius(4).Border(1, p.Border).Background(bg).Center().Children(func() {
+		ui.Text(c, label).FontSize(font).TextColor(p.Text).SingleLine()
 	})
 }
 
