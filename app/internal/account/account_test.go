@@ -539,3 +539,26 @@ func TestSignOutThatCannotBeSavedDoesNotRelabelTheCheckpoints(t *testing.T) {
 		t.Fatalf("the record says %q, but the checkpoints on disk are A's", got)
 	}
 }
+
+func TestSignOutWithARecordThatCannotBeChangedLeavesNoCheckpoints(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := settings.Open(filepath.Join(dir, "settings.json"))
+	s := &Service{Client: syncclient.New("http://127.0.0.1:1"), Store: m, AccountFile: filepath.Join(dir, "sync", "account.txt")}
+	s.setSyncAccount("a@example.com") // the record says A
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "b", RefreshToken: "rb", Email: "b@example.com"}, "b@example.com")
+	_ = m.Update(func(st *model.Settings) { st.SyncLastRemoteVersion = model.Ptr("b-state") })
+	// The record can be neither rewritten nor removed.
+	syncDir := filepath.Dir(s.AccountFile)
+	_ = os.Chmod(s.AccountFile, 0o400)
+	_ = os.Chmod(syncDir, 0o500)
+	defer os.Chmod(syncDir, 0o755)
+	if err := os.WriteFile(s.AccountFile, []byte("x"), 0o600); err == nil {
+		t.Skip("writable anyway (root?)")
+	}
+	if r := s.SignOut(); !r.OK {
+		t.Fatalf("%+v", r)
+	}
+	if m.Get().SyncLastRemoteVersion != nil {
+		t.Fatal("B's checkpoints survived the sign-out next to a record that says A")
+	}
+}

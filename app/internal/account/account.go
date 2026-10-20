@@ -116,16 +116,23 @@ func (s *Service) syncAccount() string {
 	return s.lastAccount
 }
 
-func (s *Service) setSyncAccount(email string) {
+// setSyncAccount records whose the checkpoints are. It says whether the disk
+// now tells the truth: a record that could be neither updated nor removed is
+// still the old one.
+func (s *Service) setSyncAccount(email string) bool {
 	s.lastAccount = email
-	if s.AccountFile != "" {
-		_ = os.MkdirAll(filepath.Dir(s.AccountFile), 0o700)
-		if err := os.WriteFile(s.AccountFile, []byte(email), 0o600); err != nil {
-			// A file that could not be updated must not be left saying the old
-			// account: that would outlive this run and name the wrong one.
-			_ = os.Remove(s.AccountFile)
+	if s.AccountFile == "" {
+		return true
+	}
+	_ = os.MkdirAll(filepath.Dir(s.AccountFile), 0o700)
+	if err := os.WriteFile(s.AccountFile, []byte(email), 0o600); err != nil {
+		// A file that could not be updated must not be left saying the old
+		// account: that would outlive this run and name the wrong one.
+		if rerr := os.Remove(s.AccountFile); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			return false
 		}
 	}
+	return true
 }
 
 func (s *Service) beforeChange() {
@@ -257,8 +264,14 @@ func (s *Service) SignOut() Result {
 		// a restart the user would be signed in again.
 		return fail("已退出，但无法保存设置，重启后可能仍是登录状态：" + err.Error())
 	}
-	if leaving != "" {
-		s.setSyncAccount(leaving)
+	if leaving != "" && !s.setSyncAccount(leaving) {
+		// The record on disk can not be made to say whose the checkpoints are, and
+		// the old one may name somebody else: no checkpoint may outlive this
+		// sign-out, or a later sign-in would take them for its own.
+		_ = s.Store.Update(func(m *model.Settings) {
+			m.SyncLastLocalFingerprint, m.SyncLastRemoteVersion = nil, nil
+			m.SyncLastRemoteUpdatedAt, m.SyncLastRemoteSha256 = nil, nil
+		})
 	}
 	return Result{OK: true, Message: "已退出登录"}
 }
