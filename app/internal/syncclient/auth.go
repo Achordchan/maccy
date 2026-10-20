@@ -94,6 +94,9 @@ func (c *Client) SendPasswordCode(ctx context.Context, purpose, email, accessTok
 	if err != nil {
 		return 0, err
 	}
+	if err := successResponse(obj); err != nil {
+		return 0, err
+	}
 	var n int
 	if json.Unmarshal(obj["cooldownSeconds"], &n) == nil {
 		return max(0, n), nil
@@ -103,19 +106,25 @@ func (c *Client) SendPasswordCode(ctx context.Context, purpose, email, accessTok
 
 // ResetPassword sets a new password with the code that was mailed.
 func (c *Client) ResetPassword(ctx context.Context, email, code, newPassword string) error {
-	_, err := c.jsonRequest(ctx, "/auth/password/reset", map[string]any{
+	obj, err := c.jsonRequest(ctx, "/auth/password/reset", map[string]any{
 		"email": strings.TrimSpace(email), "code": strings.TrimSpace(code), "newPassword": newPassword,
 	}, "")
-	return err
+	if err != nil {
+		return err
+	}
+	return successResponse(obj)
 }
 
 // ChangePassword changes the password of the signed-in account with the code
 // that was mailed.
 func (c *Client) ChangePassword(ctx context.Context, accessToken, code, newPassword string) error {
-	_, err := c.jsonRequest(ctx, "/auth/password/change", map[string]any{
+	obj, err := c.jsonRequest(ctx, "/auth/password/change", map[string]any{
 		"code": strings.TrimSpace(code), "newPassword": newPassword,
 	}, accessToken)
-	return err
+	if err != nil {
+		return err
+	}
+	return successResponse(obj)
 }
 
 // withAccountTimeout bounds an account call. A client built by hand, without
@@ -152,6 +161,16 @@ func (c *Client) tokenRequest(ctx context.Context, path string, payload map[stri
 
 // jsonRequest posts a JSON body. A failure carries the "error" of the
 // answer, or "auth failed (status)".
+// successResponse requires the explicit success flag of a password operation:
+// a proxy's HTML page or a truncated body is not a success.
+func successResponse(obj map[string]json.RawMessage) error {
+	var ok bool
+	if json.Unmarshal(obj["success"], &ok) != nil || !ok {
+		return errors.New("auth server returned no success response")
+	}
+	return nil
+}
+
 func (c *Client) jsonRequest(ctx context.Context, path string, payload any, accessToken string) (map[string]json.RawMessage, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -172,7 +191,10 @@ func (c *Client) jsonRequest(ctx context.Context, path string, payload any, acce
 		return nil, err
 	}
 	defer resp.Body.Close()
-	text, _ := io.ReadAll(resp.Body)
+	text, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		return nil, rerr
+	}
 	obj := decodeObject(text)
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg := scalarString(obj["error"])

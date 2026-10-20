@@ -447,3 +447,21 @@ func TestGetRetriesOnceThenReportsTimeout(t *testing.T) {
 		t.Errorf("hits %d, err %v: one retry after a connection error", hits.Load(), err)
 	}
 }
+
+// A 200 with something that is not the auth server's JSON is not a success.
+func TestPasswordCallsRejectANonJSONSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `<html>captive portal</html>`)
+	}))
+	defer srv.Close()
+	c := New(srv.URL + "/")
+	if _, err := c.SendPasswordCode(bg, "reset", "a@b.com", ""); err == nil {
+		t.Error("an HTML 200 was taken as a sent code")
+	}
+	if err := c.ResetPassword(bg, "a@b.com", "123456", "newpassword"); err == nil {
+		t.Error("an HTML 200 was taken as a reset")
+	}
+	if err := c.ChangePassword(bg, "tok", "123456", "newpassword"); err == nil {
+		t.Error("an HTML 200 was taken as a change")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -307,14 +308,102 @@ func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo, accou
 // persistPendingMerge records the state before a merge, so that the upload
 // that follows is seen as a local change.
 func (s *Syncer) persistPendingMerge(preMergeFingerprint string, basis ManifestInfo, account string) {
+	s.PersistSyncState(pendingFingerprint(preMergeFingerprint, s.Fingerprint()), basis, account)
+	s.clearPendingMerge()
+}
+
+// pendingFingerprint must differ from the history that is about to be
+// uploaded: an empty remote snapshot plus a capture can make the two equal,
+// and then a failed upload would look synchronized.
+func pendingFingerprint(preMergeFingerprint, current string) string {
 	fp := strings.TrimSpace(preMergeFingerprint)
-	// The pending fingerprint must differ from the history that is about to
-	// be uploaded: an empty remote snapshot plus a capture can make the two
-	// equal, and then a failed upload would look synchronized.
-	if fp == "" || fp == s.Fingerprint() {
-		fp = "pending-upload"
+	if fp == "" || fp == current {
+		return "pending-upload"
 	}
-	s.PersistSyncState(fp, basis, account)
+	return fp
+}
+
+// pendingMergeState is a merge that was applied but whose pending upload state
+// was not recorded yet. It is written before the history is flushed, so a
+// crash can resume the upload instead of merging the same items again.
+type pendingMergeState struct {
+	Fingerprint string `json:"fingerprint"`
+	Version     string `json:"version,omitempty"`
+	UpdatedAt   string `json:"updatedAt,omitempty"`
+	SHA256      string `json:"sha256,omitempty"`
+	Size        *int64 `json:"size,omitempty"`
+	Before      string `json:"before"`
+	Account     string `json:"account,omitempty"`
+}
+
+func (s *Syncer) pendingMergePath() string {
+	return filepath.Join(s.cfg.Layout.Root, "sync", "pending-merge.json")
+}
+
+func (s *Syncer) writePendingMerge(p pendingMergeState) {
+	dir := filepath.Dir(s.pendingMergePath())
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return
+	}
+	f, err := os.CreateTemp(dir, "pending-merge.json.tmp-*")
+	if err != nil {
+		return
+	}
+	tmp := f.Name()
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return
+	}
+	_ = os.Chmod(tmp, 0o600)
+	_ = os.Rename(tmp, s.pendingMergePath())
+}
+
+func (s *Syncer) clearPendingMerge() { _ = os.Remove(s.pendingMergePath()) }
+
+func (s *Syncer) readPendingMerge() (pendingMergeState, bool) {
+	b, err := os.ReadFile(s.pendingMergePath())
+	if err != nil {
+		return pendingMergeState{}, false
+	}
+	var p pendingMergeState
+	if json.Unmarshal(b, &p) != nil {
+		return pendingMergeState{}, false
+	}
+	return p, true
+}
+
+// recoverPendingMerge finishes the state of a merge whose history was saved
+// before the pending state: if the merged items are in the history, record the
+// pending upload (so the next decision uploads instead of merging again).
+func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) {
+	p, ok := s.readPendingMerge()
+	if !ok {
+		return
+	}
+	defer s.clearPendingMerge()
+	if p.Account != "" && s.accountChanged(p.Account) {
+		return
+	}
+	if Fingerprint(s.cfg.History.Items()) == p.Before {
+		return // the merged history was never saved
+	}
+	m := ManifestInfo{Version: p.Version, SnapshotSHA256: p.SHA256, SnapshotSize: p.Size}
+	if p.UpdatedAt != "" {
+		if at, err := model.ParseTime(p.UpdatedAt); err == nil {
+			m.UpdatedAt = &at
+		}
+	}
+	s.PersistSyncState(p.Fingerprint, m, p.Account)
+	s.bindFor(p.Account)
 }
 
 func nonEmpty(v string) *string {
@@ -707,6 +796,17 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		Account:             account,
 		PreMergeFingerprint: preMerge,
 	}
+	if merged {
+		// Write the pending state before the history is saved: a crash after
+		// the save but before Run records it must resume the upload.
+		s.writePendingMerge(pendingMergeState{
+			Fingerprint: pendingFingerprint(preMerge, s.Fingerprint()),
+			Version:     sum,
+			SHA256:      sum,
+			Before:      Fingerprint(before),
+			Account:     account,
+		})
+	}
 	// What the limits pruned is unreferenced too, including payloads this
 	// import just installed.
 	cleanup := append(append([]model.Item(nil), before...), applied...)
@@ -715,6 +815,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 
 	report(progress, "persist_local", "保存本地状态", 90)
 	if err := s.cfg.Flush(ctx); err != nil {
+		s.clearPendingMerge()
 		// The history was not saved: put the old one, its settings and its
 		// files back. Captures made meanwhile are kept.
 		if s.accountChanged(account) {
@@ -978,8 +1079,22 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 
 	cleanup := append(append([]model.Item(nil), before...), merged...)
 	removed := s.unreferencedFiles(cleanup, s.cfg.History.Items())
+	var updatedAt string
+	if basis.UpdatedAt != nil {
+		updatedAt = model.FormatO(*basis.UpdatedAt)
+	}
+	s.writePendingMerge(pendingMergeState{
+		Fingerprint: pendingFingerprint(preMergeFingerprint, s.Fingerprint()),
+		Version:     basis.Version,
+		UpdatedAt:   updatedAt,
+		SHA256:      basis.SnapshotSHA256,
+		Size:        basis.SnapshotSize,
+		Before:      Fingerprint(before),
+		Account:     account,
+	})
 	report(progress, "persist_local", "persist local", 90)
 	if err := s.cfg.Flush(ctx); err != nil {
+		s.clearPendingMerge()
 		// The history was not saved: put the old one, its settings and its
 		// files back. Captures made meanwhile are kept.
 		if s.accountChanged(account) {
@@ -1012,6 +1127,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		moves.MarkCommitted()
 	}
 	if s.accountChanged(account) {
+		s.clearPendingMerge()
 		// The session changed while the merged history was being saved: take
 		// this account's items out again and save that.
 		if err := s.discardMutation(ctx, merged, moves, localSettings); err != nil {

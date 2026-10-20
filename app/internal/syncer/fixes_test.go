@@ -2417,3 +2417,40 @@ func TestDownloadMergeMatchesMetadataByHashIdentity(t *testing.T) {
 		t.Errorf("the local edit was lost: %+v", out[0])
 	}
 }
+
+// A merge whose history was saved before the pending state is recovered on
+// the next run instead of merging the items again.
+func TestRecoverPendingMergeRecordsTheUpload(t *testing.T) {
+	s := signedIn(model.DefaultSettings())
+	old := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "old")
+	merged := []model.Item{old, textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "new")}
+	h := &unitHistory{items: merged}
+	syn := unitSyncer(t, serveSnapshot(t, snapshotFile(t, nil)), s, h)
+	syn.writePendingMerge(pendingMergeState{
+		Fingerprint: "pending-upload",
+		Version:     "v1",
+		SHA256:      "sha",
+		Before:      Fingerprint([]model.Item{old}),
+	})
+	syn.recoverPendingMerge(context.Background(), "")
+	if got := model.Str(s.SyncLastLocalFingerprint); got != "pending-upload" {
+		t.Errorf("fingerprint %q: the pending upload was not recovered", got)
+	}
+	if _, err := os.Stat(syn.pendingMergePath()); !os.IsNotExist(err) {
+		t.Errorf("the pending file survived: %v", err)
+	}
+}
+
+// A pending file whose merged history was never saved is dropped without
+// recording anything.
+func TestRecoverPendingMergeIgnoresAnUnsavedHistory(t *testing.T) {
+	s := signedIn(model.DefaultSettings())
+	old := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "old")
+	h := &unitHistory{items: []model.Item{old}}
+	syn := unitSyncer(t, serveSnapshot(t, snapshotFile(t, nil)), s, h)
+	syn.writePendingMerge(pendingMergeState{Fingerprint: "pending-upload", Before: Fingerprint([]model.Item{old})})
+	syn.recoverPendingMerge(context.Background(), "")
+	if s.SyncLastLocalFingerprint != nil {
+		t.Errorf("state was recorded for a history that was never saved: %+v", s)
+	}
+}
