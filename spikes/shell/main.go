@@ -65,7 +65,7 @@ type klip struct {
 	shortcut string
 
 	// poller bookkeeping, read by the footer
-	reads     int // clipboard reads made
+	reads     int          // clipboard reads made
 	skipped   atomic.Int64 // polls that the change counter spared; counted off the UI thread, so no redraw per poll
 	captures  int
 	lastFmts  string
