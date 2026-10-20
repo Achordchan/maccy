@@ -528,3 +528,29 @@ func TestFailedLaterSyncIsTriedAgain(t *testing.T) {
 	a.Auto.Trigger(a.acct(), "auto", false)
 	waitFor(t, "the failed sync is tried again", func() bool { return runs.Load() >= 3 })
 }
+
+func TestManualSyncTurnedAwayDoesNotLeaveTheFooterSyncing(t *testing.T) {
+	a, err := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()}, Clipboard: &fakeClip{}, ChangeSeq: (&fakeClip{}).seq.Load,
+		BaseURL: "http://127.0.0.1:1", Logf: t.Logf, StartupRetry: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	started := make(chan struct{})
+	a.Auto.CanSync = func() bool { return true }
+	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
+		close(started)
+		<-release
+		return nil
+	}
+	a.setStatus("已同步 10:00")
+	a.Auto.Trigger(context.Background(), "auto", false) // one is still running
+	<-started
+	a.SyncNow() // turned away: nothing will ever follow it
+	if got := a.SyncStatus(); got != "已同步 10:00" {
+		t.Fatalf("footer %q: a request that was refused must not show syncing", got)
+	}
+	close(release)
+}

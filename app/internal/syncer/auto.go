@@ -60,9 +60,9 @@ func (a *Auto) Suppressed() bool { return a.suppressed.Load() }
 
 // Trigger runs a sync now, unless one is running. A manual one that cannot
 // start because there is no sign-in reports ErrNotLoggedIn.
-func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {
+func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) bool {
 	if !a.busy.CompareAndSwap(false, true) {
-		return
+		return false
 	}
 	go func() {
 		defer a.busy.Store(false)
@@ -80,6 +80,7 @@ func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {
 			a.Done(reason, manual, err)
 		}
 	}()
+	return true
 }
 
 // Startup is the first background sync.

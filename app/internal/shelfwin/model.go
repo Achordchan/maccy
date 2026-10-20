@@ -95,9 +95,13 @@ func (m *Model) AddFiles(paths []string) {
 			// may be a network share that does not answer: the item is on the
 			// shelf at once and gets them when they come.
 			go func(path string) {
+				// A few at a time: a drop of thousands of files on a share that
+				// does not answer must not park a thread in each of them.
+				metaSlots <- struct{}{}
 				var meta Item
 				meta.Path = path
 				m.fill(&meta)
+				<-metaSlots
 				m.Post(func() {
 					for i := range m.Items {
 						if m.Items[i].Path == path {
@@ -119,6 +123,9 @@ func (m *Model) AddFiles(paths []string) {
 		m.setExpanded(true)
 	}
 }
+
+// metaSlots bounds the file-system lookups running for dropped files.
+var metaSlots = make(chan struct{}, 4)
 
 // fill reads what the file system says about the file of it.
 func (m *Model) fill(it *Item) {

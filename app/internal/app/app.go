@@ -465,11 +465,25 @@ func (a *App) Apply(it model.Item) {
 
 // SyncNow is the user asking for a sync.
 func (a *App) SyncNow() {
+	prev := a.SyncStatus()
 	a.setStatus("同步中…")
 	// Only the syncs started in the background count towards "the first sync
 	// is done" (MainWindowViewModel does the same: !manual); a manual one
 	// that succeeds leaves history-triggered syncing to the next background one.
-	a.Auto.Trigger(a.acct(), "manual", true)
+	if !a.Auto.Trigger(a.acct(), "manual", true) {
+		// Turned away because one is still unwinding: no result will follow this
+		// request, so the footer goes back to what it said (unless that sync has
+		// published something newer in the meantime).
+		a.mu.Lock()
+		restore := a.status == "同步中…"
+		if restore {
+			a.status = prev
+		}
+		a.mu.Unlock()
+		if restore {
+			a.changed()
+		}
+	}
 }
 
 // endAccountWork is called by the account service just before it replaces or
