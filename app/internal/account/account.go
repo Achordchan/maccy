@@ -221,6 +221,13 @@ func (s *Service) SignOut() Result {
 	s.epoch.Add(1)
 	s.beforeChange()
 	defer s.afterChange()
+	// The sync state belongs to the account that is leaving: say so before the
+	// address is forgotten (a login from 1.0.10 has no record of it yet).
+	if s.syncAccount() == "" {
+		if e := strings.TrimSpace(model.Str(s.Store.Get().AuthUserEmail)); e != "" {
+			s.setSyncAccount(e)
+		}
+	}
 	if err := s.Store.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, true) }); err != nil {
 		// The tokens are gone from memory but the file still has them: after
 		// a restart the user would be signed in again.

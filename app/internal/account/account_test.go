@@ -398,3 +398,17 @@ func TestSameAccountAfterASignOutKeepsItsSyncState(t *testing.T) {
 		t.Fatal("signing back in to the same account lost the sync state")
 	}
 }
+
+func TestMigratedLoginSignedOutThenAnotherAccountDoesNotInheritTheSyncState(t *testing.T) {
+	s, m := newService(t, "http://127.0.0.1:1")
+	// What 1.0.10 left: a login and its checkpoints, no record of the account.
+	_ = m.Update(func(st *model.Settings) {
+		st.AuthUserEmail, st.AuthRefreshToken = model.Ptr("old@example.com"), model.Ptr("r")
+		st.SyncLastLocalFingerprint, st.SyncLastRemoteVersion = model.Ptr("fp"), model.Ptr("v9")
+	})
+	s.SignOut()
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a", RefreshToken: "r2", Email: "new@example.com"}, "new@example.com")
+	if m.Get().SyncLastRemoteVersion != nil || m.Get().SyncLastLocalFingerprint != nil {
+		t.Fatal("the new account inherited the checkpoints of the old one")
+	}
+}
