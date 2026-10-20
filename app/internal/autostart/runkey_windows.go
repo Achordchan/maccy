@@ -38,7 +38,10 @@ func (userRunKey) Set(name, value string) error {
 func (userRunKey) Delete(name string) error {
 	k, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
 	if err != nil {
-		return nil // no key, no value
+		if errors.Is(err, registry.ErrNotExist) {
+			return nil // no key, no value
+		}
+		return err // denied, or something else: the value may still be there
 	}
 	defer k.Close()
 	if err := k.DeleteValue(name); err != nil && !errors.Is(err, registry.ErrNotExist) {
