@@ -268,3 +268,17 @@ func TestPasswordCodeFlow(t *testing.T) {
 		t.Fatalf("SendCode change signed out: %+v", r)
 	}
 }
+
+func TestNetworkFailureKeepsTheLogin(t *testing.T) {
+	s, m := newService(t, "http://127.0.0.1:1") // nobody answers there
+	_ = m.Update(func(st *model.Settings) {
+		st.AuthAccessToken, st.AuthRefreshToken = model.Ptr("old-access"), model.Ptr("the-refresh")
+		st.AuthExpiresAtUnixMs = 1 // expired: a refresh is needed
+	})
+	if _, err := s.EnsureAccessToken(context.Background()); err == nil {
+		t.Fatal("no answer must be an error, not a sign-out")
+	}
+	if model.Str(m.Get().AuthRefreshToken) != "the-refresh" {
+		t.Fatal("the login was erased by a network failure")
+	}
+}

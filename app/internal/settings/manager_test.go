@@ -76,3 +76,21 @@ func TestManagerConcurrent(t *testing.T) {
 		t.Fatalf("lost updates: %d", m.Get().MaxItems)
 	}
 }
+
+func TestHandlersGetTheSettingsAsTheyAreNow(t *testing.T) {
+	m, _ := Open(filepath.Join(t.TempDir(), "settings.json"))
+	var seen []bool
+	m.OnChange(func(s model.Settings) {
+		if len(seen) == 0 {
+			// A second update lands while the first is still being delivered.
+			_ = m.Update(func(s *model.Settings) { s.CaptureText = false })
+		}
+		seen = append(seen, s.CaptureText)
+	})
+	_ = m.Update(func(s *model.Settings) { s.CaptureText = true })
+	// The first delivery was handed the newest settings, not the ones its own
+	// update made, so it cannot undo the second.
+	if len(seen) != 2 || seen[0] != false || seen[1] != false {
+		t.Fatalf("handlers saw %v, want the newest (false) both times", seen)
+	}
+}

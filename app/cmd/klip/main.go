@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -27,6 +28,13 @@ import (
 //go:embed icon.png
 var trayIcon []byte
 
+// trayTemplate is a black ring on a transparent ground: the menu bar of macOS
+// draws a template image in its own colour, and a coloured square would show
+// as a solid white block.
+//
+//go:embed tray.png
+var trayTemplate []byte
+
 // shortcuts are tried in turn: the one of the C# client first.
 var shortcuts = []string{"Ctrl+Alt+2", "CmdOrCtrl+Alt+Shift+2"}
 
@@ -44,9 +52,15 @@ type program struct {
 	shelves *shelfwin.Manager
 	shelf   *shelf.Service
 	layout  paths.Layout
+
+	quitting atomic.Bool // set when the program is quitting, see OnBeforeQuit
 }
 
 func main() {
+	// The name keys the single-instance lock; by default it is the file name
+	// of the executable, so Klip.app and a binary of another name would not
+	// see each other.
+	mygo.App.SetName("Klip")
 	// Started as the helper of an update: replace the files and start the
 	// program again. This comes before everything else, as a second
 	// instance must not be told to show itself.
@@ -63,6 +77,7 @@ func main() {
 	mygo.App.OnWindowAllClosed(func() {})
 	p := &program{}
 	mygo.App.OnSecondInstance(func([]string, string) { p.show() })
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { p.quitting.Store(true) })
 	mygo.App.WhenReady(p.ready)
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
@@ -106,6 +121,9 @@ func (p *program) ready() {
 		Content:       ui.View(p.model.View),
 	})
 	p.win.OnClose(func(e *mygo.CloseEvent) {
+		if p.quitting.Load() {
+			return // Quit closes every window; one that refuses stops it
+		}
 		e.PreventDefault()
 		p.win.Hide()
 	})
@@ -125,9 +143,13 @@ func (p *program) ready() {
 	if registered != "" {
 		tip += " (" + registered + ")"
 	}
+	icon, template := trayIcon, false
+	if runtime.GOOS == "darwin" {
+		icon, template = trayTemplate, true
+	}
 	p.tray, err = mygo.NewTray(mygo.TrayOptions{
-		Icon:           trayIcon,
-		IconIsTemplate: true,
+		Icon:           icon,
+		IconIsTemplate: template,
 		ToolTip:        tip,
 		Menu: mygo.NewMenu([]*mygo.MenuItem{
 			{Label: "显示 Klip", Click: func(*mygo.MenuItem, *mygo.Window) { p.show() }},
@@ -223,7 +245,16 @@ func (p *program) showUpdate() {
 			Content:       ui.View(p.upd.View),
 		})
 		p.updWin.OnClose(func(e *mygo.CloseEvent) {
+			if p.quitting.Load() {
+				return
+			}
 			e.PreventDefault()
+			// A mandatory update leaves two ways out, the window's own
+			// buttons: update, or quit. The close box is the second.
+			if i := p.app.Updates.Available(); i != nil && i.Mandatory {
+				mygo.App.Quit()
+				return
+			}
 			p.app.Updates.Dismiss()
 			p.updWin.Hide()
 		})
@@ -254,6 +285,9 @@ func (p *program) showPrefs() {
 			Content: ui.View(p.prefs.View),
 		})
 		p.prefsWin.OnClose(func(e *mygo.CloseEvent) {
+			if p.quitting.Load() {
+				return
+			}
 			e.PreventDefault()
 			p.prefsWin.Hide()
 		})

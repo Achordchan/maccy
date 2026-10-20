@@ -206,3 +206,12 @@ func TestCaptureFileMaxIsKeptInRange(t *testing.T) {
 		t.Fatalf("padded: %+v", e)
 	}
 }
+
+func TestEnablingShelfReplacesDisabledModifier(t *testing.T) {
+	c, m, _, _ := newCtl(t)
+	_ = m.Update(func(s *model.Settings) { s.ShelfTriggerModifier = "Disabled"; s.ShelfEnabled = true })
+	c.SetShelfEnabled(true)
+	if got := m.Get().ShelfTriggerModifier; got != "Ctrl" {
+		t.Fatalf("modifier = %q, want the one that is shown", got)
+	}
+}
