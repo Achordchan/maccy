@@ -89,7 +89,12 @@ func (m *Model) View(c *ui.Context) {
 			ui.Text(c, st.Message).Wrap()
 			m.spacer(c)
 			m.buttons(c, func() {
-				if st.Info != nil && !st.Check && ui.Button(c, "重试").Clicked() {
+				// After a failed look the known update can still be installed.
+				retry := "重试"
+				if st.Check {
+					retry = "立即更新"
+				}
+				if st.Info != nil && ui.Button(c, retry).Clicked() {
 					m.apply()
 				}
 				if m.Coordinator.MustUpdate() != nil {

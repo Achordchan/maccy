@@ -93,6 +93,13 @@ func (s *Service) storeTokens(t syncclient.TokenSet, fallbackEmail string) error
 		email = fallbackEmail
 	}
 	return s.Store.Update(func(m *model.Settings) {
+		if prev := strings.TrimSpace(model.Str(m.AuthUserEmail)); !strings.EqualFold(prev, strings.TrimSpace(email)) {
+			// Somebody else's account: what was remembered of the last sync is
+			// about another server-side history, and would make the first
+			// sync here look like a rollback or a one-sided change.
+			m.SyncLastLocalFingerprint, m.SyncLastRemoteVersion = nil, nil
+			m.SyncLastRemoteUpdatedAt, m.SyncLastRemoteSha256 = nil, nil
+		}
 		m.AuthAccessToken = &t.AccessToken
 		m.AuthRefreshToken = &t.RefreshToken
 		m.AuthIdToken = &t.IDToken

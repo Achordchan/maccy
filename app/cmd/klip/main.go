@@ -186,6 +186,10 @@ func (p *program) startShelf() {
 		Spawn:    p.shelves.Spawn,
 	}
 	follow := func() {
+		if p.app.Updates.MustUpdate() != nil {
+			p.shelf.Stop() // a mandatory update is waiting: no shelf until it is dealt with
+			return
+		}
 		if err := p.shelf.Follow(p.shelfSettings()); err != nil {
 			log.Println("shelf:", err)
 		}
@@ -259,7 +263,13 @@ func (p *program) gateMandatory() {
 	}
 	if p.app.Updates.MustUpdate() != nil && p.mandatoryShown.CompareAndSwap(false, true) {
 		mygo.RunOnMain(func() {
+			// Whatever is open is shut: preferences, the shelves, the shelf
+			// trigger; the update window is all that is left.
 			p.win.Hide()
+			if p.prefsWin != nil {
+				p.prefsWin.Hide()
+			}
+			p.stopShelf()
 			p.showUpdate()
 		})
 	}

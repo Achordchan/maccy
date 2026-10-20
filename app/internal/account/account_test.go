@@ -360,3 +360,20 @@ func TestPasswordCleanupLeavesANewerLoginAlone(t *testing.T) {
 		t.Fatal("the session of the password that changed must end, renewed tokens or not")
 	}
 }
+
+func TestAnotherAccountStartsWithoutTheLastSyncState(t *testing.T) {
+	s, m := newService(t, "http://127.0.0.1:1")
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a1", RefreshToken: "r1", Email: "one@example.com"}, "one@example.com")
+	_ = m.Update(func(st *model.Settings) {
+		st.SyncLastLocalFingerprint, st.SyncLastRemoteVersion = model.Ptr("fp"), model.Ptr("v1")
+	})
+	// The same account signing in again keeps what it knows.
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a1b", RefreshToken: "r1b", Email: "ONE@example.com"}, "one@example.com")
+	if model.Str(m.Get().SyncLastRemoteVersion) != "v1" {
+		t.Fatal("the same account lost its sync state")
+	}
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a2", RefreshToken: "r2", Email: "two@example.com"}, "two@example.com")
+	if m.Get().SyncLastLocalFingerprint != nil || m.Get().SyncLastRemoteVersion != nil {
+		t.Fatal("another account must not inherit the sync state of the first")
+	}
+}
