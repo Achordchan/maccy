@@ -295,9 +295,12 @@ func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo) {
 // persistPendingMerge records the state before a merge, so that the upload
 // that follows is seen as a local change.
 func (s *Syncer) persistPendingMerge(preMergeFingerprint string, basis ManifestInfo) {
-	fp := preMergeFingerprint
-	if strings.TrimSpace(fp) == "" {
-		fp = "pre-merge"
+	fp := strings.TrimSpace(preMergeFingerprint)
+	// The pending fingerprint must differ from the history that is about to
+	// be uploaded: an empty remote snapshot plus a capture can make the two
+	// equal, and then a failed upload would look synchronized.
+	if fp == "" || fp == s.Fingerprint() {
+		fp = "pending-upload"
 	}
 	s.PersistSyncState(fp, basis)
 }
@@ -563,6 +566,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	defer s.gate.Unlock()
 	started := s.cfg.Now()
 	report(progress, "prepare_local", "准备本地数据", 30)
+	s.recoverPayloadDirs()
 	token, err := s.connection(ctx)
 	if err != nil {
 		return DownloadResult{}, err
@@ -797,6 +801,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	defer s.gate.Unlock()
 	started := s.cfg.Now()
 	report(progress, "prepare_local", "prepare local", 18)
+	s.recoverPayloadDirs()
 	token, err := s.connection(ctx)
 	if err != nil {
 		return err
@@ -848,7 +853,10 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	if sum, err := snapshot.FileSHA256(path); err == nil {
 		// The snapshot may be newer than the manifest the decision was made
 		// on: the pending state must name the file that was actually merged.
-		basis = snapshotState(DownloadResult{SnapshotSHA256: sum}, basis, s.cfg.Now().UTC())
+		basis = snapshotState(DownloadResult{SnapshotSHA256: sum}, basis)
+		if basis.Version == "" {
+			basis.Version = sum
+		}
 	}
 	s.timing("merge", "download_snapshot", started, fmt.Sprintf("%s;size=%d", reason, fileSize(path)))
 
@@ -1043,6 +1051,50 @@ func (s *Syncer) mutateHistory(ctx context.Context, f func([]model.Item) ([]mode
 	s.suppress(true)
 	defer s.suppress(false)
 	return s.cfg.History.Mutate(ctx, f)
+}
+
+// recoverPayloadDirs finishes or undoes a cache-folder replacement that a
+// crash interrupted. history.json is the source of truth: a folder whose
+// files the history still names is current (its backup is deleted); a folder
+// whose history names files that are missing is restored from its backup.
+func (s *Syncer) recoverPayloadDirs() {
+	dir := s.cfg.Layout.Files()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	backups := map[string]string{}
+	for _, e := range ents {
+		name := e.Name()
+		if i := strings.Index(name, ".old-"); i > 0 {
+			backups[name[:i]] = filepath.Join(dir, name)
+		}
+	}
+	if len(backups) == 0 {
+		return
+	}
+	items := s.cfg.History.Items()
+	for target, backup := range backups {
+		targetPath := filepath.Join(dir, target)
+		used, broken := false, false
+		for _, it := range items {
+			for _, p := range it.FilePaths {
+				if filepath.Dir(filepath.Clean(p)) != targetPath {
+					continue
+				}
+				used = true
+				if !isFile(p) {
+					broken = true
+				}
+			}
+		}
+		if used && !broken {
+			_ = os.RemoveAll(backup)
+			continue
+		}
+		_ = os.RemoveAll(targetPath)
+		_ = os.Rename(backup, targetPath)
+	}
 }
 
 // payloadFiles is where an item keeps its image or file contents.

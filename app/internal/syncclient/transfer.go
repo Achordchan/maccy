@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -94,7 +95,10 @@ func (c *Client) UploadSnapshot(ctx context.Context, accessToken, snapshotPath s
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, newAPIError(resp, "upload snapshot failed", true)
 	}
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("upload response: %w", err)
+	}
 	obj := decodeObject(b)
 	return &UploadResult{
 		Version: scalarString(obj["version"]),

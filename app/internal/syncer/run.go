@@ -3,7 +3,6 @@ package syncer
 import (
 	"context"
 	"strings"
-	"time"
 
 	"klip/internal/model"
 	"klip/internal/syncclient"
@@ -80,7 +79,11 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 			// merge has unpublished items, so upload it as a merge does. The
 			// pending state is recorded first, so a failed upload is retried
 			// as a local change and not mistaken for the downloaded snapshot.
-			s.persistPendingMerge(dr.PreMergeFingerprint, s.downloadState(ctx, dr, d.Manifest))
+			state := s.downloadState(ctx, dr, d.Manifest)
+			if s.accountChanged(account) {
+				return res, ErrSessionChanged
+			}
+			s.persistPendingMerge(dr.PreMergeFingerprint, state)
 			up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_download_merge_upload", account)
 			if err != nil {
 				return res, err
@@ -94,7 +97,11 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		if s.accountChanged(account) {
 			return res, ErrSessionChanged
 		}
-		s.PersistSyncState(dr.Fingerprint, s.downloadState(ctx, dr, d.Manifest))
+		state := s.downloadState(ctx, dr, d.Manifest)
+		if s.accountChanged(account) {
+			return res, ErrSessionChanged
+		}
+		s.PersistSyncState(dr.Fingerprint, state)
 
 	case Merge:
 		if err := s.mergeAndApply(ctx, d.Manifest, d.LocalFingerprint, progress, reason, account); err != nil {
@@ -118,6 +125,9 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		if err := s.persistAfterUpload(ctx, up, &d.Manifest, fp, account); err != nil {
 			return res, err
 		}
+	}
+	if s.accountChanged(account) {
+		return res, ErrSessionChanged
 	}
 	if err := s.bindAccount(account); err != nil {
 		return res, err
@@ -178,15 +188,15 @@ func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadRe
 	if s.accountChanged(account) {
 		return ErrSessionChanged
 	}
-	now := s.cfg.Now().UTC()
 	switch {
 	case up != nil:
-		m := ManifestInfo{Version: up.Version, UpdatedAt: &now, SnapshotSHA256: up.SHA256, SnapshotSize: up.Size}
+		// No server timestamp: the client's clock would look like a rollback.
+		m := ManifestInfo{Version: up.Version, SnapshotSHA256: up.SHA256, SnapshotSize: up.Size}
 		s.PersistSyncState(fp, m)
 	case fallback != nil:
 		s.PersistSyncState(fp, *fallback)
 	default:
-		s.PersistSyncState(fp, ManifestInfo{UpdatedAt: &now})
+		s.PersistSyncState(fp, ManifestInfo{})
 	}
 	return nil
 }
@@ -235,6 +245,9 @@ func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) er
 		return ErrSessionChanged
 	}
 	state := s.downloadState(ctx, dr, m)
+	if s.accountChanged(dr.Account) {
+		return ErrSessionChanged
+	}
 	if dr.Merged {
 		// A restore that had to merge a local capture has items that were
 		// never uploaded: remember the pending upload, not a synchronized
@@ -253,7 +266,7 @@ func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) er
 // the next run downloads instead of treating the state as a first sync (which
 // would merge the same items twice).
 func (s *Syncer) downloadState(ctx context.Context, dr DownloadResult, basis ManifestInfo) ManifestInfo {
-	state := snapshotState(dr, basis, s.cfg.Now().UTC())
+	state := snapshotState(dr, basis)
 	if state.Version != "" || dr.SnapshotSHA256 == "" {
 		return state
 	}
@@ -268,10 +281,12 @@ func (s *Syncer) downloadState(ctx context.Context, dr DownloadResult, basis Man
 // manifest, when it still describes the snapshot that was applied; otherwise
 // only the hash of what was applied, so that the next sync looks at the newer
 // snapshot again.
-func snapshotState(dr DownloadResult, basis ManifestInfo, now time.Time) ManifestInfo {
+func snapshotState(dr DownloadResult, basis ManifestInfo) ManifestInfo {
 	if sha := strings.TrimSpace(basis.SnapshotSHA256); sha != "" && dr.SnapshotSHA256 != "" &&
 		strings.EqualFold(sha, dr.SnapshotSHA256) {
 		return basis
 	}
-	return ManifestInfo{UpdatedAt: &now, SnapshotSHA256: dr.SnapshotSHA256}
+	// No server timestamp: a client clock would make the next run think the
+	// remote snapshot was rolled back.
+	return ManifestInfo{SnapshotSHA256: dr.SnapshotSHA256}
 }

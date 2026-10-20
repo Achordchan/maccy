@@ -1812,3 +1812,72 @@ func TestSessionCleanupIsSavedAfterACancelledFlush(t *testing.T) {
 		t.Errorf("the applied items were left behind: %+v", h.items)
 	}
 }
+
+// A pending fingerprint must never equal the unpublished history it is meant
+// to differ from.
+func TestPendingFingerprintAlwaysDiffers(t *testing.T) {
+	item := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "one")
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, serveSnapshot(t, snapshotFile(t, nil)), s, &unitHistory{items: []model.Item{item}})
+	syn.persistPendingMerge(Fingerprint([]model.Item{item}), ManifestInfo{Version: "v1"})
+	if got := model.Str(s.SyncLastLocalFingerprint); got == Fingerprint([]model.Item{item}) || got == "" {
+		t.Errorf("pending fingerprint %q equals the unpublished history", got)
+	}
+}
+
+// Without an authoritative manifest the remote update time stays unknown: a
+// client clock could look like a server rollback.
+func TestUploadFallbackLeavesTheRemoteTimeUnknown(t *testing.T) {
+	srv := serveManifest(t, "", "", "") // every answer is a 404
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, &unitHistory{})
+	if err := syn.persistAfterUpload(context.Background(), &syncclient.UploadResult{Version: "v1", SHA256: "sha-1"}, nil, "fp", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := model.Str(s.SyncLastRemoteUpdatedAt); got != "" {
+		t.Errorf("updatedAt %q: a client time was invented", got)
+	}
+}
+
+// A crash between replacing a cache folder and saving the history is undone
+// on the next sync: history.json is the source of truth.
+func TestRecoverPayloadDirsAfterAnInterruptedReplacement(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	l := paths.Layout{Root: t.TempDir()}
+	dir := filepath.Join(l.Files(), strings.ReplaceAll(id, "-", ""))
+	target := filepath.Join(dir, "0000_new.txt")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	backup := dir + ".old-deadbeef"
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(backup, "0000_old.txt")
+	if err := os.WriteFile(old, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The history still names the old file, which the new folder does not have.
+	h := &unitHistory{items: []model.Item{{
+		ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()},
+		ApproxBytes: 3, FilePaths: []string{filepath.Join(dir, "0000_old.txt")}, CopyCount: 1,
+	}}}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, serveSnapshot(t, snapshotFile(t, nil)), s, h)
+	syn.cfg.Layout = l
+	syn.recoverPayloadDirs()
+
+	if b, err := os.ReadFile(filepath.Join(dir, "0000_old.txt")); err != nil || string(b) != "old" {
+		t.Errorf("the old cache was not restored: %q %v", b, err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Error("the unsaved replacement was kept")
+	}
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Error("the backup folder was left behind")
+	}
+}
