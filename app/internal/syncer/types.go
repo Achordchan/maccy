@@ -77,9 +77,13 @@ type History interface {
 	// Mutate replaces the history with f applied to it as it is at that
 	// moment, under the history's own lock, so that a capture or a note edit
 	// made while a merge is prepared is part of the merge instead of being
-	// overwritten. Like ReplaceAll, it removes the files of the items that
-	// are gone.
+	// overwritten. It does not delete the files of the items that are gone:
+	// the caller removes them with RemoveFiles only after the new history is
+	// safely saved, so a failed save can still recover them.
 	Mutate(ctx context.Context, f func(items []model.Item) ([]model.Item, error)) error
+	// RemoveFiles deletes payload files (images, cached files) that no item
+	// refers to any more.
+	RemoveFiles(paths []string) error
 	// ReplaceAll replaces the history and removes the files of the items that
 	// are gone.
 	ReplaceAll(ctx context.Context, items []model.Item) error

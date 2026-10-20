@@ -36,6 +36,13 @@ func (h *unitHistory) ReplaceAll(_ context.Context, items []model.Item) error {
 	return nil
 }
 
+func (h *unitHistory) RemoveFiles(paths []string) error {
+	for _, p := range paths {
+		_ = os.Remove(p)
+	}
+	return nil
+}
+
 func (h *unitHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.Item, error)) error {
 	next, err := f(append([]model.Item(nil), h.items...))
 	if err != nil {
@@ -72,6 +79,7 @@ func (h *changingHistory) Mutate(ctx context.Context, f func([]model.Item) ([]mo
 	return h.ReplaceAll(ctx, next)
 }
 
+func (h *changingHistory) RemoveFiles([]string) error                     { return nil }
 func (h *changingHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
 
 func (h *changingHistory) ApplyLimits(model.Settings) {}
@@ -327,6 +335,7 @@ func (h *mergeHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.I
 	return nil
 }
 
+func (h *mergeHistory) RemoveFiles([]string) error                     { return nil }
 func (h *mergeHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
 
 func (h *mergeHistory) ApplyLimits(model.Settings) {}
@@ -453,6 +462,7 @@ func TestParseManifestStrictRejectsAGarbledAnswer(t *testing.T) {
 		`{}`,
 		`{"latest":{}}`,
 		`{"latest":{"updatedAt":"not a time"}}`,
+		`{"latest":{"updatedAt":"2026-05-30T12:00:00+00:00","snapshot":[]}}`,
 		`{"latest":`,
 	} {
 		if _, err := ParseManifestStrict(in); err == nil {
@@ -489,6 +499,7 @@ func (h *downloadArrivalHistory) Mutate(_ context.Context, f func([]model.Item) 
 	return nil
 }
 
+func (h *downloadArrivalHistory) RemoveFiles([]string) error                     { return nil }
 func (h *downloadArrivalHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
 
 func (h *downloadArrivalHistory) ApplyLimits(model.Settings) {}
@@ -1019,5 +1030,167 @@ func TestMergeBackupFailsWhenTheSourceIsGone(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "payload is gone") {
 		t.Errorf("a backup without its payload: %v", err)
+	}
+}
+
+// cleaningHistory removes payloads in RemoveFiles, as the real history does.
+type cleaningHistory struct {
+	unitHistory
+	removed []string
+}
+
+func (h *cleaningHistory) RemoveFiles(paths []string) error {
+	h.removed = append(h.removed, paths...)
+	return h.unitHistory.RemoveFiles(paths)
+}
+
+// A payload that the downloaded history no longer refers to stays until the
+// new history is saved; only then is it removed.
+func TestDownloadKeepsPayloadsUntilFlushed(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	if err := os.MkdirAll(l.Images(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	img := filepath.Join(l.Images(), "1780000000000_local.png")
+	if err := os.WriteFile(img, []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	local := model.Item{
+		ID: "7c9e6679-7425-40de-944b-e07fc1f90ae7", Kind: model.KindImage,
+		CapturedAt: model.Time{Time: time.Now()}, ApproxBytes: 5, ImageFilePath: &img, CopyCount: 1,
+	}
+	remote := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{remote}))
+	defer srv.Close()
+
+	h := &cleaningHistory{unitHistory: unitHistory{items: []model.Item{local}}}
+	s := signedIn(model.DefaultSettings())
+	syn := New(Config{
+		Layout:   l,
+		Settings: syncclient.Settings{Get: func() model.Settings { return *s }, Update: func(f func(*model.Settings)) { f(s) }},
+		History:  h,
+		Client:   syncclient.New(srv.URL),
+		BaseURL:  srv.URL,
+		Now:      time.Now,
+	})
+	syn.cfg.Flush = func(context.Context) error { return errors.New("disk full") }
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+		t.Fatal("a failed flush stopped nothing")
+	}
+	if _, err := os.Stat(img); err != nil {
+		t.Fatal("the old payload was removed before the new history was saved")
+	}
+	if len(h.items) != 1 || h.items[0].ID != local.ID {
+		t.Errorf("the old history was not restored: %+v", h.items)
+	}
+
+	// The next attempt saves the history, and only then removes the payload.
+	syn.cfg.Flush = func(context.Context) error { return nil }
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(img); !os.IsNotExist(err) {
+		t.Errorf("the unreferenced payload is still there: %v", err)
+	}
+}
+
+// A capture made while the failed download is being flushed is not part of
+// what is rolled back; the previous portable settings come back too.
+func TestDownloadRollbackKeepsANewCaptureAndTheSettings(t *testing.T) {
+	remoteSettings := model.DefaultSettings()
+	remoteSettings.MaxItems = 1
+	remote := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")
+	srv := serveSnapshot(t, snapshotFileWithSettings(t, []model.Item{remote}, remoteSettings))
+	defer srv.Close()
+
+	local := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")
+	captured := textItemAt("16fd2706-8baf-433b-82eb-8c7fada847da", "captured while flushing")
+	h := &unitHistory{items: []model.Item{local}}
+	s := signedIn(model.DefaultSettings())
+	s.MaxItems = 50
+	syn := unitSyncer(t, srv, s, h)
+	syn.cfg.Flush = func(context.Context) error {
+		h.items = append([]model.Item{captured}, h.items...)
+		return errors.New("disk full")
+	}
+
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+		t.Fatal("a failed flush stopped nothing")
+	}
+	var ids []string
+	for _, it := range h.items {
+		ids = append(ids, it.ID)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("history %v: the capture made during the flush was lost", ids)
+	}
+	have := map[string]bool{ids[0]: true, ids[1]: true}
+	if !have[captured.ID] || !have[local.ID] {
+		t.Errorf("history %v", ids)
+	}
+	if s.MaxItems != 50 {
+		t.Errorf("MaxItems %d: the remote settings were not rolled back", s.MaxItems)
+	}
+}
+
+// If the upload after a download-time merge fails, the pending state was
+// recorded, so the next run uploads the merged history instead of treating it
+// as the downloaded snapshot.
+func TestDownloadMergeRecordsPendingStateBeforeUpload(t *testing.T) {
+	remote := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "remote")
+	data := snapshotFile(t, []model.Item{remote})
+	tmp := filepath.Join(t.TempDir(), "remote.sqlite")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sha, err := snapshot.FileSHA256(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failUpload atomic.Bool
+	failUpload.Store(true)
+	var puts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/sync/manifest":
+			io.WriteString(w, `{"schema":1,"latest":{"version":"v1","updatedAt":"2026-05-30T12:00:00+00:00","snapshot":{"sha256":"`+sha+`","size":1}}}`)
+		case r.URL.Path == "/sync/snapshot" && r.Method == http.MethodGet:
+			w.Write(data)
+		case r.URL.Path == "/sync/snapshot" && r.Method == http.MethodPut:
+			puts.Add(1)
+			if failUpload.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			io.WriteString(w, `{"version":"v2","sha256":"uploaded","size":1}`)
+		case r.URL.Path == "/sync/blobs/check":
+			io.WriteString(w, `{"missing":[]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	captured := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "captured during the download")
+	h := &downloadArrivalHistory{current: []model.Item{captured}}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	if _, err := syn.Run(context.Background(), nil, "test"); err == nil {
+		t.Fatal("the failed upload stopped nothing")
+	}
+	if got := model.Str(s.SyncLastRemoteVersion); got != "v1" {
+		t.Errorf("version %q: the pending merge state was not recorded", got)
+	}
+	if got := model.Str(s.SyncLastLocalFingerprint); got == Fingerprint(h.items) {
+		t.Error("the unpublished merge was recorded as synchronized")
+	}
+
+	failUpload.Store(false)
+	res, err := syn.Run(context.Background(), nil, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision.Reason != "local_changed_only" || puts.Load() != 2 {
+		t.Errorf("retry: %+v, uploads %d", res.Decision, puts.Load())
 	}
 }

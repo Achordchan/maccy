@@ -214,3 +214,23 @@ func TestAutoSyncsAgainForARemoteUpdateDuringASync(t *testing.T) {
 		t.Errorf("runs %d: a remote update during a sync should be one more sync", n)
 	}
 }
+
+// A capture made while the first (startup) sync is running must not be lost:
+// the first sync remembers only what it exported, so a follow-up is needed.
+func TestAutoKeepsACaptureDuringTheFirstSync(t *testing.T) {
+	r := newRig()
+	ctx := context.Background()
+	gate := make(chan struct{})
+	r.setGate(gate)
+	r.a.Startup(ctx)
+	waitFor(t, "the startup sync", func() bool { return r.runs.Load() == 1 })
+	r.a.OnHistoryChanged(ctx) // initialDone is still false, but the sync runs
+	close(gate)
+
+	waitFor(t, "the follow-up sync", func() bool { return r.runs.Load() == 2 })
+	waitFor(t, "idle", func() bool { return !r.a.busy.Load() })
+	time.Sleep(80 * time.Millisecond)
+	if n := r.runs.Load(); n != 2 {
+		t.Errorf("runs %d: the capture made during the first sync was dropped", n)
+	}
+}

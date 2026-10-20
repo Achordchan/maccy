@@ -62,7 +62,10 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		}
 		if dr.Merged {
 			// The history changed while the snapshot was downloading: the
-			// merge has unpublished items, so upload it as a merge does.
+			// merge has unpublished items, so upload it as a merge does. The
+			// pending state is recorded first, so a failed upload is retried
+			// as a local change and not mistaken for the downloaded snapshot.
+			s.persistPendingMerge(d.LocalFingerprint, d.Manifest)
 			up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_download_merge_upload", account)
 			if err != nil {
 				return res, err

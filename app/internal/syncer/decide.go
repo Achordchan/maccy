@@ -58,9 +58,16 @@ func ParseManifestInfo(manifestJSON string) ManifestInfo {
 // page, a truncated body or an invalid time must not become "the server has
 // no snapshot", which would upload over the remote one.
 func ParseManifestStrict(manifestJSON string) (ManifestInfo, error) {
+	// The whole structure is decoded here, not just checked and then read
+	// again leniently: a snapshot that is not an object must fail too.
 	var doc struct {
 		Latest *struct {
+			Version   json.RawMessage `json:"version"`
 			UpdatedAt json.RawMessage `json:"updatedAt"`
+			Snapshot  *struct {
+				SHA256 json.RawMessage `json:"sha256"`
+				Size   json.RawMessage `json:"size"`
+			} `json:"snapshot"`
 		} `json:"latest"`
 	}
 	if err := json.Unmarshal([]byte(manifestJSON), &doc); err != nil {
@@ -73,10 +80,26 @@ func ParseManifestStrict(manifestJSON string) (ManifestInfo, error) {
 	if at == "" {
 		return ManifestInfo{}, fmt.Errorf("manifest: no updatedAt")
 	}
-	if _, err := model.ParseTime(at); err != nil {
+	t, err := model.ParseTime(at)
+	if err != nil {
 		return ManifestInfo{}, fmt.Errorf("manifest: updatedAt: %w", err)
 	}
-	return ParseManifestInfo(manifestJSON), nil
+	info := ManifestInfo{RawJSON: manifestJSON, Version: rawText(doc.Latest.Version), UpdatedAt: &t}
+	if s := doc.Latest.Snapshot; s != nil {
+		info.SnapshotSHA256 = rawText(s.SHA256)
+		var n int64
+		if json.Unmarshal(s.Size, &n) == nil {
+			info.SnapshotSize = &n
+		} else {
+			var text string
+			if json.Unmarshal(s.Size, &text) == nil {
+				if v, err := parseInt(text); err == nil {
+					info.SnapshotSize = &v
+				}
+			}
+		}
+	}
+	return info, nil
 }
 
 // rawText is TryReadString: a string as it is, any other value as its JSON

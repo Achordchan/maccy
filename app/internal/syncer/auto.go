@@ -128,7 +128,17 @@ func (a *Auto) OnRemoteUpdated(ctx context.Context) { a.Trigger(ctx, "remote_eve
 // a sync is running makes that sync run again when it ends: the sync has
 // already read the history it uploaded.
 func (a *Auto) OnHistoryChanged(ctx context.Context) {
-	if !a.initialDone.Load() || a.suppressed.Load() || !a.CanSync() {
+	if a.suppressed.Load() || !a.CanSync() {
+		return
+	}
+	if !a.initialDone.Load() {
+		// Before the first success changes wait, as in C#; a capture made
+		// while the first sync is running is kept for the run after it.
+		a.startMu.Lock()
+		if a.busy.Load() {
+			a.pending.Store(true)
+		}
+		a.startMu.Unlock()
 		return
 	}
 	if a.busy.Load() {

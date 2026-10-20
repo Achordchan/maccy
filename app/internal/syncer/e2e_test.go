@@ -42,6 +42,8 @@ func (h *fakeHistory) ReplaceAll(_ context.Context, items []model.Item) error {
 	h.replace++
 	return nil
 }
+func (h *fakeHistory) RemoveFiles([]string) error { return nil }
+
 func (h *fakeHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.Item, error)) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
