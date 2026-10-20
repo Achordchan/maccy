@@ -267,7 +267,7 @@ def write_legacy_delete(publish_dir: Path, legacy_from: str | None, out: Path | 
                 print("not deleted by the installer (unsafe name): " + rel, flush=True)
                 continue
             name = rel.replace("/", "\\").replace("'", "''")
-            lines.append("DeleteFile(ExpandConstant('{app}\\" + name + "'));")
+            lines.append("DeleteLegacy('" + name + "');")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 

@@ -54,6 +54,46 @@ Source: "{#MyPublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdi
 // Only release_go.py passes /DGoBuild: the list belongs to the Go payload, and a
 // build of the C# program from the same script (whose files are the ones named)
 // must never run it.
+
+// IsLink says whether Path is a junction or a symbolic link (a reparse point):
+// deleting through one would take files from outside the program's folder.
+function IsLink(Path: String): Boolean;
+var
+  R: TFindRec;
+begin
+  Result := False;
+  if FindFirst(Path, R) then
+  begin
+    try
+      Result := (R.Attributes and $400) <> 0; // FILE_ATTRIBUTE_REPARSE_POINT
+    finally
+      FindClose(R);
+    end;
+  end;
+end;
+
+// DeleteLegacy deletes the file Rel (relative to {app}, backslashes) unless
+// the way to it goes through a link.
+procedure DeleteLegacy(Rel: String);
+var
+  Cur: String;
+  P: Integer;
+begin
+  Cur := ExpandConstant('{app}');
+  P := Pos('\', Rel);
+  while P > 0 do
+  begin
+    Cur := Cur + '\' + Copy(Rel, 1, P - 1);
+    if IsLink(Cur) then
+      Exit;
+    Rel := Copy(Rel, P + 1, Length(Rel));
+    P := Pos('\', Rel);
+  end;
+  Cur := Cur + '\' + Rel;
+  if not IsLink(Cur) then
+    DeleteFile(Cur);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then

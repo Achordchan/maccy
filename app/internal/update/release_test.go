@@ -204,12 +204,12 @@ release_go.write_legacy_delete(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4])
 	}
 	got, _ := os.ReadFile(out)
 	text := string(got)
-	for _, want := range []string{`DeleteFile(ExpandConstant('{app}\maccy.dll'));`, `DeleteFile(ExpandConstant('{app}\runtimes\win-x64\native\x.dll'));`} {
+	for _, want := range []string{`DeleteLegacy('maccy.dll');`, `DeleteLegacy('runtimes\win-x64\native\x.dll');`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %s in:\n%s", want, text)
 		}
 	}
-	for _, bad := range []string{"*.dll", "history.json", "{userdocs}", "C:", "a.dll.", "settings.json", "{app}\\maccy.exe"} {
+	for _, bad := range []string{"*.dll", "history.json", "{userdocs}", "C:", "a.dll.", "settings.json", "maccy.exe"} {
 		if strings.Contains(text, bad) {
 			t.Errorf("%s must not be deleted:\n%s", bad, text)
 		}
