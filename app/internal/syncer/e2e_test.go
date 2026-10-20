@@ -42,6 +42,17 @@ func (h *fakeHistory) ReplaceAll(_ context.Context, items []model.Item) error {
 	h.replace++
 	return nil
 }
+func (h *fakeHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	next, err := f(append([]model.Item(nil), h.items...))
+	if err != nil {
+		return err
+	}
+	h.items = append([]model.Item(nil), next...)
+	h.replace++
+	return nil
+}
 func (h *fakeHistory) ApplyLimits(model.Settings) { h.mu.Lock(); h.limits++; h.mu.Unlock() }
 func (h *fakeHistory) add(it model.Item) {
 	h.mu.Lock()

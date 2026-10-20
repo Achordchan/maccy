@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"strings"
+	"time"
 
 	"klip/internal/model"
 	"klip/internal/syncclient"
@@ -42,10 +43,11 @@ func (s *Syncer) Run(ctx context.Context, progress func(Progress), reason string
 		s.PersistSyncState(d.LocalFingerprint, d.Manifest)
 
 	case Download:
-		if err := s.DownloadAndApply(ctx, progress, reason); err != nil {
+		dr, err := s.DownloadAndApply(ctx, progress, reason)
+		if err != nil {
 			return res, err
 		}
-		s.PersistSyncState(s.Fingerprint(), d.Manifest)
+		s.PersistSyncState(dr.Fingerprint, snapshotState(dr, d.Manifest, s.cfg.Now().UTC()))
 
 	case Merge:
 		if err := s.MergeAndApply(ctx, d.Manifest, d.LocalFingerprint, progress, reason); err != nil {
@@ -119,9 +121,27 @@ func uploadIsInManifest(up *syncclient.UploadResult, m ManifestInfo) bool {
 	return false
 }
 
-// PersistAfterDownload remembers the state after a manual restore.
-func (s *Syncer) PersistAfterDownload(ctx context.Context) {
-	if m, err := s.ManifestInfo(ctx); err == nil {
-		s.PersistSyncState(s.Fingerprint(), m)
+// PersistAfterDownload remembers the state after a manual restore. The
+// manifest is used only when it still describes the snapshot that was
+// applied; another device may have uploaded in between, and its version
+// recorded next to the restored history would make the next sync think the
+// two are the same.
+func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) {
+	m, err := s.ManifestInfo(ctx)
+	if err != nil {
+		m = ManifestInfo{}
 	}
+	s.PersistSyncState(dr.Fingerprint, snapshotState(dr, m, s.cfg.Now().UTC()))
+}
+
+// snapshotState is the server state to remember after a download: the
+// manifest, when it still describes the snapshot that was applied; otherwise
+// only the hash of what was applied, so that the next sync looks at the newer
+// snapshot again.
+func snapshotState(dr DownloadResult, basis ManifestInfo, now time.Time) ManifestInfo {
+	if sha := strings.TrimSpace(basis.SnapshotSHA256); sha != "" && dr.SnapshotSHA256 != "" &&
+		strings.EqualFold(sha, dr.SnapshotSHA256) {
+		return basis
+	}
+	return ManifestInfo{UpdatedAt: &now, SnapshotSHA256: dr.SnapshotSHA256}
 }

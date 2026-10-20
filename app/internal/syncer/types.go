@@ -70,6 +70,12 @@ type Decision struct {
 type History interface {
 	// Items returns the items, newest first. The caller may keep the slice.
 	Items() []model.Item
+	// Mutate replaces the history with f applied to it as it is at that
+	// moment, under the history's own lock, so that a capture or a note edit
+	// made while a merge is prepared is part of the merge instead of being
+	// overwritten. Like ReplaceAll, it removes the files of the items that
+	// are gone.
+	Mutate(ctx context.Context, f func(items []model.Item) ([]model.Item, error)) error
 	// ReplaceAll replaces the history and removes the files of the items that
 	// are gone.
 	ReplaceAll(ctx context.Context, items []model.Item) error

@@ -365,34 +365,51 @@ func (s *Syncer) uploadMissingBlobs(ctx context.Context, token string, exp snaps
 
 // ---- download
 
+// DownloadResult says which snapshot a download applied, and with which
+// history: the caller remembers that, not the state of the history later,
+// which may already hold a capture that was never uploaded.
+type DownloadResult struct {
+	// Fingerprint is of the items the download applied.
+	Fingerprint string
+	// SnapshotSHA256 is of the snapshot file, as the server hashes it.
+	SnapshotSHA256 string
+}
+
 // DownloadAndApply replaces the history and the portable settings with the
 // server's snapshot.
-func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), reason string) error {
+func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), reason string) (DownloadResult, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	started := s.cfg.Now()
 	report(progress, "prepare_local", "准备本地数据", 30)
 	token, err := s.connection(ctx)
 	if err != nil {
-		return err
+		return DownloadResult{}, err
 	}
 	path, err := s.tempSnapshotPath()
 	if err != nil {
-		return err
+		return DownloadResult{}, err
 	}
 	defer tryDelete(path)
 
 	report(progress, "download_snapshot", "下载快照", 52)
 	if token, err = s.downloadSnapshot(ctx, token, path); err != nil {
-		return err
+		return DownloadResult{}, err
 	}
 	s.timing("download", "download_snapshot", started, fmt.Sprintf("%s;size=%d", reason, fileSize(path)))
+
+	sum, err := snapshot.FileSHA256(path)
+	if err != nil {
+		return DownloadResult{}, err
+	}
 
 	report(progress, "import_snapshot", "导入快照", 76)
 	data, err := snapshot.Read(ctx, s.cfg.Layout, path, s.ensureBlob(ctx, &token))
 	if err != nil {
-		return err
+		return DownloadResult{}, err
 	}
+	res := DownloadResult{Fingerprint: Fingerprint(data.Items), SnapshotSHA256: sum}
+
 	s.suppress(true)
 	defer s.suppress(false)
 	if data.Settings != nil {
@@ -400,16 +417,16 @@ func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), 
 		s.cfg.History.ApplyLimits(s.settings())
 	}
 	if err := s.cfg.History.ReplaceAll(ctx, data.Items); err != nil {
-		return err
+		return DownloadResult{}, err
 	}
 	s.timing("download", "import_snapshot", started, reason)
 
 	report(progress, "persist_local", "保存本地状态", 90)
 	if err := s.cfg.Flush(ctx); err != nil {
-		return err
+		return DownloadResult{}, err
 	}
 	s.timing("download", "persist_local", started, reason)
-	return nil
+	return res, nil
 }
 
 func (s *Syncer) downloadSnapshot(ctx context.Context, token, path string) (string, error) {
@@ -494,27 +511,47 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	s.timing("merge", "download_snapshot", started, fmt.Sprintf("%s;size=%d", reason, fileSize(path)))
 
 	report(progress, "read_snapshot", "read remote snapshot", 62)
-	remote, err := snapshot.Read(ctx, s.cfg.Layout, path, s.ensureBlob(ctx, &token))
+	// The remote payloads go to a folder of their own: the merge may keep the
+	// local item of a file-list item, whose files must stay where they are
+	// until that is decided.
+	importRoot := filepath.Join(s.cfg.Layout.Root, ".merge-"+guidN())
+	if err := os.MkdirAll(importRoot, 0o700); err != nil {
+		return err
+	}
+	defer os.RemoveAll(importRoot)
+	remote, err := snapshot.ReadDetached(ctx, s.cfg.Layout, importRoot, path, s.ensureBlob(ctx, &token))
 	if err != nil {
 		return err
 	}
 	s.timing("merge", "read_snapshot", started, fmt.Sprintf("%s;remoteItems=%d;images=%d;files=%d", reason, len(remote.Items), remote.ImageCount, remote.FileCount))
 
 	report(progress, "merge_snapshot", "merge snapshots", 78)
-	merged := MergeItems(remote.Items, local)
+	var merged []model.Item
+	s.suppress(true)
+	defer s.suppress(false)
+	// The merge runs on the history as it is now, and the payloads it keeps
+	// are moved into place under the same lock: a capture made while the
+	// download ran is merged, not overwritten by ReplaceAll.
+	err = s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
+		merged = MergeItems(remote.Items, current)
+		applied, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, merged)
+		if err != nil {
+			return nil, err
+		}
+		merged = applied
+		return merged, nil
+	})
+	if err != nil {
+		return err
+	}
 	mergedSettings := localSettings.Portable()
 	if remote.Settings != nil {
 		mergedSettings = remote.Settings.Portable()
 	}
 	EnsureSettingsCanHoldItems(&mergedSettings, merged)
 
-	s.suppress(true)
-	defer s.suppress(false)
 	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(mergedSettings) })
 	s.cfg.History.ApplyLimits(s.settings())
-	if err := s.cfg.History.ReplaceAll(ctx, merged); err != nil {
-		return err
-	}
 	s.timing("merge", "merge_snapshot", started, fmt.Sprintf("%s;localItems=%d;remoteItems=%d;mergedItems=%d", reason, len(local), len(remote.Items), len(merged)))
 
 	report(progress, "persist_local", "persist local", 90)

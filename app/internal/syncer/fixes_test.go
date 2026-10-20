@@ -14,6 +14,7 @@ import (
 
 	"klip/internal/model"
 	"klip/internal/paths"
+	"klip/internal/snapshot"
 	"klip/internal/syncclient"
 )
 
@@ -27,6 +28,16 @@ func (h *unitHistory) Items() []model.Item { return append([]model.Item(nil), h.
 
 func (h *unitHistory) ReplaceAll(_ context.Context, items []model.Item) error {
 	h.items = append([]model.Item(nil), items...)
+	h.replaced++
+	return nil
+}
+
+func (h *unitHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	next, err := f(append([]model.Item(nil), h.items...))
+	if err != nil {
+		return err
+	}
+	h.items = append([]model.Item(nil), next...)
 	h.replaced++
 	return nil
 }
@@ -47,6 +58,14 @@ func (h *changingHistory) Items() []model.Item {
 		return append([]model.Item(nil), h.first...)
 	}
 	return append([]model.Item(nil), h.later...)
+}
+
+func (h *changingHistory) Mutate(ctx context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	next, err := f(h.Items())
+	if err != nil {
+		return err
+	}
+	return h.ReplaceAll(ctx, next)
 }
 
 func (h *changingHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
@@ -244,5 +263,171 @@ func TestPreMergeBackupNamesAreUnique(t *testing.T) {
 		if !want.MatchString(filepath.Base(p)) {
 			t.Errorf("name %q", filepath.Base(p))
 		}
+	}
+}
+
+// snapshotFile exports a snapshot of items, as a server would have it.
+func snapshotFile(t *testing.T, items []model.Item) []byte {
+	t.Helper()
+	l := paths.Layout{Root: t.TempDir()}
+	path := filepath.Join(l.Root, "snapshot.sqlite")
+	if _, err := snapshot.Export(context.Background(), l, path, items, model.DefaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func serveSnapshot(t *testing.T, data []byte) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync/snapshot" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Write(data)
+	}))
+}
+
+func serveManifest(t *testing.T, version, sha, updatedAt string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"schema":1,"latest":{"version":"`+version+`","updatedAt":"`+updatedAt+
+			`","snapshot":{"sha256":"`+sha+`","size":1}}}`)
+	}))
+}
+
+// mergeHistory has a capture arrive after the local history was read for the
+// backup, but before the merge runs.
+type mergeHistory struct {
+	local    []model.Item
+	captured model.Item
+	stored   []model.Item
+}
+
+func (h *mergeHistory) Items() []model.Item { return append([]model.Item(nil), h.local...) }
+
+func (h *mergeHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	next, err := f(append([]model.Item{h.captured}, h.local...))
+	if err != nil {
+		return err
+	}
+	h.stored = next
+	return nil
+}
+
+func (h *mergeHistory) ReplaceAll(context.Context, []model.Item) error { return nil }
+
+func (h *mergeHistory) ApplyLimits(model.Settings) {}
+
+// A capture made while the remote snapshot is downloading is part of the
+// merge: the history is read again, under its lock, when the merge applies.
+func TestMergeAppliesTheHistoryAsItIs(t *testing.T) {
+	remote := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "remote")
+	local := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")
+	captured := textItemAt("16fd2706-8baf-433b-82eb-8c7fada847da", "captured during the download")
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{remote}))
+	defer srv.Close()
+	h := &mergeHistory{local: []model.Item{local}, captured: captured}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+
+	if err := syn.MergeAndApply(context.Background(), ManifestInfo{}, "", nil, "test"); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, it := range h.stored {
+		got = append(got, model.Str(it.Text))
+	}
+	if len(got) != 3 {
+		t.Fatalf("merged %v: the capture made during the merge was lost", got)
+	}
+	found := false
+	for _, text := range got {
+		if text == "captured during the download" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("merged %v", got)
+	}
+}
+
+// captureOnSaveHistory is a history that takes a capture while the download
+// saves its items.
+type captureOnSaveHistory struct {
+	unitHistory
+	extra model.Item
+}
+
+func (h *captureOnSaveHistory) ReplaceAll(ctx context.Context, items []model.Item) error {
+	if err := h.unitHistory.ReplaceAll(ctx, items); err != nil {
+		return err
+	}
+	h.items = append([]model.Item{h.extra}, h.items...)
+	return nil
+}
+
+// The fingerprint after a download is of what the download applied, not of a
+// capture that arrived while it was saving.
+func TestDownloadRemembersTheHistoryItApplied(t *testing.T) {
+	remote := []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")}
+	data := snapshotFile(t, remote)
+	srv := serveSnapshot(t, data)
+	defer srv.Close()
+	h := &captureOnSaveHistory{extra: textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "captured while saving")}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+
+	dr, err := syn.DownloadAndApply(context.Background(), nil, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := Fingerprint(remote); dr.Fingerprint != want {
+		t.Errorf("fingerprint %s, want %s: a capture made during the save was recorded as downloaded", dr.Fingerprint, want)
+	}
+	if dr.Fingerprint == Fingerprint(h.Items()) {
+		t.Error("the fingerprint is of the live history")
+	}
+	tmp := filepath.Join(t.TempDir(), "downloaded.sqlite")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wantSHA, err := snapshot.FileSHA256(tmp)
+	if err != nil || dr.SnapshotSHA256 != wantSHA {
+		t.Errorf("sha %q, want %q (%v)", dr.SnapshotSHA256, wantSHA, err)
+	}
+}
+
+// A manual restore remembers the manifest only when it still describes the
+// snapshot that was restored; otherwise only the hash, so the next sync looks
+// again.
+func TestRestoreStateIsBoundToTheDownloadedSnapshot(t *testing.T) {
+	other := serveManifest(t, "v2", "bbb", "2026-05-30T13:00:00+00:00")
+	defer other.Close()
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, other, s, &unitHistory{})
+	syn.PersistAfterDownload(context.Background(), DownloadResult{Fingerprint: "fp", SnapshotSHA256: "aaa"})
+
+	if got := model.Str(s.SyncLastRemoteVersion); got != "" {
+		t.Errorf("version %q: another device's snapshot was recorded", got)
+	}
+	if got := model.Str(s.SyncLastRemoteSha256); got != "aaa" {
+		t.Errorf("sha %q", got)
+	}
+	if got := model.Str(s.SyncLastLocalFingerprint); got != "fp" {
+		t.Errorf("fingerprint %q", got)
+	}
+
+	same := serveManifest(t, "v2", "AAA", "2026-05-30T13:00:00+00:00")
+	defer same.Close()
+	s2 := signedIn(model.DefaultSettings())
+	syn2 := unitSyncer(t, same, s2, &unitHistory{})
+	syn2.PersistAfterDownload(context.Background(), DownloadResult{Fingerprint: "fp", SnapshotSHA256: "aaa"})
+	if got := model.Str(s2.SyncLastRemoteVersion); got != "v2" {
+		t.Errorf("version %q: the manifest of the restored snapshot was not used", got)
 	}
 }

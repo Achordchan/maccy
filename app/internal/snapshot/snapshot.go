@@ -402,6 +402,23 @@ type EnsureBlob func(sha256 string) (string, error)
 // folder is replaced until the whole snapshot has been read: a snapshot
 // with a missing blob leaves the history and its files as they were.
 func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure EnsureBlob) (ReadResult, error) {
+	return read(ctx, l, l.Root, l.Images(), l.Files(), snapshotPath, ensure)
+}
+
+// ReadDetached reads a snapshot like Read, but writes its payloads under
+// root (a folder of the caller's) instead of the data folders, and the items
+// point there. It is for a merge: which payloads are wanted is known only
+// after the items are merged, and the local payloads of an item that the
+// merge keeps must not be replaced first. ApplyPayloads moves the payloads
+// of the items that were kept.
+func ReadDetached(ctx context.Context, l paths.Layout, root, snapshotPath string, ensure EnsureBlob) (ReadResult, error) {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return ReadResult{}, err
+	}
+	return read(ctx, l, root, filepath.Join(root, "images"), filepath.Join(root, "files"), snapshotPath, ensure)
+}
+
+func read(ctx context.Context, l paths.Layout, stagingRoot, imagesDir, filesDir, snapshotPath string, ensure EnsureBlob) (ReadResult, error) {
 	if _, err := os.Stat(snapshotPath); err != nil {
 		return ReadResult{}, fmt.Errorf("snapshot not found: %w", err)
 	}
@@ -430,7 +447,7 @@ func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure Ensur
 		return ReadResult{}, err
 	}
 
-	staging, err := newImportStaging(l.Root)
+	staging, err := newImportStaging(l, stagingRoot, imagesDir, filesDir)
 	if err != nil {
 		return ReadResult{}, err
 	}
@@ -444,7 +461,7 @@ func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure Ensur
 			if err != nil {
 				return ReadResult{}, err
 			}
-			p, err := staging.addImage(l, i, img, ensure)
+			p, err := staging.addImage(i, img, ensure)
 			if err != nil {
 				return ReadResult{}, err
 			}
@@ -459,7 +476,7 @@ func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure Ensur
 			if len(files) == 0 {
 				return ReadResult{}, errors.New("snapshot file payload missing")
 			}
-			local, err := staging.addFiles(l, i, it, files, ensure)
+			local, err := staging.addFiles(i, it, files, ensure)
 			if err != nil {
 				return ReadResult{}, err
 			}
@@ -485,18 +502,21 @@ func Read(ctx context.Context, l paths.Layout, snapshotPath string, ensure Ensur
 // halfway through (a blob the server does not have, say) cannot replace the
 // files of an item whose history is kept.
 type importStaging struct {
-	dir   string
-	files []stagedFile
-	dirs  []stagedDir
+	layout    paths.Layout
+	dir       string
+	imagesDir string
+	filesDir  string
+	files     []stagedFile
+	dirs      []stagedDir
 }
 
 type stagedFile struct{ from, to string }
 
 type stagedDir struct{ from, to string }
 
-func newImportStaging(root string) (*importStaging, error) {
-	// The staging folder is a child of the data folder, so that the moves
-	// below stay on one file system; it is private and removed afterwards.
+func newImportStaging(l paths.Layout, root, imagesDir, filesDir string) (*importStaging, error) {
+	// The staging folder is a child of root, so that the moves below stay on
+	// one file system; it is private and removed afterwards.
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
@@ -504,7 +524,7 @@ func newImportStaging(root string) (*importStaging, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &importStaging{dir: dir}, nil
+	return &importStaging{layout: l, dir: dir, imagesDir: imagesDir, filesDir: filesDir}, nil
 }
 
 func (s *importStaging) cleanup() {
@@ -515,13 +535,13 @@ func (s *importStaging) cleanup() {
 
 // addImage stages the bytes of an image and returns the path it will have in
 // the images folder.
-func (s *importStaging) addImage(l paths.Layout, n int, img imageRecord, ensure EnsureBlob) (string, error) {
+func (s *importStaging) addImage(n int, img imageRecord, ensure EnsureBlob) (string, error) {
 	data := img.bytes
 	if len(data) == 0 {
 		if strings.TrimSpace(img.sha256) == "" {
 			return "", errors.New("snapshot image blob missing")
 		}
-		blob, err := localBlobPath(l, img.sha256, ensure)
+		blob, err := localBlobPath(s.layout, img.sha256, ensure)
 		if err != nil {
 			return "", err
 		}
@@ -538,7 +558,7 @@ func (s *importStaging) addImage(l paths.Layout, n int, img imageRecord, ensure 
 	if err := os.WriteFile(from, data, 0o600); err != nil {
 		return "", err
 	}
-	to := filepath.Join(l.Images(), name)
+	to := filepath.Join(s.imagesDir, name)
 	s.files = append(s.files, stagedFile{from: from, to: to})
 	return to, nil
 }
@@ -547,12 +567,12 @@ func (s *importStaging) addImage(l paths.Layout, n int, img imageRecord, ensure 
 // be. The whole folder is replaced when the import is committed, so that
 // the files of an older copy of the same item do not survive next to the
 // imported ones.
-func (s *importStaging) addFiles(l paths.Layout, n int, it model.Item, files []fileRecord, ensure EnsureBlob) ([]string, error) {
+func (s *importStaging) addFiles(n int, it model.Item, files []fileRecord, ensure EnsureBlob) ([]string, error) {
 	idn, err := itemIDN(it.ID)
 	if err != nil {
 		return nil, err
 	}
-	target, err := itemDir(l.Files(), idn)
+	target, err := itemDir(s.filesDir, idn)
 	if err != nil {
 		return nil, err
 	}
@@ -563,7 +583,7 @@ func (s *importStaging) addFiles(l paths.Layout, n int, it model.Item, files []f
 	var local []string
 	for _, f := range files {
 		name := fmt.Sprintf("%04d_%s", f.idx, sanitizeFileName(f.name))
-		if err := writeFileRecord(l, filepath.Join(from, name), f, ensure); err != nil {
+		if err := writeFileRecord(s.layout, filepath.Join(from, name), f, ensure); err != nil {
 			return nil, err
 		}
 		local = append(local, filepath.Join(target, name))
@@ -605,9 +625,11 @@ func copyPayload(src, dest string) error {
 
 // commit moves the staged payloads into place. If a move fails, the moves
 // that already happened are undone, so that a failure cannot leave an item
-// with a mix of old and new files.
+// with a mix of old and new files. The folders that were replaced are
+// deleted once every move has succeeded.
 func (s *importStaging) commit() error {
 	var undo []func()
+	var stale []string
 	rollback := func() {
 		for i := len(undo) - 1; i >= 0; i-- {
 			undo[i]()
@@ -630,33 +652,149 @@ func (s *importStaging) commit() error {
 			rollback()
 			return err
 		}
-		old := d.to + ".old-" + newGUIDN()
-		hadOld := false
-		if _, err := os.Stat(d.to); err == nil {
-			if err := os.Rename(d.to, old); err != nil {
-				rollback()
-				return err
-			}
-			hadOld = true
-		}
-		if err := os.Rename(d.from, d.to); err != nil {
-			if hadOld {
-				_ = os.Rename(old, d.to)
-			}
+		backup, err := moveDir(d.from, d.to)
+		if err != nil {
 			rollback()
 			return err
 		}
-		to, backup := d.to, old
-		if hadOld {
-			undo = append(undo, func() {
-				_ = os.RemoveAll(to)
-				_ = os.Rename(backup, to)
-			})
-		} else {
-			undo = append(undo, func() { _ = os.RemoveAll(to) })
+		if backup != "" {
+			stale = append(stale, backup)
 		}
+		to, old := d.to, backup
+		undo = append(undo, func() {
+			_ = os.RemoveAll(to)
+			if old != "" {
+				_ = os.Rename(old, to)
+			}
+		})
+	}
+	for _, p := range stale {
+		_ = os.RemoveAll(p)
 	}
 	return nil
+}
+
+// moveDir moves staged to target, keeping a target that was there as
+// target.old-<guid>; the caller deletes it when the import is complete.
+func moveDir(staged, target string) (backup string, err error) {
+	if _, statErr := os.Stat(target); statErr == nil {
+		backup = target + ".old-" + newGUIDN()
+		if err := os.Rename(target, backup); err != nil {
+			return "", err
+		}
+	}
+	if err := os.Rename(staged, target); err != nil {
+		if backup != "" {
+			_ = os.Rename(backup, target)
+		}
+		return "", err
+	}
+	return backup, nil
+}
+
+// ApplyPayloads moves the payloads that ReadDetached put under root into the
+// data folders, for the items that a merge kept, and rewrites their paths.
+// The payloads of items that the merge did not keep stay under root, for the
+// caller to delete. A failure undoes the moves already made.
+func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Item, error) {
+	imagesDir := filepath.Join(root, "images")
+	filesDir := filepath.Join(root, "files")
+	out := append([]model.Item(nil), items...)
+
+	var undo []func()
+	var stale []string
+	rollback := func() {
+		for i := len(undo) - 1; i >= 0; i-- {
+			undo[i]()
+		}
+	}
+
+	for i := range out {
+		if out[i].Kind != model.KindImage {
+			continue
+		}
+		p := model.Str(out[i].ImageFilePath)
+		if !within(imagesDir, p) {
+			continue
+		}
+		if err := os.MkdirAll(l.Images(), 0o755); err != nil {
+			rollback()
+			return nil, err
+		}
+		dest := filepath.Join(l.Images(), filepath.Base(p))
+		if err := os.Rename(p, dest); err != nil {
+			rollback()
+			return nil, err
+		}
+		out[i].ImageFilePath = &dest
+		d := dest
+		undo = append(undo, func() { _ = os.Remove(d) })
+	}
+
+	for i := range out {
+		if out[i].Kind != model.KindFileList || len(out[i].FilePaths) == 0 {
+			continue
+		}
+		idn, err := itemIDN(out[i].ID)
+		if err != nil {
+			rollback()
+			return nil, err
+		}
+		staged := filepath.Join(filesDir, idn)
+		if !within(staged, out[i].FilePaths[0]) {
+			continue // the merge kept the payload that is already here
+		}
+		dest, err := itemDir(l.Files(), idn)
+		if err != nil {
+			rollback()
+			return nil, err
+		}
+		if err := os.MkdirAll(l.Files(), 0o755); err != nil {
+			rollback()
+			return nil, err
+		}
+		backup, err := moveDir(staged, dest)
+		if err != nil {
+			rollback()
+			return nil, err
+		}
+		if backup != "" {
+			stale = append(stale, backup)
+		}
+		to, old := dest, backup
+		undo = append(undo, func() {
+			_ = os.RemoveAll(to)
+			if old != "" {
+				_ = os.Rename(old, to)
+			}
+		})
+		paths := make([]string, len(out[i].FilePaths))
+		for j, p := range out[i].FilePaths {
+			if within(staged, p) {
+				paths[j] = filepath.Join(dest, filepath.Base(p))
+			} else {
+				paths[j] = p
+			}
+		}
+		out[i].FilePaths = paths
+	}
+
+	for _, p := range stale {
+		_ = os.RemoveAll(p)
+	}
+	return out, nil
+}
+
+// within says p is base or is inside it.
+func within(base, p string) bool {
+	if strings.TrimSpace(p) == "" {
+		return false
+	}
+	rel, err := filepath.Rel(base, p)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func readItems(ctx context.Context, db *sqlite.DB) ([]model.Item, error) {
@@ -764,28 +902,42 @@ func readFiles(ctx context.Context, db *sqlite.DB, id string, schema int) ([]fil
 	return out, nil
 }
 
-// localBlobPath finds a blob in the local store, or asks ensure for it.
+// localBlobPath finds a blob in the local store, or asks ensure for it. The
+// contents are checked against the hash: a truncated file in the store must
+// not be imported as the blob, and must not stop ensure from fetching it
+// again.
 func localBlobPath(l paths.Layout, sha256 string, ensure EnsureBlob) (string, error) {
 	local := l.BlobPath(sha256)
 	if local == "" {
 		return "", errors.New("snapshot: blob hash is not a SHA-256")
 	}
-	if isFile(local) {
+	if blobMatches(local, sha256) {
 		return local, nil
+	}
+	if isFile(local) {
+		_ = os.Remove(local)
 	}
 	if ensure != nil {
 		p, err := ensure(sha256)
 		if err != nil {
 			return "", err
 		}
-		if p != "" && isFile(p) {
+		if p != "" && blobMatches(p, sha256) {
 			return p, nil
 		}
 	}
-	if isFile(local) {
+	if blobMatches(local, sha256) {
 		return local, nil
 	}
 	return "", errors.New("snapshot blob missing: " + sha256)
+}
+
+func blobMatches(p, sha256 string) bool {
+	if !isFile(p) {
+		return false
+	}
+	sum, err := fileSHA256(p)
+	return err == nil && strings.EqualFold(sum, strings.TrimSpace(sha256))
 }
 
 // sanitizeFileName replaces what Windows does not allow in a file name. The
@@ -814,6 +966,10 @@ func hashFile(p string) (size int64, sum string, ok bool) {
 	}
 	return st.Size(), sum, true
 }
+
+// FileSHA256 is the SHA-256 of a file: the hash a snapshot calls a blob, and
+// the hash the server gives a downloaded snapshot.
+func FileSHA256(p string) (string, error) { return fileSHA256(p) }
 
 func fileSHA256(p string) (string, error) {
 	f, err := os.Open(p)

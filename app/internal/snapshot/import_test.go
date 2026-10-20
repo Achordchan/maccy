@@ -1,12 +1,16 @@
 package snapshot
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"klip/internal/model"
 	"klip/internal/paths"
 )
 
@@ -163,5 +167,122 @@ func TestReadReplacesTheFilesOfAnItem(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
 			t.Errorf("the old cache file %s survived: %v", name, err)
 		}
+	}
+	ents, err := os.ReadDir(l.Files())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.Contains(e.Name(), ".old-") {
+			t.Errorf("a cache backup was left behind: %s", e.Name())
+		}
+	}
+}
+
+// A read for a merge keeps the remote payloads aside: the local files of an
+// item stay until the merge has decided which side it keeps.
+func TestDetachedReadKeepsTheLocalPayloadsUntilTheMergeDecides(t *testing.T) {
+	const id3 = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	l := paths.Layout{Root: t.TempDir()}
+	dir := filepath.Join(l.Files(), strings.ReplaceAll(id3, "-", ""))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(dir, "0000_local.txt")
+	if err := os.WriteFile(localPath, []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap := newSnapshot(t, func(exec func(string, ...any)) {
+		insertItem(exec, 0, id3, 2, `["C:\\src\\remote.txt"]`)
+		exec(`INSERT INTO item_files VALUES (?,0,'remote.txt',NULL,6,?)`, id3, []byte("remote"))
+	})
+	root := filepath.Join(l.Root, ".merge-test")
+	remote, err := ReadDetached(ctx, l, root, snap, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(localPath); string(b) != "local" {
+		t.Errorf("the local cache changed during the read: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "0000_remote.txt")); !os.IsNotExist(err) {
+		t.Error("the remote file was written into the cache before the merge")
+	}
+
+	// The merge keeps the local item: its files are still the local ones.
+	kept, err := ApplyPayloads(l, root, []model.Item{{
+		ID: id3, Kind: model.KindFileList, FilePaths: []string{localPath},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept[0].FilePaths) != 1 || kept[0].FilePaths[0] != localPath {
+		t.Errorf("kept paths %v", kept[0].FilePaths)
+	}
+	if b, _ := os.ReadFile(localPath); string(b) != "local" {
+		t.Errorf("the local file was replaced: %q", b)
+	}
+
+	// The merge keeps the remote item: its files replace the cache, and the
+	// old folder is gone.
+	applied, err := ApplyPayloads(l, root, remote.Items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := applied[0].FilePaths
+	if len(got) != 1 || filepath.Dir(got[0]) != dir || filepath.Base(got[0]) != "0000_remote.txt" {
+		t.Fatalf("applied paths %v", got)
+	}
+	if b, _ := os.ReadFile(got[0]); string(b) != "remote" {
+		t.Errorf("imported file %q", b)
+	}
+	if _, err := os.Stat(localPath); !os.IsNotExist(err) {
+		t.Error("the local file of the replaced cache survived")
+	}
+	ents, err := os.ReadDir(l.Files())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.Contains(e.Name(), ".old-") {
+			t.Errorf("a cache backup was left behind: %s", e.Name())
+		}
+	}
+}
+
+// A cached blob whose bytes do not match its hash is corrupt: it must not be
+// imported, and ensure must be able to repair it.
+func TestReadRepairsACorruptCachedBlob(t *testing.T) {
+	data := []byte("the right bytes")
+	sum := sha256.Sum256(data)
+	sha := hex.EncodeToString(sum[:])
+	const id3 = "16fd2706-8baf-433b-82eb-8c7fada847da"
+
+	l := paths.Layout{Root: t.TempDir()}
+	local := l.BlobPath(sha)
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte("truncated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap := newSnapshot(t, func(exec func(string, ...any)) {
+		insertItem(exec, 0, id3, 2, `["C:\\src\\a.bin"]`)
+		exec(`INSERT INTO item_files VALUES (?,0,'a.bin',?,?,NULL)`, id3, sha, len(data))
+	})
+	ensure := func(got string) (string, error) {
+		if got != sha {
+			t.Errorf("ensure asked for %q", got)
+		}
+		return local, os.WriteFile(local, data, 0o600)
+	}
+	res, err := Read(ctx, l, snap, ensure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(res.Items[0].FilePaths[0]); !bytes.Equal(b, data) {
+		t.Errorf("imported %q", b)
+	}
+	if b, _ := os.ReadFile(local); !bytes.Equal(b, data) {
+		t.Errorf("the cache was not repaired: %q", b)
 	}
 }
