@@ -51,20 +51,31 @@ func Load(l paths.Layout) ([]model.Item, error) {
 
 // Saves are serialized and ordered: an autosave that started with older items
 // must not rename over a newer sync flush that finished first.
+// saveState is the write order of one history path.
+type saveState struct {
+	mu      sync.Mutex
+	written uint64
+}
+
 var (
-	saveMu     sync.Mutex
 	saveSeq    atomic.Uint64
-	writtenSeq atomic.Uint64
+	saveStates sync.Map // absolute path -> *saveState
 )
 
 // Save writes the items as System.Text.Json writes a list of
 // ClipboardItem: compact, nulls included.
 func Save(l paths.Layout, items []model.Item) error {
+	path := l.History()
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	stateAny, _ := saveStates.LoadOrStore(path, &saveState{})
+	state := stateAny.(*saveState)
 	seq := saveSeq.Add(1)
-	saveMu.Lock()
-	defer saveMu.Unlock()
-	if seq <= writtenSeq.Load() {
-		return nil // a newer save already committed
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if seq <= state.written {
+		return nil // a newer save of this history already committed
 	}
 	if items == nil {
 		items = []model.Item{}
@@ -102,7 +113,7 @@ func Save(l paths.Layout, items []model.Item) error {
 		return err
 	}
 	_ = os.Chmod(l.History(), 0o600)
-	writtenSeq.Store(seq)
+	state.written = seq
 	return nil
 }
 

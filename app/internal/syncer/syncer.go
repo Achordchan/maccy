@@ -1262,6 +1262,16 @@ func (s *Syncer) ownPayload(p string) bool {
 	return false
 }
 
+// findIdentity is the item of items that MergeItems folded into target.
+func findIdentity(items []model.Item, target model.Item) (model.Item, bool) {
+	for _, it := range items {
+		if sameMergeIdentity(it, target) {
+			return it, true
+		}
+	}
+	return model.Item{}, false
+}
+
 // sameMergeIdentity says two items became one in MergeItems: same kind and
 // the same id, or the same content hash (an older item may have no hash).
 func sameMergeIdentity(a, b model.Item) bool {
@@ -1361,10 +1371,9 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 	// A field the user changed during the download keeps the local value; an
 	// unchanged field takes the downloaded value (which may be a remote edit).
 	for i := range merged {
-		id := strings.ToLower(merged[i].ID)
-		l, lok := localByID[id]
-		b, bok := baseByID[id]
-		r, rok := remoteByID[id]
+		l, lok := findIdentity(local, merged[i])
+		b, bok := findIdentity(baseline, merged[i])
+		r, rok := findIdentity(remote, merged[i])
 		if !lok || !bok {
 			continue
 		}

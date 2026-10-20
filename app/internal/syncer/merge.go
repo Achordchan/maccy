@@ -23,7 +23,10 @@ func MergeItems(remote, local []model.Item) []model.Item {
 	// must too.
 	byID := map[string]string{}
 	aliases := map[string]string{}
-	localGroup := map[string]bool{}
+	// noteLocal says whether the note a group carries came from a local item:
+	// group membership alone does not say it (a local item can join a group
+	// whose note is remote).
+	noteLocal := map[string]bool{}
 	resolve := func(key string) string {
 		for i := 0; i < 8; i++ {
 			next, ok := aliases[key]
@@ -45,10 +48,11 @@ func MergeItems(remote, local []model.Item) []model.Item {
 		if !ok {
 			return
 		}
-		merged[into] = mergeDuplicate(merged[into], value, localGroup[other])
-		localGroup[into] = localGroup[into] || localGroup[other]
+		oldNote, oldLocal := merged[into].Note, noteLocal[into]
+		merged[into] = mergeDuplicate(merged[into], value, noteLocal[other])
+		_, noteLocal[into] = mergeNoteProvenance(oldNote, oldLocal, value.Note, noteLocal[other])
 		delete(merged, other)
-		delete(localGroup, other)
+		delete(noteLocal, other)
 		for i, k := range order {
 			if k == other {
 				order = append(order[:i], order[i+1:]...)
@@ -79,8 +83,9 @@ func MergeItems(remote, local []model.Item) []model.Item {
 			if existingKey, ok := byID[id]; ok {
 				existingKey = resolve(existingKey)
 				if existingKey != key && merged[existingKey].Kind == it.Kind {
+					oldNote, oldLocal := merged[existingKey].Note, noteLocal[existingKey]
 					merged[existingKey] = mergeDuplicate(merged[existingKey], it, isLocal)
-					localGroup[existingKey] = localGroup[existingKey] || isLocal
+					_, noteLocal[existingKey] = mergeNoteProvenance(oldNote, oldLocal, it.Note, isLocal)
 					fold(existingKey, key)
 					if key != existingKey {
 						aliases[key] = existingKey
@@ -91,8 +96,9 @@ func MergeItems(remote, local []model.Item) []model.Item {
 			}
 		}
 		if existing, ok := merged[key]; ok {
+			oldNote, oldLocal := existing.Note, noteLocal[key]
 			merged[key] = mergeDuplicate(existing, it, isLocal)
-			localGroup[key] = localGroup[key] || isLocal
+			_, noteLocal[key] = mergeNoteProvenance(oldNote, oldLocal, it.Note, isLocal)
 			if mergedID := strings.ToLower(strings.TrimSpace(merged[key].ID)); mergedID != "" && mergedID != emptyGUID {
 				if other, ok := byID[mergedID]; ok {
 					fold(key, other)
@@ -108,7 +114,7 @@ func MergeItems(remote, local []model.Item) []model.Item {
 			return
 		}
 		merged[key] = it
-		localGroup[key] = isLocal
+		noteLocal[key] = isLocal && strings.TrimSpace(model.Str(it.Note)) != ""
 		order = append(order, key)
 		if id != "" && id != emptyGUID {
 			byID[id] = key
@@ -198,6 +204,20 @@ func mergedNote(existing, incoming *string, incomingIsLocal bool) *string {
 		return nil
 	}
 	return incoming
+}
+
+// mergeNoteProvenance is mergedNote and says whether the resulting note came
+// from a local item.
+func mergeNoteProvenance(existing *string, existingLocal bool, incoming *string, incomingLocal bool) (*string, bool) {
+	out := mergedNote(existing, incoming, incomingLocal)
+	switch {
+	case out == nil:
+		return nil, false
+	case out == incoming:
+		return out, incomingLocal
+	default:
+		return out, existingLocal
+	}
 }
 
 // EnsureSettingsCanHoldItems raises the history limits of s to what the

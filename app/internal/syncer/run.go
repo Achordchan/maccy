@@ -68,7 +68,11 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		if s.accountChanged(account) {
 			return res, ErrSessionChanged
 		}
-		s.PersistSyncState(d.LocalFingerprint, d.Manifest, account)
+		// timestamp_fallback is a no-op on two histories that differ: do not
+		// record them as synchronized, or the next run believes they match.
+		if d.Reason != "timestamp_fallback" {
+			s.PersistSyncState(d.LocalFingerprint, d.Manifest, account)
+		}
 
 	case Download:
 		dr, err := s.downloadAndApply(ctx, progress, reason, d.LocalFingerprint, localItems, account)

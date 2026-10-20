@@ -2344,3 +2344,76 @@ func TestPersistSyncStateChecksTheAccountInsideTheUpdate(t *testing.T) {
 		t.Errorf("the current account's state was not written: %+v", s)
 	}
 }
+
+// A no-op timestamp fallback does not record unequal histories as synced.
+func TestRunDoesNotPersistATimestampFallback(t *testing.T) {
+	at := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"latest":{"version":"v1","updatedAt":"`+at.Format(time.RFC3339)+`","snapshot":{"sha256":"rsha","size":1}}}`)
+	}))
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	s.SyncLastLocalFingerprint = model.Ptr("old-fp")
+	s.SyncLastRemoteVersion = model.Ptr("v0")
+	s.SyncLastRemoteSha256 = model.Ptr("old-sha")
+	s.SyncLastRemoteUpdatedAt = model.Ptr(at.Add(-time.Hour).Format(time.RFC3339))
+	h := &unitHistory{items: []model.Item{{ID: "0f8fad5b-d9cb-469f-a165-70867728950e", Kind: model.KindText, CapturedAt: model.Time{Time: at}, Text: model.Ptr("x"), CopyCount: 1}}}
+	syn := unitSyncer(t, srv, s, h)
+	res, err := syn.Run(context.Background(), nil, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision.Reason != "timestamp_fallback" || res.Decision.Direction != None {
+		t.Fatalf("decision %+v", res.Decision)
+	}
+	if got := model.Str(s.SyncLastLocalFingerprint); got != "old-fp" {
+		t.Errorf("fingerprint %q: the no-op was recorded as synchronized", got)
+	}
+	if got := model.Str(s.SyncLastRemoteVersion); got != "v0" {
+		t.Errorf("version %q", got)
+	}
+}
+
+// The note a group carries keeps its provenance through folds.
+func TestMergeItemsTracksTheNoteProvenance(t *testing.T) {
+	const (
+		a = "0f8fad5b-d9cb-469f-a165-70867728950e"
+		b = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	)
+	hash := "H"
+	remote := []model.Item{
+		{ID: a, Kind: model.KindText, Text: model.Ptr("a"), Note: model.Ptr("remote a"), CopyCount: 1, CapturedAt: model.Time{Time: time.Now().Add(-3 * time.Second)}},
+		{ID: b, Kind: model.KindText, Text: model.Ptr("b"), Note: model.Ptr("remote b"), ContentHash: &hash, CopyCount: 1, CapturedAt: model.Time{Time: time.Now().Add(-2 * time.Second)}},
+	}
+	local := []model.Item{
+		{ID: b, Kind: model.KindText, Text: model.Ptr("b"), ContentHash: &hash, CopyCount: 1, CapturedAt: model.Time{Time: time.Now().Add(-time.Second)}},
+		{ID: a, Kind: model.KindText, Text: model.Ptr("a"), Note: model.Ptr("local a"), ContentHash: &hash, CopyCount: 1, CapturedAt: model.Time{Time: time.Now()}},
+	}
+	out := MergeItems(remote, local)
+	if len(out) != 1 {
+		t.Fatalf("merged %+v", out)
+	}
+	if got := model.Str(out[0].Note); got != "local a" {
+		t.Errorf("note %q: a remote note was treated as local", got)
+	}
+}
+
+// Metadata edits follow the hash identity even when the merged item keeps a
+// different id.
+func TestDownloadMergeMatchesMetadataByHashIdentity(t *testing.T) {
+	hash := "H"
+	base := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "same")
+	base.ContentHash, base.Pinned, base.Note = &hash, true, model.Ptr("base")
+	local := base
+	local.Note, local.Pinned = nil, false
+	remote := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "same")
+	remote.ContentHash, remote.Pinned, remote.Note = &hash, true, model.Ptr("remote")
+	remote.CapturedAt = model.Time{Time: time.Now().Add(time.Second)}
+	out := MergeForDownload([]model.Item{remote}, []model.Item{local}, []model.Item{base})
+	if len(out) != 1 {
+		t.Fatalf("%+v", out)
+	}
+	if out[0].Pinned || out[0].Note != nil {
+		t.Errorf("the local edit was lost: %+v", out[0])
+	}
+}
