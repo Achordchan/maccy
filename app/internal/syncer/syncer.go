@@ -687,8 +687,10 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		Account:             account,
 		PreMergeFingerprint: preMerge,
 	}
-	// What the limits pruned is unreferenced too.
-	removed := s.unreferencedFiles(before, s.cfg.History.Items())
+	// What the limits pruned is unreferenced too, including payloads this
+	// import just installed.
+	cleanup := append(append([]model.Item(nil), before...), applied...)
+	removed := s.unreferencedFiles(cleanup, s.cfg.History.Items())
 	s.timing("download", "import_snapshot", started, reason)
 
 	report(progress, "persist_local", "保存本地状态", 90)
@@ -934,7 +936,8 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	limitPruned := prunedItems(merged, s.cfg.History.Items())
 	s.timing("merge", "merge_snapshot", started, fmt.Sprintf("%s;localItems=%d;remoteItems=%d;mergedItems=%d", reason, len(local), len(remote.Items), len(merged)))
 
-	removed := s.unreferencedFiles(before, s.cfg.History.Items())
+	cleanup := append(append([]model.Item(nil), before...), merged...)
+	removed := s.unreferencedFiles(cleanup, s.cfg.History.Items())
 	report(progress, "persist_local", "persist local", 90)
 	if err := s.cfg.Flush(ctx); err != nil {
 		// The history was not saved: put the old one, its settings and its
@@ -1223,6 +1226,12 @@ func sameMergeIdentity(a, b model.Item) bool {
 	return ia != "" && ia != emptyGUID && ia == ib
 }
 
+// itemMetadataChanged says the user edited the metadata of an item since the
+// baseline.
+func itemMetadataChanged(cur, base model.Item) bool {
+	return !sameNote(cur.Note, base.Note) || cur.Pinned != base.Pinned || cur.CopyCount != base.CopyCount
+}
+
 // MergeForDownload merges a downloaded history with the local one when a
 // capture arrived during the download. Unlike a first merge, the two sides
 // share a synchronized baseline, so the copy count of an item both sides have
@@ -1261,11 +1270,13 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 			deleted[id] = true
 		}
 	}
-	// The remote side may have deleted an item too: an unchanged local item
-	// that is gone remotely stays deleted.
+	// The remote side may have deleted an item too: only an item the user did
+	// not edit locally is deleted; an edited one is kept (and uploaded).
 	for id := range baseIDs {
 		if localIDs[id] && !remoteIDs[id] {
-			deleted[id] = true
+			if !itemMetadataChanged(localByID[id], baseByID[id]) {
+				deleted[id] = true
+			}
 		}
 	}
 	if len(deleted) > 0 {
@@ -1277,18 +1288,28 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 		}
 		merged = kept
 	}
-	// Metadata edits made during the download win over the downloaded value.
+	// A field the user changed during the download keeps the local value; an
+	// unchanged field takes the downloaded value (which may be a remote edit).
 	for i := range merged {
 		id := strings.ToLower(merged[i].ID)
 		l, lok := localByID[id]
 		b, bok := baseByID[id]
+		r, rok := remoteByID[id]
 		if !lok || !bok {
 			continue
 		}
-		if !sameNote(l.Note, b.Note) {
+		if sameNote(l.Note, b.Note) {
+			if rok {
+				merged[i].Note = r.Note
+			}
+		} else {
 			merged[i].Note = l.Note
 		}
-		if l.Pinned != b.Pinned {
+		if l.Pinned == b.Pinned {
+			if rok {
+				merged[i].Pinned = r.Pinned
+			}
+		} else {
 			merged[i].Pinned = l.Pinned
 		}
 	}

@@ -2231,3 +2231,47 @@ func TestDownloadMergeKeepsMetadataEdits(t *testing.T) {
 		t.Errorf("the download undid the edit: %+v", out[0])
 	}
 }
+
+// A remote metadata edit is kept when the local item was not edited during
+// the download.
+func TestDownloadMergeTakesRemoteMetadata(t *testing.T) {
+	const id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+	base := textItemAt(id, "x")
+	base.Pinned, base.Note = true, model.Ptr("note")
+	local := base
+	remote := base
+	remote.Pinned, remote.Note = false, model.Ptr("remote note")
+	out := MergeForDownload([]model.Item{remote}, []model.Item{local}, []model.Item{base})
+	if len(out) != 1 {
+		t.Fatalf("%+v", out)
+	}
+	if out[0].Pinned || model.Str(out[0].Note) != "remote note" {
+		t.Errorf("the remote edit was lost: %+v", out[0])
+	}
+}
+
+// A remote deletion does not win over a local metadata edit.
+func TestDownloadMergeKeepsAnEditedItemDeletedRemotely(t *testing.T) {
+	const (
+		x = "0f8fad5b-d9cb-469f-a165-70867728950e"
+		y = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	)
+	base := textItemAt(x, "x")
+	base.Note = model.Ptr("base note")
+	local := base
+	local.Note = model.Ptr("edited")
+	remote := []model.Item{textItemAt(y, "y")}
+	out := MergeForDownload(remote, []model.Item{local}, []model.Item{base})
+	found := false
+	for _, it := range out {
+		if it.ID == x {
+			found = true
+			if model.Str(it.Note) != "edited" {
+				t.Errorf("the edit was lost: %+v", it)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("the locally edited item was dropped: %+v", out)
+	}
+}
