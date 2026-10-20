@@ -337,6 +337,9 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason, ac
 	if strings.TrimSpace(account) == "" {
 		account = syncclient.AccountID(token)
 	}
+	if err := s.checkBound(account); err != nil {
+		return nil, "", err
+	}
 	if err := s.checkToken(token, account); err != nil {
 		return nil, "", err
 	}
@@ -526,6 +529,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	}
 	if strings.TrimSpace(account) == "" {
 		account = syncclient.AccountID(token)
+	}
+	if err := s.checkBound(account); err != nil {
+		return DownloadResult{}, err
 	}
 	if err := s.checkToken(token, account); err != nil {
 		return DownloadResult{}, err
@@ -724,6 +730,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	}
 	if strings.TrimSpace(account) == "" {
 		account = syncclient.AccountID(token)
+	}
+	if err := s.checkBound(account); err != nil {
+		return err
 	}
 	if err := s.checkToken(token, account); err != nil {
 		return err

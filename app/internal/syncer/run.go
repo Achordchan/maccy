@@ -45,6 +45,12 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 	if err != nil {
 		return RunResult{}, err
 	}
+	if strings.TrimSpace(account) == "" {
+		account = s.currentAccount()
+	}
+	if err := s.checkBound(account); err != nil {
+		return RunResult{}, err
+	}
 	if s.accountChanged(account) {
 		return RunResult{}, ErrSessionChanged
 	}
