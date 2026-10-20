@@ -596,9 +596,9 @@ func (s *Service) Apply(it model.Item) error {
 		}
 	}()
 	s.MarkWriteByUs()
-	wrote, files, err := s.write(it)
+	wrote, w, err := s.write(it)
 	if wrote && err == nil {
-		s.markWritten(s.verifier(it, files)) // only a write that happened can be recognised as ours
+		s.markWritten(s.verifier(it, w)) // only a write that happened can be recognised as ours
 	} else {
 		s.lastOwnWrit.Store(0) // nothing was written: nothing to hold back
 	}
@@ -608,7 +608,8 @@ func (s *Service) Apply(it model.Item) error {
 // verifier reads the clipboard back to see that it still holds what Apply
 // wrote: the text itself, the files that were written (by name), or a picture
 // with the same pixels.
-func (s *Service) verifier(it model.Item, files []string) func() bool {
+func (s *Service) verifier(it model.Item, w written) func() bool {
+	files := w.files
 	switch it.Kind {
 	case model.KindText:
 		want := model.Str(it.Text)
@@ -629,11 +630,7 @@ func (s *Service) verifier(it model.Item, files []string) func() bool {
 		}
 	case model.KindImage:
 		return func() bool {
-			want, err := os.ReadFile(model.Str(it.ImageFilePath))
-			if err != nil {
-				return true
-			}
-			return samePicture(want, s.Clipboard.ReadImage())
+			return samePicture(w.image, s.Clipboard.ReadImage())
 		}
 	}
 	return nil
@@ -656,25 +653,31 @@ func samePath(a, b string) bool {
 }
 
 // samePicture says whether two encoded pictures show the same pixels, give or
-// take the rounding a trip through the clipboard may do (alpha is ignored when
-// the clipboard side has none).
+// take the rounding a trip through the clipboard does: no colour channel of
+// any pixel may differ by more than a few levels, so a small change in one
+// corner is a different picture. Pixels that are not opaque in the first are
+// skipped (the clipboard may drop the alpha).
 func samePicture(a, b []byte) bool {
 	ia, _, errA := image.Decode(bytes.NewReader(a))
 	ib, _, errB := image.Decode(bytes.NewReader(b))
 	if errA != nil || errB != nil || ia.Bounds().Dx() != ib.Bounds().Dx() || ia.Bounds().Dy() != ib.Bounds().Dy() {
 		return false
 	}
-	var sum, n uint64
+	const tolerance = 3 * 257 // three levels of 255, in 16 bits
 	ba, bb := ia.Bounds(), ib.Bounds()
 	for y := 0; y < ba.Dy(); y++ {
 		for x := 0; x < ba.Dx(); x++ {
-			r1, g1, b1, _ := ia.At(ba.Min.X+x, ba.Min.Y+y).RGBA()
+			r1, g1, b1, a1 := ia.At(ba.Min.X+x, ba.Min.Y+y).RGBA()
+			if a1 != 0xffff {
+				continue
+			}
 			r2, g2, b2, _ := ib.At(bb.Min.X+x, bb.Min.Y+y).RGBA()
-			sum += absDiff(r1, r2) + absDiff(g1, g2) + absDiff(b1, b2)
-			n += 3
+			if absDiff(r1, r2) > tolerance || absDiff(g1, g2) > tolerance || absDiff(b1, b2) > tolerance {
+				return false
+			}
 		}
 	}
-	return n == 0 || sum/n <= 2*257 // a mean difference of two levels of 255
+	return true
 }
 
 func absDiff(a, b uint32) uint64 {
@@ -706,11 +709,19 @@ func (s *Service) interfered(gen int64) bool {
 	return s.applying.Load() > 0 || s.writeGen.Load() != gen
 }
 
+// written is what a write put on the clipboard besides text: the files by
+// their paths, the picture by its bytes (the history may drop the file at any
+// time, so the bytes are kept for the check).
+type written struct {
+	files []string
+	image []byte
+}
+
 // write puts the item on the clipboard and says whether it wrote anything.
-func (s *Service) write(it model.Item) (bool, []string, error) {
+func (s *Service) write(it model.Item) (bool, written, error) {
 	switch it.Kind {
 	case model.KindText:
-		return true, nil, s.Clipboard.WriteText(model.Str(it.Text))
+		return true, written{}, s.Clipboard.WriteText(model.Str(it.Text))
 
 	case model.KindFileList:
 		var resolved []string
@@ -731,20 +742,20 @@ func (s *Service) write(it model.Item) (bool, []string, error) {
 			}
 		}
 		if len(resolved) == 0 {
-			return false, nil, nil
+			return false, written{}, nil
 		}
-		return true, resolved, s.Clipboard.WriteFiles(resolved)
+		return true, written{files: resolved}, s.Clipboard.WriteFiles(resolved)
 
 	case model.KindImage:
 		p := model.Str(it.ImageFilePath)
 		if strings.TrimSpace(p) == "" || !isFile(p) {
-			return false, nil, nil
+			return false, written{}, nil
 		}
 		data, err := os.ReadFile(p)
 		if err != nil {
-			return false, nil, err
+			return false, written{}, err
 		}
-		return true, nil, s.Clipboard.WriteImage(data, p)
+		return true, written{image: data}, s.Clipboard.WriteImage(data, p)
 	}
-	return false, nil, errors.New("capture: unknown item kind")
+	return false, written{}, errors.New("capture: unknown item kind")
 }

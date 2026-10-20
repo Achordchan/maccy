@@ -663,3 +663,24 @@ func TestSettingsChangeWhileCapturing(t *testing.T) {
 	}
 	<-done
 }
+
+func TestSamePictureSeesASmallChange(t *testing.T) {
+	enc := func(dot bool) []byte {
+		img := image.NewRGBA(image.Rect(0, 0, 200, 200))
+		for i := range img.Pix {
+			img.Pix[i] = 255
+		}
+		if dot {
+			img.Set(100, 100, color.RGBA{0, 0, 0, 255}) // one black pixel in a white screenshot
+		}
+		var b bytes.Buffer
+		_ = png.Encode(&b, img)
+		return b.Bytes()
+	}
+	if samePicture(enc(false), enc(true)) {
+		t.Fatal("a one-pixel change is another picture")
+	}
+	if !samePicture(enc(true), enc(true)) {
+		t.Fatal("the same picture")
+	}
+}
