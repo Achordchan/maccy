@@ -6,6 +6,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,5 +179,18 @@ func TestImageButtonOpens(t *testing.T) {
 	}
 	if opened != p {
 		t.Fatalf("opened %q", opened)
+	}
+}
+
+func TestTextOfAHugeEntryIsCut(t *testing.T) {
+	big := strings.Repeat("字", 3_000_000)
+	m := &Model{Item: model.Item{Kind: model.KindText, Text: model.Ptr(big)}}
+	got := []rune(m.Text())
+	if len(got) != textRunes+1 || got[len(got)-1] != '…' {
+		t.Fatalf("%d runes", len(got))
+	}
+	short := &Model{Item: model.Item{Kind: model.KindText, Text: model.Ptr("hello")}}
+	if short.Text() != "hello" {
+		t.Fatal("a short text was changed")
 	}
 }

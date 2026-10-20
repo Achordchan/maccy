@@ -772,3 +772,20 @@ func TestOpenedKeepsQueryAndFolder(t *testing.T) {
 		t.Fatalf("sec=%v dlg=%v", r.m.sec, r.m.dlg)
 	}
 }
+
+func TestOpenedChoosesTheNewestItemCopiedWhileHidden(t *testing.T) {
+	r := newRig(t, "old one", "older one")
+	r.m.Reset()
+	r.tt.Frame()
+	// Hidden, the program goes on collecting; the rows on show are the old ones.
+	r.h.Add(ti("00000000-0000-0000-0000-0000000000ff", "copied while hidden"))
+	r.m.Opened()
+	rows := r.m.rows()
+	if r.m.chosen != 0 || len(rows) == 0 || model.Str(rows[0].Text) != "copied while hidden" {
+		t.Fatalf("chosen=%d rows=%d", r.m.chosen, len(rows))
+	}
+	r.tt.Frame()
+	if rows := r.m.rows(); r.m.chosen != 0 || model.Str(rows[r.m.chosen].Text) != "copied while hidden" {
+		t.Fatalf("after the frame: chosen=%d row=%q", r.m.chosen, model.Str(rows[r.m.chosen].Text))
+	}
+}

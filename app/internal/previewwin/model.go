@@ -185,8 +185,23 @@ func (m *Model) Source() string {
 	return ""
 }
 
-// Text is what the text area shows.
-func (m *Model) Text() string { return model.Str(m.Item.Text) }
+// textRunes is how much of a text the window lays out: a scroll area does not
+// make a single text element cheaper, and a log of many megabytes would be
+// measured whole on the UI thread.
+const textRunes = 20000
+
+// Text is what the text area shows: the beginning of a very long text.
+func (m *Model) Text() string {
+	t := model.Str(m.Item.Text)
+	n := textRunes
+	for i := range t {
+		if n == 0 {
+			return t[:i] + "…"
+		}
+		n--
+	}
+	return t
+}
 
 // View is the window's content.
 func (m *Model) View(c *ui.Context) {

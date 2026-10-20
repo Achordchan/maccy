@@ -1,13 +1,13 @@
 package previewwin
 
 import (
-	"os"
 	"sync"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"klip/internal/model"
+	"klip/internal/panel"
 )
 
 // Manager owns the preview window: made when first needed, then shown, moved
@@ -25,6 +25,7 @@ type Manager struct {
 	model *Model
 	win   *mygo.Window
 	id    string
+	seq   int // moves with each Show of a picture and each Hide
 }
 
 // Preview says which item the window shows ("" when hidden) and whether the
@@ -38,21 +39,44 @@ func (mg *Manager) Preview() (string, bool) {
 	return mg.id, mg.model.Over()
 }
 
+// maxPicture is the longest side a picture is kept at for the window: the
+// largest window shows it at 980 points, twice that for sharp screens.
+const maxPicture = 1960
+
 // Show opens the window for an item beside anchor, which is in screen pixels.
+// A picture is read and cut down in the background; the window opens when it
+// is ready, unless the pointer has moved on by then. Any goroutine.
 func (mg *Manager) Show(it model.Item, anchor Rect) {
-	var bm *ui.Bitmap
-	var pw, ph int
-	if it.Kind == model.KindImage {
-		path := model.Str(it.ImageFilePath)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			mg.Hide() // the file is gone: nothing to show
+	if it.Kind != model.KindImage {
+		mg.mu.Lock()
+		mg.seq++ // a picture that is still being made is not wanted
+		mg.mu.Unlock()
+		mg.present(it, nil, 0, 0, anchor)
+		return
+	}
+	mg.mu.Lock()
+	mg.id = it.ID // the panel asks for each item once
+	mg.seq++
+	seq := mg.seq
+	mg.mu.Unlock()
+	go func() {
+		bm, pw, ph := panel.ScaledBitmap(model.Str(it.ImageFilePath), maxPicture)
+		mg.mu.Lock()
+		current := mg.seq == seq
+		mg.mu.Unlock()
+		if !current {
+			return // another item, or none, since
+		}
+		if bm == nil {
+			mg.Hide() // the file is gone, or too big to show: nothing to show
 			return
 		}
-		if bm, err = ui.DecodeBitmap(data); err == nil && bm != nil {
-			pw, ph = bm.Size()
-		}
-	}
+		mg.present(it, bm, pw, ph, anchor)
+	}()
+}
+
+// present puts the window up for an item whose content is ready.
+func (mg *Manager) present(it model.Item, bm *ui.Bitmap, pw, ph int, anchor Rect) {
 	mygo.RunOnMain(func() {
 		mg.mu.Lock()
 		defer mg.mu.Unlock()
@@ -100,6 +124,7 @@ func (mg *Manager) Hide() {
 		mg.mu.Lock()
 		defer mg.mu.Unlock()
 		mg.id = ""
+		mg.seq++ // a picture that is still being made is not wanted
 		if mg.win != nil && mg.win.IsVisible() {
 			mg.win.Hide()
 		}

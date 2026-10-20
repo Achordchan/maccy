@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"time"
@@ -148,6 +147,9 @@ var stageNames = map[string]string{
 }
 
 func (a *App) syncBegin(reason string, manual bool) {
+	a.mu.Lock()
+	a.viewSeq++ // a pause of the one before ends nothing of this
+	a.mu.Unlock()
 	a.update(func(v *SyncView) {
 		v.Syncing = true
 		if manual {
@@ -180,8 +182,35 @@ func (a *App) syncProgress(p syncer.Progress, reason string, manual bool) {
 
 // finishView shows how a sync ended (syncDone has dealt with the accounting
 // and what is owed). The pauses are those of the C# client: the bar stays at
-// 100% for a moment, and longer when the sync failed.
+// 100% for a moment, and longer when the sync failed. The pause is a timer, not
+// a sleep: this runs before the runner is released, and the next sync (the one
+// that a sign-in is owed) must not be turned away for it.
 func (a *App) finishView(reason string, manual bool, err error) {
+	a.mu.Lock()
+	seq := a.viewSeq
+	a.mu.Unlock()
+	// closeBar ends the display of the sync, unless another has begun since.
+	closeBar := func(after time.Duration) {
+		end := func() {
+			a.mu.Lock()
+			same := a.viewSeq == seq
+			a.mu.Unlock()
+			if !same {
+				return
+			}
+			a.update(func(v *SyncView) {
+				v.Syncing = false
+				if v.Progress {
+					v.Progress, v.Text, v.Percent = false, "", 0
+				}
+			})
+		}
+		if after <= 0 {
+			end()
+			return
+		}
+		time.AfterFunc(after, end)
+	}
 	if manual && errors.Is(err, syncer.ErrNotLoggedIn) {
 		a.mu.Lock()
 		a.status = "请先登录"
@@ -194,7 +223,6 @@ func (a *App) finishView(reason string, manual bool, err error) {
 	if err == nil {
 		if manual {
 			a.update(func(v *SyncView) { v.Text, v.Percent = "完成", 100 })
-			time.Sleep(300 * time.Millisecond)
 		}
 		a.update(func(v *SyncView) {
 			v.Result, v.LastAt = SyncOK, time.Now()
@@ -203,55 +231,88 @@ func (a *App) finishView(reason string, manual bool, err error) {
 		a.mu.Lock()
 		a.status = "已同步 " + time.Now().Format("15:04")
 		a.mu.Unlock()
-	} else {
-		a.cfg.Logf("sync (%s): %v", reason, err)
 		if manual {
-			a.update(func(v *SyncView) { v.Text, v.Percent = "同步失败", 100 })
+			closeBar(300 * time.Millisecond)
+		} else {
+			closeBar(0)
 		}
-		a.update(func(v *SyncView) {
-			v.Result, v.LastAt = SyncFailed, time.Now()
-			v.LastStatus = map[bool]string{true: "同步失败", false: "后台同步失败"}[manual]
-		})
-		explain := syncer.Explain(err, syncer.InMainWindow)
-		a.mu.Lock()
-		a.status = "同步失败"
-		if manual {
-			a.status = explain
-		}
-		a.mu.Unlock()
-		switch {
-		case manual:
-			a.toast(explain)
-		case !a.initialOK.Load():
-			a.toast("首次同步失败：" + explain)
-		}
-		if manual {
-			time.Sleep(450 * time.Millisecond)
-		}
+		return
+	}
+	a.cfg.Logf("sync (%s): %v", reason, err)
+	if manual {
+		a.update(func(v *SyncView) { v.Text, v.Percent = "同步失败", 100 })
 	}
 	a.update(func(v *SyncView) {
-		v.Syncing = false
-		if v.Progress {
-			v.Progress, v.Text, v.Percent = false, "", 0
-		}
+		v.Result, v.LastAt = SyncFailed, time.Now()
+		v.LastStatus = map[bool]string{true: "同步失败", false: "后台同步失败"}[manual]
 	})
+	explain := syncer.Explain(err, syncer.InMainWindow)
+	a.mu.Lock()
+	a.status = "同步失败"
+	if manual {
+		a.status = explain
+	}
+	a.mu.Unlock()
+	switch {
+	case manual:
+		a.toast(explain)
+	case !a.initialOK.Load():
+		a.toast("首次同步失败：" + explain)
+	}
+	if manual {
+		closeBar(450 * time.Millisecond)
+	} else {
+		closeBar(0)
+	}
 }
 
-// afterMutation uploads at once what the user changed in the history
-// (UploadCloudAfterLocalMutationAsync), when there is an account: a sync
-// that looked at the server first could bring back what was just deleted.
+// afterMutation applies what the user changed in the history and, when there
+// is an account, uploads it at once (UploadCloudAfterLocalMutationAsync): a
+// sync that looked at the server first could bring back what was just deleted.
+// The change and its upload are one piece of work that waits for the sync that
+// may be running and keeps the others out, so that no sync can put the deleted
+// items back or share its fingerprints with the upload; it belongs to the
+// account that is signed in, and Stop waits for it.
 func (a *App) afterMutation(mutate func()) {
+	if !a.Syncer.CanAutoSync() {
+		a.mutateQuietly(mutate)
+		return
+	}
+	ctx := a.acct()
+	a.done.Add(1)
+	go func() {
+		defer a.done.Done()
+		ran := a.Auto.Exclusive(ctx, func() {
+			a.runGen.Store(a.acctGen.Load()) // the account this upload is for
+			a.runActive.Store(true)
+			defer a.runActive.Store(false)
+			a.mutateQuietly(mutate)
+			if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil && ctx.Err() == nil {
+				a.cfg.Logf("upload after change: %v", err)
+			}
+		})
+		if !ran {
+			// The account changed before its turn came: the change is the user's
+			// all the same, and the cloud copy is not this account's to touch.
+			a.mutateQuietly(mutate)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		// What was asked for while the gate was shut (a sign-in's sync, a change
+		// of the history) was turned away: ask again.
+		if a.loginWanted.Load() {
+			a.Auto.Trigger(a.acct(), "login", false)
+		}
+		a.Auto.OnHistoryChanged(a.acct())
+	}()
+}
+
+func (a *App) mutateQuietly(mutate func()) {
 	a.Auto.Suppress(true)
 	mutate()
 	a.Auto.Suppress(false)
-	if !a.Syncer.CanAutoSync() {
-		return
-	}
-	go func() {
-		if _, err := a.Syncer.UploadAfterLocalMutation(context.Background()); err != nil {
-			a.cfg.Logf("upload after change: %v", err)
-		}
-	}()
 }
 
 // Delete removes an item; with an account the cloud copy follows.

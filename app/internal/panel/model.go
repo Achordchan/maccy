@@ -189,6 +189,9 @@ func (m *Model) Reset() {
 // thread.
 func (m *Model) Opened() {
 	m.dlg = nil
+	// The rows may be those of before the window was hidden; an item copied
+	// since is the first one now, and the one chosen must be that.
+	m.refresh()
 	m.chosen = 0
 	if len(m.rows()) > 0 {
 		m.list.ScrollIntoView(0)
@@ -425,19 +428,29 @@ func (t *thumbCache) make(path string, redraw func()) {
 
 // smallBitmap reads a picture and cuts it down to fit thumbSize.
 func smallBitmap(path string) *ui.Bitmap {
+	bm, _, _ := ScaledBitmap(path, thumbSize)
+	return bm
+}
+
+// ScaledBitmap reads a picture and cuts it down to fit maxSide (a picture that
+// is smaller is left as it is). It also returns the size the picture has in its
+// file. It is bounded in what it reads and decodes (see the thumbMax limits),
+// and slow: call it away from the UI thread. nil: it could not be made.
+func ScaledBitmap(path string, maxSide int) (*ui.Bitmap, int, int) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil
+		return nil, 0, 0
 	}
 	defer f.Close()
 	// A small file can hold a huge picture, and a big one can be a huge bitmap:
 	// the header says which, before anything is read into memory.
 	known := false
+	var ow, oh int
 	if cfg, _, err := image.DecodeConfig(f); err == nil {
 		if cfg.Width*cfg.Height > thumbMaxPixels {
-			return nil
+			return nil, 0, 0
 		}
-		known = true
+		known, ow, oh = true, cfg.Width, cfg.Height
 	}
 	limit := int64(thumbMaxBytes)
 	if !known {
@@ -445,14 +458,14 @@ func smallBitmap(path string) *ui.Bitmap {
 	}
 	st, err := f.Stat()
 	if err != nil || st.Size() > limit {
-		return nil
+		return nil, 0, 0
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return nil
+		return nil, 0, 0
 	}
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil || int64(len(data)) > limit {
-		return nil
+		return nil, 0, 0
 	}
 	var img image.Image
 	if known {
@@ -460,19 +473,21 @@ func smallBitmap(path string) *ui.Bitmap {
 	}
 	if !known || err != nil {
 		bm, _ := ui.DecodeBitmap(data) // a format only MyGo knows
-		if bm != nil {
-			if w, h := bm.Size(); w*h > thumbMaxUnknownPixels {
-				return nil
-			}
+		if bm == nil {
+			return nil, 0, 0
 		}
-		return bm
+		w, h := bm.Size()
+		if w*h > thumbMaxUnknownPixels {
+			return nil, 0, 0
+		}
+		return bm, w, h
 	}
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
 	if w <= 0 || h <= 0 {
-		return nil
+		return nil, 0, 0
 	}
-	scale := float64(thumbSize) / float64(max(w, h))
+	scale := float64(maxSide) / float64(max(w, h))
 	if scale > 1 {
 		scale = 1
 	}
@@ -500,8 +515,8 @@ func smallBitmap(path string) *ui.Bitmap {
 	}
 	var out bytes.Buffer
 	if png.Encode(&out, small) != nil {
-		return nil
+		return nil, 0, 0
 	}
 	bm, _ := ui.DecodeBitmap(out.Bytes())
-	return bm
+	return bm, ow, oh
 }

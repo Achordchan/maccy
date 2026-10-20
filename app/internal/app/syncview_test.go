@@ -59,7 +59,16 @@ func TestSyncProgressOfManualAndBackground(t *testing.T) {
 	if v := a.copyView(); v.Text != "自定义" || v.Percent != 100 {
 		t.Fatalf("unknown stage: %+v", v)
 	}
+	start := time.Now()
 	a.syncDone("manual", true, nil)
+	if time.Since(start) > 150*time.Millisecond {
+		t.Fatalf("syncDone took %v: the pause is a timer, the runner is held until this returns", time.Since(start))
+	}
+	// The bar stays at 100% for a moment, then goes.
+	if v := a.copyView(); !v.Progress || v.Text != "完成" || v.Percent != 100 {
+		t.Fatalf("at the end: %+v", v)
+	}
+	time.Sleep(450 * time.Millisecond)
 	v := a.copyView()
 	if v.Syncing || v.Progress || v.Text != "" || v.Result != SyncOK || v.LastStatus != "同步成功" || v.LastAt.IsZero() {
 		t.Fatalf("done: %+v", v)
@@ -100,9 +109,13 @@ func TestSyncFailureToasts(t *testing.T) {
 	a.syncBegin("manual", true)
 	start := time.Now()
 	a.syncDone("manual", true, errors.New("boom"))
-	if len(*toasts) != 2 || time.Since(start) < 400*time.Millisecond {
+	if len(*toasts) != 2 || time.Since(start) > 150*time.Millisecond {
 		t.Fatalf("manual failure: toasts=%v after %v", *toasts, time.Since(start))
 	}
+	if v := a.copyView(); !v.Progress || v.Text != "同步失败" {
+		t.Fatalf("the bar shows the failure first: %+v", v)
+	}
+	time.Sleep(650 * time.Millisecond)
 	if v := a.copyView(); v.Progress || v.Syncing || v.LastStatus != "同步失败" {
 		t.Fatalf("view: %+v", v)
 	}

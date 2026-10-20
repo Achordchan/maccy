@@ -122,9 +122,14 @@ func (p *program) ready() {
 			p.gateMandatory()
 		},
 		Toast: func(msg string) {
-			if p.model != nil {
-				p.model.ShowToast(msg)
-			}
+			// Called from the goroutine of a sync; the model belongs to the UI
+			// thread. Not waited for: the sync must not hang on a thread that
+			// may be waiting for it.
+			go mygo.RunOnMain(func() {
+				if p.model != nil {
+					p.model.ShowToast(msg)
+				}
+			})
 		},
 	})
 	if err != nil {
@@ -412,6 +417,9 @@ func (p *program) show() {
 // showCentered opens the window in the middle of the display the cursor is on
 // (the tray).
 func (p *program) showCentered() {
+	if p.mandatoryPending() {
+		return // the update window is up: nothing else until it is dealt with
+	}
 	wa := mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint()).WorkArea
 	w, h := p.win.Size()
 	p.open(wa.X+(wa.Width-w)/2, wa.Y+(wa.Height-h)/2)

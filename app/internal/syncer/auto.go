@@ -93,6 +93,22 @@ func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) bool {
 	return true
 }
 
+// Exclusive runs f once nothing else is running (a sync, another exclusive
+// piece of work) and keeps everything else out until it returns. It waits for
+// its turn, as long as ctx lives, and says whether f ran.
+func (a *Auto) Exclusive(ctx context.Context, f func()) bool {
+	for !a.busy.CompareAndSwap(false, true) {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	defer a.busy.Store(false)
+	f()
+	return true
+}
+
 // Startup is the first background sync.
 func (a *Auto) Startup(ctx context.Context) { a.Trigger(ctx, "startup", false) }
 

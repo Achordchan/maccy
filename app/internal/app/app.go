@@ -86,6 +86,7 @@ type App struct {
 	syncOver          bool       // under syncMu: the running sync has taken its notes and is ending
 	status            string
 	view              SyncView
+	viewSeq           int // under mu: moves when a sync begins
 	cancel            context.CancelFunc
 	done              sync.WaitGroup
 	started           bool
