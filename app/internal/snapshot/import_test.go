@@ -308,11 +308,16 @@ func TestRecoverPayloadsRollsBackAnUncommittedReplacement(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(backup, "0000_old.txt"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{{Target: target, Backup: backup}}, ""); err != nil {
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{{Target: target, Backup: backup}}); err != nil {
 		t.Fatal(err)
 	}
+	// The history still names a file that only the backup has.
+	oldItems := []model.Item{{
+		ID: "16fd2706-8baf-433b-82eb-8c7fada847da", Kind: model.KindFileList,
+		FilePaths: []string{filepath.Join(target, "0000_old.txt")}, CopyCount: 1,
+	}}
 
-	RecoverPayloads(l, nil)
+	RecoverPayloads(l, oldItems)
 
 	if b, err := os.ReadFile(filepath.Join(target, "0000_old.txt")); err != nil || string(b) != "old" {
 		t.Errorf("the old payload was not restored: %q %v", b, err)
@@ -417,7 +422,12 @@ func TestRecoverPayloadsKeepsACommittedReplacement(t *testing.T) {
 		ID: "16fd2706-8baf-433b-82eb-8c7fada847da", Kind: model.KindFileList,
 		FilePaths: []string{newFile}, CopyCount: 1,
 	}}
-	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{{Target: target, Backup: backup}}, historyDigest(items)); err != nil {
+	sum, err := fileSHA256(newFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := payloadJournalEntry{Target: target, Backup: backup, Files: map[string]string{"0000_new.txt": sum}}
+	if err := writePayloadJournal(payloadJournalPath(l), []payloadJournalEntry{entry}); err != nil {
 		t.Fatal(err)
 	}
 	RecoverPayloads(l, items)
@@ -462,8 +472,10 @@ func TestJournalFromApplyPayloadsMatchesTheResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Simulate a crash after the history was saved, before Commit.
-	RecoverPayloads(l, out)
+	// A capture made after ApplyPayloads changes the history but not these
+	// payloads: recovery must still see the replacement as committed.
+	withCapture := append(out, model.Item{ID: "7c9e6679-7425-40de-944b-e07fc1f90ae7", Kind: model.KindText, Text: model.Ptr("captured"), CopyCount: 1})
+	RecoverPayloads(l, withCapture)
 	applied.Commit()
 
 	if b, err := os.ReadFile(filepath.Join(dir, "0000_new.txt")); err != nil || string(b) != "new" {

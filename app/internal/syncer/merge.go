@@ -38,6 +38,10 @@ func MergeItems(remote, local []model.Item) []model.Item {
 		}
 		if existing, ok := merged[key]; ok {
 			merged[key] = mergeDuplicate(existing, it, isLocal)
+			mergedID := strings.ToLower(strings.TrimSpace(merged[key].ID))
+			if mergedID != "" && mergedID != emptyGUID {
+				byID[mergedID] = key
+			}
 			return
 		}
 		merged[key] = it

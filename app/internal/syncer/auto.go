@@ -135,11 +135,17 @@ func (a *Auto) OnHistoryChanged(ctx context.Context) {
 		// Before the first success changes wait, as in C#; a capture made
 		// while the first sync is running is kept for the run after it.
 		a.startMu.Lock()
-		if a.busy.Load() {
-			a.pending.Store(true)
+		if a.initialDone.Load() {
+			// The first sync finished while this notification waited: treat
+			// it as a normal change instead of dropping it.
+			a.startMu.Unlock()
+		} else {
+			if a.busy.Load() {
+				a.pending.Store(true)
+			}
+			a.startMu.Unlock()
+			return
 		}
-		a.startMu.Unlock()
-		return
 	}
 	if a.busy.Load() {
 		a.startMu.Lock()

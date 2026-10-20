@@ -1939,3 +1939,45 @@ func TestMergeItemsReconcilesSameIDWithOneMissingHash(t *testing.T) {
 		t.Fatalf("merged %d items: the same id survived twice", len(out))
 	}
 }
+
+// Duplicates by hash can change the retained item's ID; the local copy of
+// that ID must still reconcile to one row.
+func TestMergeItemsRegistersTheRetainedDuplicateID(t *testing.T) {
+	const (
+		idA = "0f8fad5b-d9cb-469f-a165-70867728950e"
+		idB = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	)
+	hash := "H"
+	older := model.Item{ID: idA, Kind: model.KindText, ContentHash: &hash, Text: model.Ptr("a"), CopyCount: 1, CapturedAt: model.Time{Time: time.Now().Add(-2 * time.Second)}}
+	newer := model.Item{ID: idB, Kind: model.KindText, ContentHash: &hash, Text: model.Ptr("b"), CopyCount: 1, CapturedAt: model.Time{Time: time.Now()}}
+	local := model.Item{ID: idB, Kind: model.KindText, Text: model.Ptr("b"), CopyCount: 3, CapturedAt: model.Time{Time: time.Now().Add(-time.Second)}}
+	out := MergeItems([]model.Item{older, newer}, []model.Item{local})
+	if len(out) != 1 || out[0].ID != idB {
+		t.Fatalf("merged %+v", out)
+	}
+}
+
+// The copy-count reconciliation uses the same id-first identity.
+func TestDownloadMergeKeepsCountsWithOneMissingHash(t *testing.T) {
+	const id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+	hash := "H"
+	remote := textItemAt(id, "shared")
+	remote.ContentHash = &hash
+	remote.CopyCount = 1
+	local := textItemAt(id, "shared")
+	local.CopyCount = 7
+	captured := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "captured")
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{remote}))
+	defer srv.Close()
+	h := &downloadArrivalHistory{initial: []model.Item{local}, current: []model.Item{captured, local}}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local})); err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range h.items {
+		if it.ID == id && it.CopyCount != 7 {
+			t.Errorf("copy count %d: the local count was reset", it.CopyCount)
+		}
+	}
+}

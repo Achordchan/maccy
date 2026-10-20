@@ -722,35 +722,55 @@ type AppliedPayloads struct {
 // payloadJournalEntry is one cache-folder replacement that has not been
 // committed by saving the history yet.
 type payloadJournalEntry struct {
-	Target string `json:"target"`
-	Backup string `json:"backup"`
+	Target string            `json:"target"`
+	Backup string            `json:"backup"`
+	Files  map[string]string `json:"files,omitempty"`
 }
 
 type payloadJournal struct {
 	Entries []payloadJournalEntry `json:"entries"`
-	// After is the digest of the history that ApplyPayloads is installing:
-	// on startup it tells a committed replacement from an interrupted one.
-	After string `json:"after"`
 }
 
-func historyDigest(items []model.Item) string {
-	b, err := json.Marshal(items)
-	if err != nil {
-		return ""
+// payloadEntryCommitted says the saved history refers to the payloads the
+// journal installed: every file it names in the target exists and hashes to
+// the installed bytes. Concurrent captures elsewhere do not matter.
+func payloadEntryCommitted(items []model.Item, e payloadJournalEntry) bool {
+	base := strings.ToLower(filepath.Base(e.Target))
+	var owner *model.Item
+	for i := range items {
+		if strings.ToLower(strings.ReplaceAll(strings.ToLower(items[i].ID), "-", "")) == base {
+			owner = &items[i]
+			break
+		}
 	}
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	if owner == nil {
+		return true // the item is gone: nothing refers to the folder
+	}
+	for _, p := range owner.FilePaths {
+		if filepath.Dir(filepath.Clean(p)) != e.Target {
+			continue
+		}
+		want, ok := e.Files[filepath.Base(p)]
+		if !ok {
+			return false
+		}
+		sum, err := fileSHA256(p)
+		if err != nil || !strings.EqualFold(sum, want) {
+			return false
+		}
+	}
+	return true
 }
 
 func payloadJournalPath(l paths.Layout) string {
 	return filepath.Join(l.Root, "sync", "payload-journal.json")
 }
 
-func writePayloadJournal(path string, entries []payloadJournalEntry, after string) error {
+func writePayloadJournal(path string, entries []payloadJournalEntry) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	b, err := json.Marshal(payloadJournal{Entries: entries, After: after})
+	b, err := json.Marshal(payloadJournal{Entries: entries})
 	if err != nil {
 		return err
 	}
@@ -776,12 +796,11 @@ func RecoverPayloads(l paths.Layout, items []model.Item) {
 		_ = os.Remove(path)
 		return
 	}
-	committed := j.After != "" && historyDigest(items) == j.After
 	for _, e := range j.Entries {
 		if e.Target == "" || e.Backup == "" {
 			continue
 		}
-		if committed {
+		if payloadEntryCommitted(items, e) {
 			_ = os.RemoveAll(e.Backup)
 			continue
 		}
@@ -893,11 +912,21 @@ func ApplyPayloads(l paths.Layout, root string, items []model.Item) ([]model.Ite
 		moves = append(moves, dirMove{staged: staged, dest: dest})
 	}
 
-	digest := historyDigest(out)
 	for _, m := range moves {
 		backup := m.dest + ".old-" + newGUIDN()
-		applied.entries = append(applied.entries, payloadJournalEntry{Target: m.dest, Backup: backup})
-		if err := writePayloadJournal(applied.journal, applied.entries, digest); err != nil {
+		files := map[string]string{}
+		if ents, err := os.ReadDir(m.staged); err == nil {
+			for _, e := range ents {
+				if e.IsDir() {
+					continue
+				}
+				if sum, err := fileSHA256(filepath.Join(m.staged, e.Name())); err == nil {
+					files[e.Name()] = sum
+				}
+			}
+		}
+		applied.entries = append(applied.entries, payloadJournalEntry{Target: m.dest, Backup: backup, Files: files})
+		if err := writePayloadJournal(applied.journal, applied.entries); err != nil {
 			rollback()
 			return nil, nil, err
 		}

@@ -966,7 +966,6 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		moves.Commit()
 	}
 	_ = s.cfg.History.RemoveFiles(removed)
-	s.persistPendingMerge(preMergeFingerprint, basis)
 	s.timing("merge", "persist_local", started, reason)
 	return nil
 }
@@ -1185,6 +1184,16 @@ func (s *Syncer) ownPayload(p string) bool {
 	return false
 }
 
+// downloadCountKey is the identity MergeItems reconciled an item to: the id
+// when it has one (an older item may have no content hash), else the hash.
+func downloadCountKey(it model.Item) string {
+	id := strings.ToLower(strings.TrimSpace(it.ID))
+	if id != "" && id != emptyGUID {
+		return "id:" + itoa(int(it.Kind)) + ":" + id
+	}
+	return strings.ToLower(mergeKey(it))
+}
+
 // MergeForDownload merges a downloaded history with the local one when a
 // capture arrived during the download. Unlike a first merge, the two sides
 // share a synchronized baseline, so the copy count of an item both sides have
@@ -1194,17 +1203,13 @@ func MergeForDownload(remote, local []model.Item) []model.Item {
 	remoteCount := make(map[string]int32, len(remote))
 	localCount := make(map[string]int32, len(local))
 	for _, it := range remote {
-		if k := strings.ToLower(mergeKey(it)); k != "" {
-			remoteCount[k] = it.CopyCount
-		}
+		remoteCount[downloadCountKey(it)] = it.CopyCount
 	}
 	for _, it := range local {
-		if k := strings.ToLower(mergeKey(it)); k != "" {
-			localCount[k] = it.CopyCount
-		}
+		localCount[downloadCountKey(it)] = it.CopyCount
 	}
 	for i := range merged {
-		k := strings.ToLower(mergeKey(merged[i]))
+		k := downloadCountKey(merged[i])
 		if k == "" {
 			continue
 		}
