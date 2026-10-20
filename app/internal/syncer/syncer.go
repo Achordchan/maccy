@@ -602,9 +602,12 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	if err := s.cfg.Flush(ctx); err != nil {
 		// The history was not saved: put the old one, its settings and its
 		// files back. Captures made meanwhile are kept.
-		s.rollbackMutation(ctx, before, applied, oldSettings)
-		if moves != nil {
+		rerr := s.rollbackMutation(ctx, before, applied, oldSettings)
+		if rerr == nil && moves != nil {
 			moves.Rollback()
+		}
+		if rerr != nil {
+			return DownloadResult{}, fmt.Errorf("%w (history rollback failed: %v)", err, rerr)
 		}
 		return DownloadResult{}, err
 	}
@@ -781,9 +784,12 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	if err := s.cfg.Flush(ctx); err != nil {
 		// The history was not saved: put the old one, its settings and its
 		// files back. Captures made meanwhile are kept.
-		s.rollbackMutation(ctx, before, merged, localSettings)
-		if moves != nil {
+		rerr := s.rollbackMutation(ctx, before, merged, localSettings)
+		if rerr == nil && moves != nil {
 			moves.Rollback()
+		}
+		if rerr != nil {
+			return fmt.Errorf("%w (history rollback failed: %v)", err, rerr)
 		}
 		return err
 	}
@@ -828,6 +834,10 @@ func (s *Syncer) ensureLocalBackupBlobs(ctx context.Context, exp snapshot.Export
 		}
 		if err := copyNew(b.SourcePath, target); err != nil {
 			return fmt.Errorf("blob %s: %w", b.SHA256, err)
+		}
+		if sum, err := snapshot.FileSHA256(target); err != nil || !strings.EqualFold(sum, b.SHA256) {
+			_ = os.Remove(target)
+			return fmt.Errorf("blob %s: the copied bytes do not match", b.SHA256)
 		}
 	}
 	return nil
@@ -940,15 +950,15 @@ func itemsNotIn(exclude, items []model.Item) []model.Item {
 // captured while the operation was in flight: they were neither downloaded nor
 // part of the mutation, so losing them would be data loss. The previous
 // portable settings are restored too.
-func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.Item, oldSettings model.Settings) {
-	err := s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
+func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.Item, oldSettings model.Settings) error {
+	if err := s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
 		return MergeItems(before, itemsNotIn(applied, current)), nil
-	})
-	if err != nil {
-		return
+	}); err != nil {
+		return err
 	}
 	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(oldSettings.Portable()) })
 	s.cfg.History.ApplyLimits(s.settings())
+	return nil
 }
 
 // retainedItems is the applied items that the history still holds: the limits
