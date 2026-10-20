@@ -2778,3 +2778,22 @@ func TestDownloadFailsWhenThePendingRecordCannotBeWritten(t *testing.T) {
 		t.Errorf("the history was not rolled back: %+v", h.items)
 	}
 }
+
+// The rollback is the sync's own write: it must not wake the auto-sync.
+func TestRollbackSuppressesTheHistoryNotification(t *testing.T) {
+	var events []bool
+	s := model.DefaultSettings()
+	h := &unitHistory{}
+	syn := New(Config{
+		Layout:           paths.Layout{Root: t.TempDir()},
+		Settings:         syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		History:          h,
+		SuppressAutoSync: func(on bool) { events = append(events, on) },
+	})
+	if err := syn.rollbackMutation(context.Background(), nil, nil, model.DefaultSettings(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || !events[0] || events[1] {
+		t.Errorf("suppress events %v", events)
+	}
+}

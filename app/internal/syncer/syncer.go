@@ -845,7 +845,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		}
 		rcancel()
 		if rerr == nil && moves != nil {
-			moves.Rollback()
+			moves.RollbackKeeping(s.payloadKeeper())
 		}
 		if rerr != nil {
 			return DownloadResult{}, fmt.Errorf("%w (history rollback failed: %v)", werr, rerr)
@@ -1148,7 +1148,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		}
 		rcancel()
 		if rerr == nil && moves != nil {
-			moves.Rollback()
+			moves.RollbackKeeping(s.payloadKeeper())
 		}
 		if rerr != nil {
 			return fmt.Errorf("%w (history rollback failed: %v)", werr, rerr)
@@ -1797,7 +1797,7 @@ func itemsNotIn(exclude, items []model.Item) []model.Item {
 // part of the mutation, so losing them would be data loss. The previous
 // portable settings are restored too.
 func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.Item, oldSettings model.Settings, limitPruned map[string]bool) error {
-	if err := s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
+	if err := s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
 		return rollbackItems(before, applied, current, limitPruned), nil
 	}); err != nil {
 		return err
@@ -1814,7 +1814,7 @@ func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.I
 func (s *Syncer) discardMutation(ctx context.Context, applied []model.Item, _ *snapshot.AppliedPayloads, oldSettings model.Settings) error {
 	rctx, cancel := cleanupContext()
 	defer cancel()
-	if err := s.cfg.History.Mutate(rctx, func(current []model.Item) ([]model.Item, error) {
+	if err := s.mutateHistory(rctx, func(current []model.Item) ([]model.Item, error) {
 		return itemsNotIn(applied, current), nil
 	}); err != nil {
 		// The history still refers to the moved payloads: keep them.
