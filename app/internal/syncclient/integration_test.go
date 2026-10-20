@@ -7,113 +7,23 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"klip/internal/model"
+	"klip/internal/nastest"
 	"klip/internal/paths"
 	"klip/internal/snapshot"
 	"klip/internal/syncclient"
 )
 
-// This test runs the real nas-agent-py and drives the client against it:
-// accounts, a card, the tier, a snapshot with its blobs from one device to
-// another, and the event stream. It needs a Python with the server's
-// requirements; point KLIP_NAS_PYTHON at it, for example:
-//
-//	python3 -m venv /tmp/nasvenv && /tmp/nasvenv/bin/pip install -r nas-agent-py/requirements.txt
-//	KLIP_NAS_PYTHON=/tmp/nasvenv/bin/python go test ./internal/syncclient/
-//
-// Without it the test is skipped.
-
-const adminKey = "test-admin-key"
-
-type server struct {
-	url string
-	t   *testing.T
-}
-
-func startServer(t *testing.T) *server {
-	t.Helper()
-	py := os.Getenv("KLIP_NAS_PYTHON")
-	if py == "" {
-		t.Skip("KLIP_NAS_PYTHON is not set: the real server is not run")
-	}
-	dir, err := filepath.Abs("../../../nas-agent-py")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "app.py")); err != nil {
-		t.Skipf("server source not available: %v", err)
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-
-	cmd := exec.Command(py, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", fmt.Sprint(port), "--log-level", "warning")
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"STORAGE_ROOT="+t.TempDir(),
-		"ADMIN_KEY="+adminKey,
-		"AUTH_SIGNING_KEY=test-signing-key-that-is-long-enough-for-hs256",
-		"SMTP_HOST=", // email is not configured: password codes give 503
-	)
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		cmd.Process.Kill()
-		cmd.Wait()
-		if t.Failed() {
-			t.Logf("server output:\n%s", out.String())
-		}
-	})
-
-	s := &server{url: fmt.Sprintf("http://127.0.0.1:%d", port), t: t}
-	c := syncclient.New(s.url)
-	deadline := time.Now().Add(30 * time.Second)
-	for !c.Health(context.Background()) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the server did not start:\n%s", out.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return s
-}
-
-// admin posts to an /admin route with the legacy key and returns the JSON.
-func (s *server) admin(path string, payload any) map[string]any {
-	s.t.Helper()
-	b, _ := json.Marshal(payload)
-	req, _ := http.NewRequest(http.MethodPost, s.url+path, bytes.NewReader(b))
-	req.Header.Set("Authorization", "Bearer "+adminKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		s.t.Fatalf("%s: %d %s", path, resp.StatusCode, body)
-	}
-	var m map[string]any
-	json.Unmarshal(body, &m)
-	return m
-}
+// This test runs the real nas-agent-py (see package nastest) and drives the
+// client against it: accounts, a card, the tier, a snapshot with its blobs
+// from one device to another, and the event stream.
 
 func sha(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 
@@ -126,10 +36,10 @@ func statusOf(err error) int {
 }
 
 func TestAgainstTheRealServer(t *testing.T) {
-	srv := startServer(t)
+	srv := nastest.Start(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := syncclient.New(srv.url)
+	c := syncclient.New(srv.URL)
 
 	// ---- accounts
 	if _, err := c.Register(ctx, "not-an-email", "password1"); err == nil || err.Error() != "invalid email" {
@@ -202,7 +112,7 @@ func TestAgainstTheRealServer(t *testing.T) {
 	}
 
 	// ---- a card and a tier
-	cards := srv.admin("/admin/card/generate", map[string]any{"count": 1, "durationDays": 30})
+	cards := srv.Admin("/admin/card/generate", map[string]any{"count": 1, "durationDays": 30})
 	code := cards["codes"].([]any)[0].(string)
 	if r, err := c.RedeemCard(ctx, access, "0000-0000-0000-0000"); err != nil || r.Success || !strings.Contains(r.Error, "card not found or used") {
 		t.Errorf("unknown card: %+v %v", r, err)
@@ -218,7 +128,7 @@ func TestAgainstTheRealServer(t *testing.T) {
 	if _, err := c.GetManifestJSON(ctx, access); !syncclientIs(err, 403, "tier_not_assigned") {
 		t.Errorf("no tier: %v", err)
 	}
-	srv.admin("/admin/user/tier", map[string]any{"emailOrUserId": "alice@example.com", "tier": "mini"})
+	srv.Admin("/admin/user/tier", map[string]any{"emailOrUserId": "alice@example.com", "tier": "mini"})
 	st, err = c.SubscriptionStatus(ctx, access)
 	if err != nil || !st.Subscribed || st.Tier == nil || *st.Tier != "Mini" || *st.StorageLimitBytes != 100*1024*1024 || *st.RetentionDays != 30 || *st.OverLimit {
 		t.Errorf("status after: %+v %v", st, err)
@@ -377,11 +287,15 @@ func TestAgainstTheRealServer(t *testing.T) {
 
 	// ---- Watch with a Session, over the real server: the tokens expire, the
 	// session renews them, and the update arrives.
-	var s = model.DefaultSettings()
+	var (
+		mu sync.Mutex
+		s  = model.DefaultSettings()
+	)
 	s.AuthAccessToken, s.AuthRefreshToken = model.Ptr("expired-garbage"), &next.RefreshToken
 	s.AuthExpiresAtUnixMs = time.Now().UnixMilli() + 3_600_000 // looks valid, is not
+	current := func() model.Settings { mu.Lock(); defer mu.Unlock(); return s }
 	sess := &syncclient.Session{Client: c, Settings: syncclient.Settings{
-		Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }}}
+		Get: current, Update: func(f func(*model.Settings)) { mu.Lock(); f(&s); mu.Unlock() }}}
 	updated := make(chan struct{}, 4)
 	wctx, wcancel := context.WithCancel(ctx)
 	watchDone := make(chan struct{})
@@ -392,14 +306,14 @@ func TestAgainstTheRealServer(t *testing.T) {
 	}()
 	// Wait until the watcher has renewed its token (the stored one changes).
 	deadline := time.Now().Add(15 * time.Second)
-	for model.Str(s.AuthAccessToken) == "expired-garbage" && time.Now().Before(deadline) {
+	for model.Str(current().AuthAccessToken) == "expired-garbage" && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if model.Str(s.AuthAccessToken) == "expired-garbage" {
+	if model.Str(current().AuthAccessToken) == "expired-garbage" {
 		t.Fatal("the session did not renew the token after the server refused it")
 	}
 	time.Sleep(300 * time.Millisecond) // let the stream connect
-	if _, err := c.UploadSnapshot(ctx, model.Str(s.AuthAccessToken), snapPath); err != nil {
+	if _, err := c.UploadSnapshot(ctx, model.Str(current().AuthAccessToken), snapPath); err != nil {
 		t.Fatal(err)
 	}
 	select {

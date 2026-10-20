@@ -9,6 +9,7 @@
 | `internal/settings` | `settings.json` 读写；不认识的字段原样保留；旧同步地址迁移；先写临时文件再替换 |
 | `internal/history` | `history.json` 读写；启动时按 `Normalize` 丢弃内容已不存在的条目、校正大小 |
 | `internal/snapshot` | 同步快照（SQLite，schema 2，兼容读 schema 1）的导出与导入 |
+| `internal/syncer` | 同步编排（C# `SyncService` 加上调用它的主窗口/偏好设置里的流程）：何时上传、本地与远端谁新、合并、冲突、`SyncLast*` 字段维护、指纹、错误文案、后台同步的触发时机 |
 | `internal/syncclient` | 同步服务器（nas-agent-py）的客户端：账号（登录/注册/刷新/改密码）、订阅状态与卡密、manifest、快照与 blob 的 gzip 上传下载、SSE 事件流，以及保存登录态并自动续期的 `Session`、断线重连的 `Watch` |
 
 ## 对照测试
@@ -71,3 +72,42 @@ KLIP_NAS_PYTHON=/tmp/nasvenv/bin/python go test -v -run TestAgainstTheRealServer
 - C# `SyncService`（974 行）里的**同步编排**：什么时候上传、怎么判断本地和远端谁新、冲突处理、`SyncLast*` 字段的维护。这次只做了它调用的客户端层。
 - 没有测的：服务器的 413（快照超过档位容量）和 409，需要 100MB 以上的数据；真实邮件验证码（服务器没配 SMTP）；对线上服务器 `maccy.baymaxgroup.com` 没有发过任何请求。
 - 对照的是仓库里这份 `app.py`，不保证和线上正在运行的版本完全一致。
+
+## 同步编排（internal/syncer）
+
+把 `SyncService` 和它的两个调用方（`MainWindowViewModel.RunAutoSyncAsync`、`PreferencesWindowViewModel` 的“立即同步/上传/恢复”）里的逻辑做成一个与界面无关的包：
+
+- `Syncer.Run`：看远端 manifest → `Decide` → 上传 / 下载 / 合并后再上传 / 什么都不做 → 记住状态。进度步骤和百分比（30、52、68、84 等）与 C# 一致。
+- `Decide`：和 `DecideDirectionWithState` 同一张表（remote_missing、first_sync_merge、first_sync_remote_exists、remote_rolled_back、state_matched、local_changed_only、remote_changed_only、timestamp_fallback）。远端回退的容差 2 秒，时间戳比较的容差 2 秒。
+- `Fingerprint`：本地历史的指纹，**逐字节照 C#**（字段顺序、`schema=1` 头、行尾用平台的 `Environment.NewLine`、.NET ticks、`Path.GetFileName`）。这样从 1.0.10 升级上来的 Windows 设备，保存在 `settings.json` 里的 `SyncLastLocalFingerprint` 在 1.0.11 里仍然相等，不会第一次同步就当成“本地有改动”。
+- `MergeItems`：按内容哈希（同种类）或 id 合并重复条目：置顶取或、复制次数相加、体积取大、首次时间取早、备注优先本地、最新的那份为准；按时间倒序，同时间按 id。合并前先把本地历史导出成 `sync/backups/pre-merge-*.sqlite`。
+- 令牌：用前不足 60 秒就续期；服务器返回 401 就续期并重试一次（blob、快照、manifest 都一样）；403 且文字含 subscription expired / 订阅已过期 是“订阅已过期”；续期被服务器拒绝则登出，网络不通则保持登录。
+- `Auto`：后台同步的触发：启动时、收到事件流的 `sync-updated` 时、历史变化后停 1.2 秒再同步；同时只跑一个；同步自己改历史时不触发；第一次后台同步成功之前，历史变化不触发（C# 的 `_initialSyncCompleted`）。
+- `Explain`：同步错误的中文提示，主窗口和偏好设置各一种说法，与 C# 两个函数对应。
+
+### 与 C# 行为不同的地方（有意的）
+
+1. **新账号的第一次同步会自动上传。** C# 里服务器还没有快照时 `/sync/manifest` 返回 404，`RunAutoSyncAsync` 直接报错“云端还没有快照”，决策表里的 `remote_missing` 分支实际走不到；只有手动点“上传”或改了历史才会传。`Run` 把 404 当作空 manifest，于是走 `remote_missing`：本地有数据就上传，没有就什么都不做。
+   `Syncer.ManifestInfo` 仍然和 C# 一样把 404 当错误返回。
+2. 偏好设置里对“其他 InvalidOperationException”原样显示文字，Go 里分不出异常类型，统一显示“同步失败：文字”。
+
+### 没有改的 C# 行为（测试里写明了）
+
+- **两台设备都改了之后，较新的一次捕获会覆盖对方的改动。** 先上传的那台的新增条目会被后上传、捕获时间更晚的那台覆盖，不会合并（只有“首次同步”才合并）。`TestDevicesSyncThroughTheRealServer` 里有这个场景，用来说明现状；要改成总是合并，是一个产品决定。
+
+### 测试
+
+```bash
+cd app && go test ./...      # 不需要 Python：指纹对照、决策表、合并、错误文案、后台触发
+KLIP_NAS_PYTHON=/tmp/nasvenv/bin/python go test ./...   # 加上对真实 nas-agent-py 的端到端
+```
+
+- 指纹有两重对照：用 Python 独立按 C# 算法算出的金标准值（Unix 和 Windows 行尾各一个），以及直接读 `SyncService.cs` 比较写进指纹的字段表达式。
+- 端到端用真实服务器、同一个账号的多台“设备”（各有自己的数据目录和设置）：首次上传、重复上传跳过、另一台首次下载（含图片 blob）、一台改动另一台跟随、两台都改的冲突、带重复内容的首次合并（备份文件、去重、备注与次数）、令牌被服务器拒绝后续期重试、令牌临近过期的提前续期、续期令牌被撤销后登出、未订阅账号的“订阅已过期”、进度步骤。
+- 变异检查：改反上传/下载方向、复制次数不相加、去掉同哈希跳过上传、改指纹里的置顶标记，测试都能抓到。
+
+### 还没做
+
+- 真正的 `ClipboardHistoryService` / `ClipboardPersistenceService` 的 Go 版（测试里用的是内存里的假历史）：条目的去重、置顶、容量清理、`ReplaceAll` 时删除不再用的图片和文件目录。下一阶段。
+- 界面状态（正在同步、进度条、Toast）、“只有开启云同步才在本地改动后上传”的开关；`UploadAfterLocalMutation` 已提供，是否调用由界面决定。
+- 把 `syncclient.Watch` 的 `onUpdated` 接到 `Auto.OnRemoteUpdated`：只是一行连接，等有应用外壳时做。
