@@ -324,6 +324,7 @@ func (s *Service) Capture(ctx context.Context) error {
 		return nil // this change was taken already (the watcher saw it late)
 	}
 	wantRetry := false
+	var storeErr error // the picture was fine but could not be stored
 	defer func() {
 		if wantRetry {
 			s.retryLater(key)
@@ -399,9 +400,13 @@ func (s *Service) Capture(ctx context.Context) error {
 		if len(files) > 0 {
 			if opt.images && len(files) == 1 && isImagePath(files[0]) && isFile(files[0]) {
 				if data, err := os.ReadFile(files[0]); err == nil {
-					if p, h, size, err := s.savePNG(data); err == nil {
+					p, h, size, err := s.savePNG(data)
+					if err == nil {
 						add(model.Item{ID: s.NewID(), Kind: model.KindImage, ApproxBytes: size, ImageFilePath: &p, CopyCount: 1, ContentHash: &h})
 						return nil
+					}
+					if errors.Is(err, errStorage) {
+						storeErr, wantRetry = err, true
 					}
 				}
 			}
@@ -429,11 +434,18 @@ func (s *Service) Capture(ctx context.Context) error {
 			wantRetry = true // an image is advertised but did not come
 		}
 		if len(data) > 0 {
-			if p, h, size, err := s.savePNG(data); err == nil {
+			p, h, size, err := s.savePNG(data)
+			if err == nil {
 				add(model.Item{ID: s.NewID(), Kind: model.KindImage, ApproxBytes: size, ImageFilePath: &p, CopyCount: 1, ContentHash: &h})
 				return nil
 			}
+			if errors.Is(err, errStorage) {
+				storeErr, wantRetry = err, true
+			}
 		}
+	}
+	if storeErr != nil {
+		return storeErr
 	}
 	return ctx.Err()
 }
@@ -522,6 +534,10 @@ func (s *Service) fileListBytes(id string, files []string) int64 {
 	return n
 }
 
+// errStorage marks a failure to store a picture that was good: the disk is
+// full or the folder cannot be written, as against data that is no picture.
+var errStorage = errors.New("capture: cannot store the picture")
+
 // savePNG stores an image in the images folder as <unix ms>_<guid>.png, and
 // returns its path, its content hash ("img:" and the SHA-256 of the file)
 // and its size. A PNG is stored as it is; any other format the standard
@@ -543,11 +559,11 @@ func (s *Service) savePNG(data []byte) (path, hash string, size int64, err error
 		return "", "", 0, derr
 	}
 	if err := os.MkdirAll(s.Layout.Images(), 0o755); err != nil {
-		return "", "", 0, err
+		return "", "", 0, fmt.Errorf("%w: %v", errStorage, err)
 	}
 	path = filepath.Join(s.Layout.Images(), fmt.Sprintf("%d_%s.png", s.Now().UnixMilli(), strings.ReplaceAll(newGUID(), "-", "")))
 	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return "", "", 0, err
+		return "", "", 0, fmt.Errorf("%w: %v", errStorage, err)
 	}
 	return path, hashOf("img", data), int64(len(data)), nil
 }

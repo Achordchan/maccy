@@ -929,3 +929,22 @@ func TestRecurringContentIsNotARepeat(t *testing.T) {
 		t.Fatalf("%d items: the second copy of the same picture must count", len(items))
 	}
 }
+
+func TestStorageFailureIsReportedAndRetried(t *testing.T) {
+	r := newRig(t)
+	retried := make(chan struct{}, 8)
+	r.s.Retry = func() { retried <- struct{}{} }
+	// Put a file where the images folder should be: it cannot be made.
+	_ = os.MkdirAll(filepath.Dir(r.l.Images()), 0o755)
+	_ = os.WriteFile(r.l.Images(), []byte("not a folder"), 0o644)
+	r.clip.formats, r.clip.image = []string{"image/png"}, tinyPNG(t)
+	err := r.s.Capture(context.Background())
+	if err == nil || !errors.Is(err, errStorage) {
+		t.Fatalf("err = %v, want a storage error", err)
+	}
+	select {
+	case <-retried:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a picture that could not be stored must be tried again")
+	}
+}
