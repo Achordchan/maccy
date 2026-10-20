@@ -222,18 +222,20 @@ def safe_legacy_path(rel: str) -> bool:
 
 
 def write_legacy_delete(publish_dir: Path, legacy_from: str | None, out: Path | None = None) -> Path:
-    """installer/legacy-delete.iss: [InstallDelete] lines for exactly the files
-    of the earlier program (the list of its package), none when it is not
-    known. Wildcards would also take what is not ours."""
+    """installer/legacy-delete.iss: Pascal statements (included in klip.iss's
+    [Code], run once everything is installed) deleting exactly the files of the
+    earlier program (the list of its package), none when it is not known.
+    Wildcards would also take what is not ours."""
     path = out or REPO / "installer" / "legacy-delete.iss"
-    lines = ["; written by tools/release_go.py: the files of the earlier program, by name"]
+    lines = ["// written by tools/release_go.py: the files of the earlier program, by name"]
     if legacy_from:
         new_paths = {f["path"] for f in package_file_list(publish_dir)}
         for rel in legacy_files_from(legacy_from, new_paths):
             if not safe_legacy_path(rel):
                 print("not deleted by the installer (unsafe name): " + rel, flush=True)
                 continue
-            lines.append('Type: files; Name: "{app}\\' + rel.replace("/", "\\").replace('"', '""') + '"')
+            name = rel.replace("/", "\\").replace("'", "''")
+            lines.append("DeleteFile(ExpandConstant('{app}\\" + name + "'));")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 

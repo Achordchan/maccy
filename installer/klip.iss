@@ -41,20 +41,28 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 [Files]
 Source: "{#MyPublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-[InstallDelete]
-; 1.0.11 is a Go program: what the .NET program of 1.0.10 and older left in
-; the folder is of no use. Only files that the earlier program is known to have
-; had are named, in legacy-delete.iss, which the release tool writes from the
-; file list of the earlier package (--legacy-from): other DLLs or a folder of the
-; user's own in the same place are not touched, nor is the user's data
-; (settings.json, history.json, images, files, blobs, sync, updates). The SQLite
-; library of the new program is installed after this, by [Files].
+[Code]
+// 1.0.11 is a Go program: what the .NET program of 1.0.10 and older left in
+// the folder is of no use. It is removed once everything is installed, not
+// before: Inno Setup does not bring back what [InstallDelete] took if the
+// installation fails, and the old program must still run then. Only files that
+// the earlier program is known to have had are named, in legacy-delete.iss,
+// which the release tool writes from the file list of the earlier package
+// (--legacy-from) without the files the new package has itself: other DLLs or a
+// folder of the user's own in the same place are not touched, nor is the user's
+// data (settings.json, history.json, images, files, blobs, sync, updates).
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
 #if FileExists(SourcePath + "legacy-delete.iss")
-  #include "legacy-delete.iss"
+    #include "legacy-delete.iss"
 #endif
-; the shortcuts that were called Maccy before the program was renamed Klip
-Type: files; Name: "{userprograms}\Maccy.lnk"
-Type: files; Name: "{userdesktop}\Maccy.lnk"
+    // the shortcuts that were called Maccy before the program was renamed Klip
+    DeleteFile(ExpandConstant('{userprograms}\Maccy.lnk'));
+    DeleteFile(ExpandConstant('{userdesktop}\Maccy.lnk'));
+  end;
+end;
 
 [Icons]
 Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
