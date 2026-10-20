@@ -1726,7 +1726,12 @@ func TestSessionCleanupSurvivesCancelledFlush(t *testing.T) {
 		Now:     time.Now,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
+	first := true
 	syn.cfg.Flush = func(context.Context) error {
+		if !first {
+			return nil // the cleanup save
+		}
+		first = false
 		cancel()
 		mu.Lock()
 		s.AuthAccessToken = model.Ptr(testJWT("account-b"))

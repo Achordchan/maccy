@@ -670,6 +670,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		if err := s.discardMutation(ctx, applied, moves, oldSettings); err != nil {
 			return DownloadResult{}, fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
 		}
+		if moves != nil {
+			moves.Rollback()
+		}
 		return DownloadResult{}, ErrSessionChanged
 	}
 	// The settings change only after the history was replaced: a failure
@@ -706,6 +709,12 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			if derr := s.discardMutation(ctx, applied, moves, oldSettings); derr != nil {
 				return DownloadResult{}, fmt.Errorf("%w (session cleanup failed: %v)", err, derr)
 			}
+			if derr := s.persistCleanup(); derr != nil {
+				return DownloadResult{}, fmt.Errorf("%w (session cleanup not saved: %v)", err, derr)
+			}
+			if moves != nil {
+				moves.Rollback()
+			}
 			return DownloadResult{}, ErrSessionChanged
 		}
 		rctx, rcancel := cleanupContext()
@@ -736,6 +745,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		}
 		if err := s.persistCleanup(); err != nil {
 			return DownloadResult{}, fmt.Errorf("%w (session cleanup not saved: %v)", ErrSessionChanged, err)
+		}
+		if moves != nil {
+			moves.Rollback()
 		}
 		return DownloadResult{}, ErrSessionChanged
 	}
@@ -933,6 +945,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		if err := s.discardMutation(ctx, merged, moves, localSettings); err != nil {
 			return fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
 		}
+		if moves != nil {
+			moves.Rollback()
+		}
 		return ErrSessionChanged
 	}
 	mergedSettings := localSettings.Portable()
@@ -955,6 +970,12 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		if s.accountChanged(account) {
 			if derr := s.discardMutation(ctx, merged, moves, localSettings); derr != nil {
 				return fmt.Errorf("%w (session cleanup failed: %v)", err, derr)
+			}
+			if derr := s.persistCleanup(); derr != nil {
+				return fmt.Errorf("%w (session cleanup not saved: %v)", err, derr)
+			}
+			if moves != nil {
+				moves.Rollback()
 			}
 			return ErrSessionChanged
 		}
@@ -983,6 +1004,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		}
 		if err := s.persistCleanup(); err != nil {
 			return fmt.Errorf("%w (session cleanup not saved: %v)", ErrSessionChanged, err)
+		}
+		if moves != nil {
+			moves.Rollback()
 		}
 		return ErrSessionChanged
 	}
@@ -1497,7 +1521,7 @@ func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.I
 // session changed during its commit: the new session must not inherit them.
 // Unlike rollbackMutation it does not restore before, so a history the new
 // session already replaced (or cleared) is left alone.
-func (s *Syncer) discardMutation(ctx context.Context, applied []model.Item, moves *snapshot.AppliedPayloads, oldSettings model.Settings) error {
+func (s *Syncer) discardMutation(ctx context.Context, applied []model.Item, _ *snapshot.AppliedPayloads, oldSettings model.Settings) error {
 	rctx, cancel := cleanupContext()
 	defer cancel()
 	if err := s.cfg.History.Mutate(rctx, func(current []model.Item) ([]model.Item, error) {
@@ -1507,9 +1531,6 @@ func (s *Syncer) discardMutation(ctx context.Context, applied []model.Item, move
 		return err
 	}
 	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(oldSettings.Portable()) })
-	if moves != nil {
-		moves.Rollback()
-	}
 	return nil
 }
 
