@@ -454,3 +454,24 @@ func TestSidecarAndSettingsAgreeAfterAFailedSave(t *testing.T) {
 		t.Fatalf("the record says %q while the settings on disk are account A's", got)
 	}
 }
+
+func TestOwnershipFollowsThePersistedLoginAfterARecovery(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := settings.Open(filepath.Join(dir, "settings.json"))
+	s := &Service{Client: syncclient.New("http://127.0.0.1:1"), Store: m, AccountFile: filepath.Join(dir, "sync", "account.txt")}
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a", RefreshToken: "ra", Email: "a@example.com"}, "a@example.com")
+	_ = os.Chmod(dir, 0o500)
+	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
+		f.Close()
+		os.Chmod(dir, 0o755)
+		t.Skip("writable anyway (root?)")
+	}
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "b", RefreshToken: "rb", Email: "b@example.com"}, "b@example.com") // not saved
+	_ = os.Chmod(dir, 0o755)
+	_ = m.Update(func(st *model.Settings) { st.SyncLastRemoteVersion = model.Ptr("b-state") }) // saved now, with B's login
+	s.SignOut()
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a2", RefreshToken: "ra2", Email: "a@example.com"}, "a@example.com")
+	if m.Get().SyncLastRemoteVersion != nil {
+		t.Fatal("A inherited the checkpoints B made")
+	}
+}

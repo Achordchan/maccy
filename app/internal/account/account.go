@@ -161,9 +161,12 @@ func (s *Service) storeTokensAt(t syncclient.TokenSet, fallbackEmail string, epo
 	err := s.Store.Update(func(m *model.Settings) {
 		// The sync state is about one account; it is kept through a sign-out and a
 		// sign-in to the same one, and dropped when the account is another.
-		prev := s.syncAccount()
+		// While a login is stored, its address is whose the checkpoints are (they
+		// are written and kept with it); the record on the side is for when the
+		// address has been forgotten by a sign-out.
+		prev := strings.TrimSpace(model.Str(m.AuthUserEmail))
 		if prev == "" {
-			prev = strings.TrimSpace(model.Str(m.AuthUserEmail))
+			prev = s.syncAccount()
 		}
 		if prev != "" && !strings.EqualFold(prev, who) {
 			m.SyncLastLocalFingerprint, m.SyncLastRemoteVersion = nil, nil
@@ -238,10 +241,8 @@ func (s *Service) SignOut() Result {
 	defer s.afterChange()
 	// The sync state belongs to the account that is leaving: say so before the
 	// address is forgotten (a login from 1.0.10 has no record of it yet).
-	if s.syncAccount() == "" {
-		if e := strings.TrimSpace(model.Str(s.Store.Get().AuthUserEmail)); e != "" {
-			s.setSyncAccount(e)
-		}
+	if e := strings.TrimSpace(model.Str(s.Store.Get().AuthUserEmail)); e != "" {
+		s.setSyncAccount(e)
 	}
 	if err := s.Store.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, true) }); err != nil {
 		// The tokens are gone from memory but the file still has them: after
