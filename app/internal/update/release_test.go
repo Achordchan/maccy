@@ -176,3 +176,42 @@ func TestReleaseToolNeedsADownloadAddress(t *testing.T) {
 		t.Fatalf("a release with no place to be downloaded from must stop before building: %v %s", err, res)
 	}
 }
+
+func TestInstallerDeletesOnlyNamedLegacyFiles(t *testing.T) {
+	tool := releaseTool(t)
+	dir := t.TempDir()
+	pub := filepath.Join(dir, "pub")
+	write(t, filepath.Join(pub, "maccy.exe"), "NEW")
+	old := filepath.Join(dir, "old.zip")
+	var b bytes.Buffer
+	zw := zip.NewWriter(&b)
+	w, _ := zw.Create("maccy-package.json")
+	_, _ = w.Write([]byte(`{"appId":"maccy","version":"1.0.10","runtime":"win-x64","files":[{"path":"maccy.exe"},{"path":"maccy.dll"},{"path":"runtimes/win-x64/native/x.dll"},{"path":"settings.json"}]}`))
+	_ = zw.Close()
+	if err := os.WriteFile(old, b.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "legacy-delete.iss")
+	script := `
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import release_go
+release_go.write_legacy_delete(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]))
+`
+	if res, err := exec.Command("python3", "-c", script, filepath.Dir(tool), pub, old, out).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, res)
+	}
+	got, _ := os.ReadFile(out)
+	text := string(got)
+	for _, want := range []string{`Name: "{app}\maccy.dll"`, `Name: "{app}\runtimes\win-x64\native\x.dll"`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %s in:\n%s", want, text)
+		}
+	}
+	for _, bad := range []string{"*.dll", "settings.json", "Name: \"{app}\\maccy.exe\""} {
+		if strings.Contains(text, bad) {
+			t.Errorf("%s must not be deleted:\n%s", bad, text)
+		}
+	}
+}

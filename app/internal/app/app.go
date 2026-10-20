@@ -80,6 +80,8 @@ type App struct {
 	Updates   *update.Coordinator
 
 	mu                sync.Mutex
+	syncMu            sync.Mutex // the end of a sync and the notes of changes that came during it
+	syncOver          bool       // under syncMu: the running sync has taken its notes and is ending
 	status            string
 	cancel            context.CancelFunc
 	done              sync.WaitGroup
@@ -165,7 +167,10 @@ func New(cfg Config) (*App, error) {
 	// start their own goroutines inside Auto).
 	run := a.Auto.Run
 	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
+		a.syncMu.Lock()
+		a.syncOver = false
 		a.syncing.Add(1) // ended by syncDone, which Auto calls when Run returns
+		a.syncMu.Unlock()
 		a.runActive.Store(true)
 		a.runGen.Store(a.acctGen.Load()) // which account this sync is for
 		return run(ctx, reason, manual)
@@ -223,15 +228,28 @@ func (a *App) Start() {
 
 	// A change of the history is a reason to sync, a moment later.
 	a.History.OnChanged(func() {
+		a.syncMu.Lock()
 		if a.syncing.Load() > 0 {
 			// A sync is running and has taken its picture of the history
 			// already; Auto turns this away, so it is kept for after. What the
 			// sync itself changes is not that.
-			if !a.Auto.Suppressed() {
+			over := a.syncOver
+			if !a.Auto.Suppressed() && !over {
 				a.changedDuringSync.Store(true)
+			}
+			a.syncMu.Unlock()
+			if over && !a.Auto.Suppressed() {
+				// The sync has handed in its notes and is only finishing: this
+				// one is asked for after it, on its own.
+				time.AfterFunc(200*time.Millisecond, func() {
+					if ctx := a.acct(); ctx.Err() == nil {
+						a.Auto.OnHistoryChanged(ctx)
+					}
+				})
 			}
 			return
 		}
+		a.syncMu.Unlock()
 		a.Auto.OnHistoryChanged(a.acct())
 	})
 
@@ -350,11 +368,24 @@ func (a *App) watchRemote(ctx context.Context) {
 			BaseURL: a.cfg.BaseURL,
 		}
 		sess.Client.Watch(wctx, sess, syncclient.WatchOptions{}, func() {
+			a.syncMu.Lock()
 			if a.syncing.Load() > 0 {
 				// The runner would turn it away; it is kept for when this one ends.
-				a.remoteDuringSync.Store(true)
+				over := a.syncOver
+				if !over {
+					a.remoteDuringSync.Store(true)
+				}
+				a.syncMu.Unlock()
+				if over {
+					time.AfterFunc(200*time.Millisecond, func() {
+						if ctx := a.acct(); ctx.Err() == nil {
+							a.Auto.OnRemoteUpdated(ctx)
+						}
+					})
+				}
 				return
 			}
+			a.syncMu.Unlock()
 			a.Auto.OnRemoteUpdated(a.acct())
 		})
 	}()
@@ -467,15 +498,21 @@ func (a *App) syncDone(reason string, manual bool, err error) {
 			a.syncing.Add(-1)
 		}
 	}()
-	if a.changedDuringSync.Load() {
+	a.syncMu.Lock()
+	changed, remote := a.changedDuringSync.Load(), a.remoteDuringSync.Load()
+	if err == nil {
+		a.changedDuringSync.Store(false)
+		a.remoteDuringSync.Store(false)
+	}
+	a.syncOver = true // from here a change is asked for on its own
+	a.syncMu.Unlock()
+	if changed {
 		// Changes that came in while it ran were not part of it: sync again
 		// when it is over (the runner is busy until this returns). After a
 		// failure the flag stays and the next try is later.
 		wait := 150 * time.Millisecond
 		if err != nil {
 			wait = 30 * time.Second
-		} else {
-			a.changedDuringSync.Store(false)
 		}
 		time.AfterFunc(wait, func() {
 			if ctx := a.acct(); ctx.Err() == nil {
@@ -483,12 +520,10 @@ func (a *App) syncDone(reason string, manual bool, err error) {
 			}
 		})
 	}
-	if a.remoteDuringSync.Load() {
+	if remote {
 		wait := 150 * time.Millisecond
 		if err != nil {
 			wait = 30 * time.Second
-		} else {
-			a.remoteDuringSync.Store(false)
 		}
 		time.AfterFunc(wait, func() {
 			if ctx := a.acct(); ctx.Err() == nil {

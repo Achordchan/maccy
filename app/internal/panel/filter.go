@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"klip/internal/model"
 )
@@ -59,7 +60,36 @@ func Preview(it model.Item) string {
 		}
 		return strings.Join(names, "、")
 	}
-	return cut(oneLine(model.Str(it.Text)), 140)
+	return previewLine(model.Str(it.Text), 140)
+}
+
+// previewLine is the text on one line (runs of white space as one space) cut
+// to n characters, made as far as n and no further: a copied log of many
+// megabytes costs no more than a short note.
+func previewLine(s string, n int) string {
+	var b strings.Builder
+	count, space, started := 0, false, false
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			space = started // a space only between words
+			continue
+		}
+		if space {
+			if count >= n {
+				return b.String() + "…"
+			}
+			b.WriteByte(' ')
+			count++
+			space = false
+		}
+		if count >= n {
+			return b.String() + "…"
+		}
+		b.WriteRune(r)
+		count++
+		started = true
+	}
+	return b.String()
 }
 
 // baseName is the last element of a path of either kind.

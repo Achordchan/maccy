@@ -21,6 +21,8 @@ const (
 	vkMenu        = 0x12
 )
 
+const vkLButton = 0x01 // VK_LBUTTON
+
 var (
 	user32            = syscall.NewLazyDLL("user32.dll")
 	kernel32          = syscall.NewLazyDLL("kernel32.dll")
@@ -48,9 +50,9 @@ var (
 	hookEvents chan mouseEvent
 	// hookOverflow is set when a button event did not fit in the queue.
 	hookOverflow atomic.Bool
-	hookHandle uintptr
-	hookOnce   sync.Once
-	hookProc   uintptr
+	hookHandle   uintptr
+	hookOnce     sync.Once
+	hookProc     uintptr
 )
 
 type msllhookstruct struct {
@@ -138,11 +140,26 @@ func StartHook(ev Events) (stop func(), err error) {
 			case <-quit:
 				return
 			case m := <-hookEvents:
-				if hookOverflow.Swap(false) && ev.LeftUp != nil {
-					// A press or release was lost when the queue was full: take the
-					// button as up, so that a missed release cannot leave the gesture
-					// thinking it is held while the mouse moves on.
-					ev.LeftUp()
+				if hookOverflow.Swap(false) {
+					// A press or release was lost when the queue was full. What
+					// is queued may be older than that, so it is dropped, and the
+					// button is asked for as it is now.
+				drain:
+					for {
+						select {
+						case <-hookEvents:
+						default:
+							break drain
+						}
+					}
+					if down, _, _ := procAsyncKey.Call(vkLButton); down&0x8000 != 0 {
+						if ev.LeftDown != nil {
+							ev.LeftDown()
+						}
+					} else if ev.LeftUp != nil {
+						ev.LeftUp()
+					}
+					continue
 				}
 				switch m.kind {
 				case wmMouseMove:

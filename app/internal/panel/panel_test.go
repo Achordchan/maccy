@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -462,5 +463,22 @@ func TestViewNoteSavesWithEnter(t *testing.T) {
 	r.tt.Frame()
 	if got := model.Str(r.h.Items()[0].Note); got != "买菜" {
 		t.Fatalf("Enter in the note box did not save: %q", got)
+	}
+}
+
+func TestPreviewLineMatchesTheOldRuleAndStopsEarly(t *testing.T) {
+	for _, in := range []string{"", "  ", "one", "  one   two\n\tthree ", strings.Repeat("字", 140), strings.Repeat("字", 141), strings.Repeat("ab ", 100)} {
+		want := cut(oneLine(in), 140)
+		if got := previewLine(in, 140); got != want {
+			t.Errorf("previewLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+	big := strings.Repeat("word ", 5_000_000) // 25 MB
+	start := time.Now()
+	if got := previewLine(big, 140); len([]rune(got)) != 141 {
+		t.Fatalf("%d runes", len([]rune(got)))
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("a long text took %v to preview", time.Since(start))
 	}
 }

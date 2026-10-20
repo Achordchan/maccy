@@ -43,15 +43,15 @@ Source: "{#MyPublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdi
 
 [InstallDelete]
 ; 1.0.11 is a Go program: what the .NET program of 1.0.10 and older left in
-; the folder is of no use. Only program files are named here: the user's data
-; (settings.json, history.json, images, files, blobs, sync, updates) is in the
-; same folder in a default installation and is never touched. The SQLite
+; the folder is of no use. Only files that the earlier program is known to have
+; had are named, in legacy-delete.iss, which the release tool writes from the
+; file list of the earlier package (--legacy-from): other DLLs or a folder of the
+; user's own in the same place are not touched, nor is the user's data
+; (settings.json, history.json, images, files, blobs, sync, updates). The SQLite
 ; library of the new program is installed after this, by [Files].
-Type: files; Name: "{app}\*.dll"
-Type: files; Name: "{app}\*.pdb"
-Type: files; Name: "{app}\*.deps.json"
-Type: files; Name: "{app}\*.runtimeconfig.json"
-Type: filesandordirs; Name: "{app}\runtimes"
+#if FileExists(SourcePath + "legacy-delete.iss")
+  #include "legacy-delete.iss"
+#endif
 ; the shortcuts that were called Maccy before the program was renamed Klip
 Type: files; Name: "{userprograms}\Maccy.lnk"
 Type: files; Name: "{userdesktop}\Maccy.lnk"

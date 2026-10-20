@@ -195,7 +195,21 @@ def create_package(publish_dir: Path, output_dir: Path, *, version: str, runtime
 # ---- the whole release ---------------------------------------------------
 
 
-def build_installer(version: str, runtime: str, iscc_arg: str | None, publish_dir: Path) -> Path:
+def write_legacy_delete(publish_dir: Path, legacy_from: str | None, out: Path | None = None) -> Path:
+    """installer/legacy-delete.iss: [InstallDelete] lines for exactly the files
+    of the earlier program (the list of its package), none when it is not
+    known. Wildcards would also take what is not ours."""
+    path = out or REPO / "installer" / "legacy-delete.iss"
+    lines = ["; written by tools/release_go.py: the files of the earlier program, by name"]
+    if legacy_from:
+        new_paths = {f["path"] for f in package_file_list(publish_dir)}
+        for rel in legacy_files_from(legacy_from, new_paths):
+            lines.append('Type: files; Name: "{app}\\' + rel.replace("/", "\\").replace('"', '""') + '"')
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def build_installer(version: str, runtime: str, iscc_arg: str | None, publish_dir: Path, legacy_from: str | None = None) -> Path:
     """The installer of the program built in publish_dir. The script is for
     64-bit Intel/AMD Windows (there are no 32-bit users to serve)."""
     if runtime != "win-x64":
@@ -203,6 +217,7 @@ def build_installer(version: str, runtime: str, iscc_arg: str | None, publish_di
     iss = REPO / "installer" / "klip.iss"
     iscc = base._find_iscc(iscc_arg or None)
     base._set_iss_version(iss, version)
+    write_legacy_delete(publish_dir, legacy_from)
     run([str(iscc), f"/DMyPublishDir={publish_dir.resolve()}", str(iss)], cwd=REPO)
     out = REPO / "artifacts" / "installer" / f"maccy-{version}-setup.exe"
     if not out.exists():
@@ -228,7 +243,7 @@ def cmd_release(a: argparse.Namespace) -> int:
     print(f"[1/5] build the program ({a.runtime})")
     build_publish(version, a.runtime, publish_dir)
     print("[2/5] installer (Inno Setup)")
-    installer = build_installer(version, a.runtime, a.iscc, publish_dir)
+    installer = build_installer(version, a.runtime, a.iscc, publish_dir, a.legacy_from or None)
     print("[3/5] light-update package")
     package = create_package(publish_dir, installer_dir, version=version, runtime=a.runtime, legacy_from=a.legacy_from)
     sha, size = sha256_file(installer), installer.stat().st_size
