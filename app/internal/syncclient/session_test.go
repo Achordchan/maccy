@@ -256,3 +256,36 @@ func TestAccountIDReadsTheTokenSubject(t *testing.T) {
 		}
 	}
 }
+
+// A reconnect is a reason to reconcile: events published while the watcher
+// was away are not replayed by the server.
+func TestWatchReconcilesAfterConnecting(t *testing.T) {
+	var calls atomic.Int32
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync/events" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		once.Do(func() {
+			io.WriteString(w, "event: connected\ndata: {}\n\n")
+			fl.Flush()
+		})
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		New(srv.URL).Watch(ctx, &fakeTokens{token: "t"}, WatchOptions{
+			InitialDelay: 10 * time.Millisecond, MaxDelay: 10 * time.Millisecond, Debounce: 10 * time.Millisecond,
+		}, func() { calls.Add(1) })
+		close(done)
+	}()
+	waitUntil(t, "the reconciliation after connect", func() bool { return calls.Load() >= 1 })
+	cancel()
+	<-done
+}

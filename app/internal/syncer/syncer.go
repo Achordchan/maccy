@@ -362,7 +362,7 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason, ac
 			strings.EqualFold(strings.TrimSpace(m.SnapshotSHA256), exp.SHA256) {
 			s.timing("upload", "skip_upload_same_sha", started, reason)
 			size := exp.Size
-			return &syncclient.UploadResult{Version: model.Str(st.SyncLastRemoteVersion), SHA256: exp.SHA256, Size: &size}, fp, nil
+			return &syncclient.UploadResult{Version: strings.TrimSpace(m.Version), SHA256: exp.SHA256, Size: &size}, fp, nil
 		}
 	}
 
@@ -546,19 +546,17 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		return DownloadResult{}, err
 	}
 
-	s.suppress(true)
-	defer s.suppress(false)
-
 	if s.accountChanged(account) {
 		return DownloadResult{}, ErrSessionChanged
 	}
-	var applied []model.Item
+	var before, applied []model.Item
 	var moves *snapshot.AppliedPayloads
 	merged := false
-	err = s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
+	err = s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
 		if s.accountChanged(account) {
 			return nil, ErrSessionChanged
 		}
+		before = append([]model.Item(nil), current...)
 		next := data.Items
 		if expectFingerprint != "" && Fingerprint(current) != expectFingerprint {
 			// A capture arrived while the snapshot was downloading: keep it
@@ -579,21 +577,35 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		}
 		return DownloadResult{}, err
 	}
-	if moves != nil {
-		moves.Commit()
-	}
 	// The settings change only after the history was replaced: a failure
 	// above leaves both as they were.
 	if data.Settings != nil {
-		s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(*data.Settings) })
+		settings := data.Settings.Portable()
+		if merged {
+			// The merge added items to a history that may be at its limits:
+			// do not let ApplyLimits prune them before the upload.
+			EnsureSettingsCanHoldItems(&settings, applied)
+		}
+		s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(settings) })
 		s.cfg.History.ApplyLimits(s.settings())
 	}
-	res := DownloadResult{Fingerprint: Fingerprint(applied), SnapshotSHA256: sum, Merged: merged, Account: account}
+	res := DownloadResult{
+		Fingerprint:    Fingerprint(retainedItems(applied, s.cfg.History.Items())),
+		SnapshotSHA256: sum, Merged: merged, Account: account,
+	}
 	s.timing("download", "import_snapshot", started, reason)
 
 	report(progress, "persist_local", "保存本地状态", 90)
 	if err := s.cfg.Flush(ctx); err != nil {
+		// The history was not saved: put the old one and its files back.
+		_ = s.cfg.History.Mutate(ctx, func([]model.Item) ([]model.Item, error) { return before, nil })
+		if moves != nil {
+			moves.Rollback()
+		}
 		return DownloadResult{}, err
+	}
+	if moves != nil {
+		moves.Commit()
 	}
 	s.timing("download", "persist_local", started, reason)
 	return res, nil
@@ -725,17 +737,16 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	if s.accountChanged(account) {
 		return ErrSessionChanged
 	}
-	var merged []model.Item
+	var before, merged []model.Item
 	var moves *snapshot.AppliedPayloads
-	s.suppress(true)
-	defer s.suppress(false)
 	// The merge runs on the history as it is now, and the payloads it keeps
 	// are moved into place under the same lock: a capture made while the
 	// download ran is merged, not overwritten.
-	err = s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
+	err = s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
 		if s.accountChanged(account) {
 			return nil, ErrSessionChanged
 		}
+		before = append([]model.Item(nil), current...)
 		merged = MergeItems(remote.Items, current)
 		applied, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, merged)
 		if err != nil {
@@ -750,9 +761,6 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		}
 		return err
 	}
-	if moves != nil {
-		moves.Commit()
-	}
 	mergedSettings := localSettings.Portable()
 	if remote.Settings != nil {
 		mergedSettings = remote.Settings.Portable()
@@ -765,7 +773,15 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 
 	report(progress, "persist_local", "persist local", 90)
 	if err := s.cfg.Flush(ctx); err != nil {
+		// The history was not saved: put the old one and its files back.
+		_ = s.cfg.History.Mutate(ctx, func([]model.Item) ([]model.Item, error) { return before, nil })
+		if moves != nil {
+			moves.Rollback()
+		}
 		return err
+	}
+	if moves != nil {
+		moves.Commit()
 	}
 	s.persistPendingMerge(preMergeFingerprint, basis)
 	s.timing("merge", "persist_local", started, reason)
@@ -781,18 +797,23 @@ func (s *Syncer) ensureLocalBackupBlobs(ctx context.Context, exp snapshot.Export
 			return err
 		}
 		target := s.cfg.Layout.BlobPath(b.SHA256)
-		if target == "" || !isFile(b.SourcePath) {
-			continue
-		}
-		if a, _ := filepath.Abs(b.SourcePath); strings.EqualFold(a, mustAbs(target)) {
-			continue
+		if target == "" {
+			return fmt.Errorf("blob %s: no local path", b.SHA256)
 		}
 		if isFile(target) {
 			// A blob that is there but does not hash to its name is not a
-			// backup: keep the one the source still gives.
+			// backup: repair it from the source, which Export hashed.
 			if sum, err := snapshot.FileSHA256(target); err == nil && strings.EqualFold(sum, b.SHA256) {
 				continue
 			}
+		}
+		if a, _ := filepath.Abs(b.SourcePath); strings.EqualFold(a, mustAbs(target)) {
+			return fmt.Errorf("blob %s: the only copy is corrupt", b.SHA256)
+		}
+		if !isFile(b.SourcePath) {
+			return fmt.Errorf("blob %s: the payload is gone", b.SHA256)
+		}
+		if isFile(target) {
 			if err := os.Remove(target); err != nil {
 				return fmt.Errorf("remove the corrupt blob %s: %w", b.SHA256, err)
 			}
@@ -838,6 +859,32 @@ func (s *Syncer) suppress(on bool) {
 	if s.cfg.SuppressAutoSync != nil {
 		s.cfg.SuppressAutoSync(on)
 	}
+}
+
+// mutateHistory applies f to the history with the sync's own change
+// suppressed. Suppression covers only the mutation: a capture made while the
+// result is being saved is the user's, not the sync's, and schedules a sync.
+func (s *Syncer) mutateHistory(ctx context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	s.suppress(true)
+	defer s.suppress(false)
+	return s.cfg.History.Mutate(ctx, f)
+}
+
+// retainedItems is the applied items that the history still holds: the limits
+// may have pruned some, and a capture made later is not part of what this
+// sync applied.
+func retainedItems(applied, current []model.Item) []model.Item {
+	have := make(map[string]bool, len(current))
+	for _, it := range current {
+		have[strings.ToLower(it.ID)] = true
+	}
+	out := make([]model.Item, 0, len(applied))
+	for _, it := range applied {
+		if have[strings.ToLower(it.ID)] {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func report(f func(Progress), code, msg string, pct int) {

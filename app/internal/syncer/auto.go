@@ -30,6 +30,12 @@ type Auto struct {
 	// sync follows when it ends, so that the change is not left unsynced.
 	pending atomic.Bool
 
+	// startMu makes the busy/pending transition atomic: a trigger that cannot
+	// start records pending before the finish of the running sync can look,
+	// and a finish that clears busy either sees the pending work or the
+	// trigger starts the next run itself.
+	startMu sync.Mutex
+
 	mu    sync.Mutex
 	timer *time.Timer
 }
@@ -60,37 +66,53 @@ func (a *Auto) Suppress(on bool) { a.suppressed.Store(on) }
 // Trigger runs a sync now, unless one is running. A manual one that cannot
 // start because there is no sign-in reports ErrNotLoggedIn.
 func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {
-	if !a.busy.CompareAndSwap(false, true) {
+	a.startMu.Lock()
+	if a.busy.Load() {
 		// A background trigger that cannot start is remembered: it may be the
 		// only notice of a change or of another device's upload. A manual one
 		// is the user asking again, and is dropped as before.
 		if !manual {
 			a.pending.Store(true)
 		}
+		a.startMu.Unlock()
 		return
 	}
-	go func() {
-		if !a.CanSync() {
-			if manual && a.Done != nil {
-				a.Done(reason, manual, ErrNotLoggedIn)
-			}
-			a.busy.Store(false)
-			return
+	a.busy.Store(true)
+	a.startMu.Unlock()
+	go a.perform(ctx, reason, manual)
+}
+
+// perform runs one sync and then hands over to pending work, if any.
+func (a *Auto) perform(ctx context.Context, reason string, manual bool) {
+	if !a.CanSync() {
+		if manual && a.Done != nil {
+			a.Done(reason, manual, ErrNotLoggedIn)
 		}
-		err := a.Run(ctx, reason, manual)
-		if err == nil && !manual {
-			a.initialDone.Store(true)
-		}
-		if a.Done != nil {
-			a.Done(reason, manual, err)
-		}
-		a.busy.Store(false)
-		// A change that came while the sync was running was remembered:
-		// sync it now. A suppressed change (the sync's own write) is not.
-		if a.pending.CompareAndSwap(true, false) && !a.suppressed.Load() && a.CanSync() {
-			a.Trigger(ctx, "auto", false)
-		}
-	}()
+		a.finish(ctx)
+		return
+	}
+	err := a.Run(ctx, reason, manual)
+	if err == nil && !manual {
+		a.initialDone.Store(true)
+	}
+	if a.Done != nil {
+		a.Done(reason, manual, err)
+	}
+	a.finish(ctx)
+}
+
+// finish clears busy and starts a remembered run atomically with Trigger. A
+// suppressed change (the sync's own write) is not started.
+func (a *Auto) finish(ctx context.Context) {
+	a.startMu.Lock()
+	a.busy.Store(false)
+	if a.pending.Swap(false) && !a.suppressed.Load() && a.CanSync() {
+		a.busy.Store(true)
+		a.startMu.Unlock()
+		go a.perform(ctx, "auto", false)
+		return
+	}
+	a.startMu.Unlock()
 }
 
 // Startup is the first background sync.
@@ -110,8 +132,13 @@ func (a *Auto) OnHistoryChanged(ctx context.Context) {
 		return
 	}
 	if a.busy.Load() {
-		a.pending.Store(true)
-		return
+		a.startMu.Lock()
+		if a.busy.Load() {
+			a.pending.Store(true)
+			a.startMu.Unlock()
+			return
+		}
+		a.startMu.Unlock()
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()

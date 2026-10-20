@@ -125,7 +125,9 @@ func (c *Client) Watch(ctx context.Context, ts TokenSource, opts WatchOptions, o
 	var mu sync.Mutex
 	running, pending := false, false
 	dispatch := func(e Event) {
-		if e.Name != "sync-updated" {
+		// A connection is also a reason to look again: events published while
+		// this watcher was disconnected are not replayed by the server.
+		if e.Name != "sync-updated" && e.Name != "connected" {
 			return
 		}
 		mu.Lock()

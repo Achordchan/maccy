@@ -473,7 +473,12 @@ type downloadArrivalHistory struct {
 	items   []model.Item
 }
 
-func (h *downloadArrivalHistory) Items() []model.Item { return append([]model.Item(nil), h.initial...) }
+func (h *downloadArrivalHistory) Items() []model.Item {
+	if h.items != nil {
+		return append([]model.Item(nil), h.items...)
+	}
+	return append([]model.Item(nil), h.initial...)
+}
 
 func (h *downloadArrivalHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.Item, error)) error {
 	next, err := f(append([]model.Item(nil), h.current...))
@@ -653,11 +658,15 @@ func TestUploadOnlySkipsWhenTheRemoteHasThatSnapshot(t *testing.T) {
 	mu.Lock()
 	remoteSHA = exp.SHA256
 	mu.Unlock()
-	if _, err := syn.Upload(context.Background(), nil, "again"); err != nil {
+	up, err := syn.Upload(context.Background(), nil, "again")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if n := puts.Load(); n != 1 {
 		t.Errorf("uploads %d: the same snapshot was uploaded again", n)
+	}
+	if up.Version != "v-old" {
+		t.Errorf("version %q: the manifest that confirmed the snapshot was not returned", up.Version)
 	}
 }
 
@@ -917,5 +926,98 @@ func TestDownloadStopsWhenSignedOut(t *testing.T) {
 	}
 	if h.replaced != 0 {
 		t.Error("the old account's snapshot was applied after the sign-out")
+	}
+}
+
+// snapshotFileWithSettings is snapshotFile with the portable settings the
+// snapshot carries.
+func snapshotFileWithSettings(t *testing.T, items []model.Item, settings model.Settings) []byte {
+	t.Helper()
+	l := paths.Layout{Root: t.TempDir()}
+	path := filepath.Join(l.Root, "snapshot.sqlite")
+	if _, err := snapshot.Export(context.Background(), l, path, items, settings); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// pruningHistory applies the item limit as the real history does.
+type pruningHistory struct {
+	downloadArrivalHistory
+}
+
+func (h *pruningHistory) ApplyLimits(s model.Settings) {
+	if n := int(s.MaxItems); n > 0 && len(h.items) > n {
+		h.items = h.items[:n]
+	}
+}
+
+// A download that turns into a merge must raise the item limit: otherwise
+// ApplyLimits prunes the merged history before Run can upload it.
+func TestDownloadMergeExpandsLimits(t *testing.T) {
+	remote := []model.Item{
+		textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "remote one"),
+		textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "remote two"),
+	}
+	settings := model.DefaultSettings()
+	settings.MaxItems = 2
+	srv := serveSnapshot(t, snapshotFileWithSettings(t, remote, settings))
+	defer srv.Close()
+
+	local := textItemAt("16fd2706-8baf-433b-82eb-8c7fada847da", "local")
+	captured := textItemAt("11111111-2222-3333-4444-555555555555", "captured while downloading")
+	h := &pruningHistory{downloadArrivalHistory{initial: []model.Item{local}, current: []model.Item{captured, local}}}
+	s := signedIn(model.DefaultSettings())
+	s.MaxItems = 2
+	syn := unitSyncer(t, srv, s, h)
+
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", Fingerprint([]model.Item{local})); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.items) != 4 {
+		t.Errorf("history %d items: the merged items were pruned", len(h.items))
+	}
+	if s.MaxItems < 4 {
+		t.Errorf("MaxItems %d: the limit was not expanded for the merge", s.MaxItems)
+	}
+}
+
+// The old files and history stay until the new history is on disk: a failed
+// flush restores both.
+func TestDownloadRollsBackWhenFlushFails(t *testing.T) {
+	remote := []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")}
+	srv := serveSnapshot(t, snapshotFile(t, remote))
+	defer srv.Close()
+
+	local := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")
+	h := &downloadArrivalHistory{initial: []model.Item{local}, current: []model.Item{local}}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	syn.cfg.Flush = func(context.Context) error { return errors.New("disk full") }
+
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+		t.Fatal("a failed flush stopped nothing")
+	}
+	if len(h.items) != 1 || h.items[0].ID != local.ID {
+		t.Errorf("the history was not put back: %+v", h.items)
+	}
+}
+
+func TestMergeBackupFailsWhenTheSourceIsGone(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	s := New(Config{Layout: l})
+	err := s.ensureLocalBackupBlobs(context.Background(), snapshot.ExportResult{
+		Blobs: []snapshot.Blob{{
+			SHA256:     strings.Repeat("a", 64),
+			SourcePath: filepath.Join(t.TempDir(), "gone.png"),
+			Size:       10,
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "payload is gone") {
+		t.Errorf("a backup without its payload: %v", err)
 	}
 }
