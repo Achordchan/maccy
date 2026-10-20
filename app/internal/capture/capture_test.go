@@ -869,3 +869,16 @@ func TestSupersededApplyDoesNotTouchOwnership(t *testing.T) {
 		t.Fatal("a superseded Apply must not clear the newer ownership")
 	}
 }
+
+func TestChangeWhileReadingIsLeftToTheWatcher(t *testing.T) {
+	r := newRig(t)
+	var seq atomic.Int64
+	seq.Store(1)
+	r.s.Seq = seq.Load
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "B"
+	r.clip.onRead = func() { seq.Store(2) } // somebody copies while we read
+	r.s.Capture(context.Background())
+	if r.h.Len() != 0 {
+		t.Fatal("content read across a change is the watcher's to take at its next look")
+	}
+}

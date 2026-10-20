@@ -352,6 +352,12 @@ func (s *Service) Capture(ctx context.Context) error {
 			}
 			return
 		}
+		if key != "" && s.changeKey() != key {
+			// The clipboard changed while we read it: what was read may be the
+			// newer content, which the watcher takes at its next look. Taking
+			// it here too would capture it twice.
+			return
+		}
 		wantRetry = false // something was captured: nothing to look at again
 		now := model.Time{Time: s.Now()}
 		it.CapturedAt, it.FirstCapturedAt = now, &now
@@ -650,6 +656,11 @@ func newGUID() string {
 
 // Apply puts an item back on the clipboard (ClipboardApplyService). Content
 // that is gone is not an error: nothing is written.
+//
+// Apply is not called from two goroutines at once (the window calls it, one
+// click at a time); overlapping calls are not ordered against each other.
+// Locking them would not be safe either: the clipboard calls hop to the main
+// thread, and a caller on it waiting for a lock would deadlock with the holder.
 //
 // A Capture that is reading while this writes would take the written content
 // for a copy, so Capture drops what it read when an Apply ran in the
