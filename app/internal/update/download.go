@@ -261,13 +261,20 @@ func (c *Client) DownloadPackage(ctx context.Context, info Info, updateRoot stri
 }
 
 // PreparePackage unpacks and checks a zip that is already on disk.
-func PreparePackage(info Info, zipPath, stagingRoot string) (*Prepared, error) {
+func PreparePackage(info Info, zipPath, stagingRoot string) (prep *Prepared, err error) {
 	var id [16]byte
 	_, _ = rand.Read(id[:])
 	staging := filepath.Join(stagingRoot, info.Version+"-"+hex.EncodeToString(id[:]))
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		return nil, err
 	}
+	// What was unpacked is only kept for a package that is good: a failed one
+	// would hold the space the installer fallback needs, once for each try.
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(staging)
+		}
+	}()
 	if err := extractSafely(zipPath, staging); err != nil {
 		return nil, err
 	}

@@ -604,3 +604,19 @@ func TestPackageWithAnUnsafeLegacyNameIsRefusedBeforeTheHelperRuns(t *testing.T)
 		t.Errorf("ordinary legacy names: %v", err)
 	}
 }
+
+func TestFailedPreparationLeavesNothingStaged(t *testing.T) {
+	zp := filepath.Join(t.TempDir(), "p.zip")
+	// valid zip, but no maccy.exe in the list: validation fails after unpacking
+	z := zipOf(t, "1.0.11", "win-x64", map[string]string{"other.dll": "X"}, nil)
+	if err := os.WriteFile(zp, z, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if _, err := PreparePackage(Info{Version: "1.0.11", PackageRuntime: "win-x64"}, zp, root); err == nil {
+		t.Fatal("a package without the program was accepted")
+	}
+	if left, _ := os.ReadDir(root); len(left) != 0 {
+		t.Fatalf("a failed package left %d staging folder(s)", len(left))
+	}
+}
