@@ -80,7 +80,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 			// merge has unpublished items, so upload it as a merge does. The
 			// pending state is recorded first, so a failed upload is retried
 			// as a local change and not mistaken for the downloaded snapshot.
-			s.persistPendingMerge(d.LocalFingerprint, d.Manifest)
+			s.persistPendingMerge(dr.PreMergeFingerprint, snapshotState(dr, d.Manifest, s.cfg.Now().UTC()))
 			up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_download_merge_upload", account)
 			if err != nil {
 				return res, err
@@ -227,7 +227,15 @@ func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) er
 	if s.accountChanged(dr.Account) {
 		return ErrSessionChanged
 	}
-	s.PersistSyncState(dr.Fingerprint, snapshotState(dr, m, s.cfg.Now().UTC()))
+	state := snapshotState(dr, m, s.cfg.Now().UTC())
+	if dr.Merged {
+		// A restore that had to merge a local capture has items that were
+		// never uploaded: remember the pending upload, not a synchronized
+		// history, so the next run publishes it.
+		s.persistPendingMerge(dr.PreMergeFingerprint, state)
+	} else {
+		s.PersistSyncState(dr.Fingerprint, state)
+	}
 	_ = s.bindAccount(dr.Account)
 	return nil
 }

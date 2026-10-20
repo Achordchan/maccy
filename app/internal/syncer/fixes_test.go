@@ -1207,6 +1207,14 @@ func TestRemoveFilesOnlyGetsKlipPayloads(t *testing.T) {
 		ID: "16fd2706-8baf-433b-82eb-8c7fada847da", Kind: model.KindFileList,
 		CapturedAt: model.Time{Time: time.Now()}, ApproxBytes: 9, FilePaths: []string{doc}, CopyCount: 1,
 	}
+	cacheDir := filepath.Join(l.Files(), strings.ReplaceAll(local.ID, "-", ""))
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cacheFile := filepath.Join(cacheDir, "0000_doc.pdf")
+	if err := os.WriteFile(cacheFile, []byte("cached"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	srv := serveSnapshot(t, snapshotFile(t, []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "remote")}))
 	defer srv.Close()
 	h := &cleaningHistory{unitHistory: unitHistory{items: []model.Item{local}}}
@@ -1225,10 +1233,17 @@ func TestRemoveFilesOnlyGetsKlipPayloads(t *testing.T) {
 	if _, err := os.Stat(doc); err != nil {
 		t.Fatal("a file outside Klip's folders was deleted")
 	}
+	foundCache := false
 	for _, p := range h.removed {
 		if filepath.Clean(p) == filepath.Clean(doc) {
 			t.Errorf("RemoveFiles was given the user's document: %s", p)
 		}
+		if filepath.Clean(p) == filepath.Clean(cacheFile) {
+			foundCache = true
+		}
+	}
+	if !foundCache {
+		t.Errorf("the owned cache of the migrated item was not removed: %v", h.removed)
 	}
 }
 
@@ -1556,5 +1571,74 @@ func TestRefreshOnlySessionBindsTheAccount(t *testing.T) {
 	}
 	if n := requests.Load(); n != before {
 		t.Errorf("the server was contacted %d more times", n-before)
+	}
+}
+
+// A cancellation during Flush must not stop the rollback: it runs on its own
+// bounded context.
+func TestRollbackRunsWhenTheContextIsCancelled(t *testing.T) {
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "remote")}))
+	defer srv.Close()
+	local := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")
+	h := &unitHistory{items: []model.Item{local}}
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	ctx, cancel := context.WithCancel(context.Background())
+	syn.cfg.Flush = func(context.Context) error {
+		cancel()
+		return context.Canceled
+	}
+	if _, err := syn.DownloadAndApply(ctx, nil, "test", ""); err == nil {
+		t.Fatal("the failed flush stopped nothing")
+	}
+	if len(h.items) != 1 || h.items[0].ID != local.ID {
+		t.Errorf("the history was not rolled back after cancellation: %+v", h.items)
+	}
+}
+
+// An edit to an item that exists on both sides survives the rollback.
+func TestRollbackKeepsEditsToExistingItems(t *testing.T) {
+	const id = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	remote := textItemAt(id, "remote")
+	local := textItemAt(id, "local")
+	local.Note = model.Ptr("old note")
+	local.CopyCount = 1
+	h := &unitHistory{items: []model.Item{local}}
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{remote}))
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, h)
+	syn.cfg.Flush = func(context.Context) error {
+		// The user edits the item while the history is being saved.
+		h.items[0].Note = model.Ptr("edited")
+		h.items[0].CopyCount = 7
+		return errors.New("disk full")
+	}
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err == nil {
+		t.Fatal("the failed flush stopped nothing")
+	}
+	if len(h.items) != 1 {
+		t.Fatalf("history %+v", h.items)
+	}
+	got := h.items[0]
+	if got.ID != id || model.Str(got.Text) != "local" || model.Str(got.Note) != "edited" || got.CopyCount != 7 {
+		t.Errorf("rollback lost the edit or restored the wrong item: %+v", got)
+	}
+}
+
+// A restore that merged a local capture leaves a pending upload, not a
+// synchronized state.
+func TestPersistAfterDownloadKeepsAMergedRestorePending(t *testing.T) {
+	srv := serveManifest(t, "v1", "aaa", "2026-05-30T12:00:00+00:00")
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, &unitHistory{})
+	if err := syn.PersistAfterDownload(context.Background(), DownloadResult{
+		Fingerprint: "merged", PreMergeFingerprint: "before-merge", SnapshotSHA256: "aaa", Merged: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := model.Str(s.SyncLastLocalFingerprint); got != "before-merge" {
+		t.Errorf("fingerprint %q: the merged restore was recorded as synchronized", got)
 	}
 }

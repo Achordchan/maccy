@@ -531,6 +531,9 @@ type DownloadResult struct {
 	// Account is the account the download started in, so that a later step
 	// (PersistAfterDownload) can tell whether the session changed.
 	Account string
+	// PreMergeFingerprint is the history before a download that had to merge
+	// a concurrent capture: it is the baseline of the pending upload.
+	PreMergeFingerprint string
 }
 
 // DownloadAndApply replaces the history and the portable settings with the
@@ -615,6 +618,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	var before, applied []model.Item
 	var moves *snapshot.AppliedPayloads
 	merged := false
+	preMerge := ""
 	err = s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
 		if s.accountChanged(account) {
 			return nil, ErrSessionChanged
@@ -624,6 +628,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		if expectFingerprint != "" && Fingerprint(current) != expectFingerprint {
 			// A capture arrived while the snapshot was downloading: keep it
 			// and let the upload that follows publish both sides.
+			preMerge = Fingerprint(current)
 			next = MergeItems(data.Items, current)
 			merged = true
 		}
@@ -664,8 +669,11 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		s.cfg.History.ApplyLimits(s.settings())
 	}
 	res := DownloadResult{
-		Fingerprint:    Fingerprint(retainedItems(applied, s.cfg.History.Items())),
-		SnapshotSHA256: sum, Merged: merged, Account: account,
+		Fingerprint:         Fingerprint(retainedItems(applied, s.cfg.History.Items())),
+		SnapshotSHA256:      sum,
+		Merged:              merged,
+		Account:             account,
+		PreMergeFingerprint: preMerge,
 	}
 	// What the limits pruned is unreferenced too.
 	removed := s.unreferencedFiles(before, s.cfg.History.Items())
@@ -675,7 +683,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	if err := s.cfg.Flush(ctx); err != nil {
 		// The history was not saved: put the old one, its settings and its
 		// files back. Captures made meanwhile are kept.
-		rerr := s.rollbackMutation(ctx, before, applied, oldSettings)
+		rctx, rcancel := cleanupContext()
+		rerr := s.rollbackMutation(rctx, before, applied, oldSettings)
+		rcancel()
 		if rerr == nil && moves != nil {
 			moves.Rollback()
 		}
@@ -822,6 +832,11 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	if token, err = s.downloadSnapshot(ctx, token, path, account); err != nil {
 		return err
 	}
+	if sum, err := snapshot.FileSHA256(path); err == nil {
+		// The snapshot may be newer than the manifest the decision was made
+		// on: the pending state must name the file that was actually merged.
+		basis = snapshotState(DownloadResult{SnapshotSHA256: sum}, basis, s.cfg.Now().UTC())
+	}
 	s.timing("merge", "download_snapshot", started, fmt.Sprintf("%s;size=%d", reason, fileSize(path)))
 
 	report(progress, "read_snapshot", "read remote snapshot", 62)
@@ -892,7 +907,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	if err := s.cfg.Flush(ctx); err != nil {
 		// The history was not saved: put the old one, its settings and its
 		// files back. Captures made meanwhile are kept.
-		rerr := s.rollbackMutation(ctx, before, merged, localSettings)
+		rctx, rcancel := cleanupContext()
+		rerr := s.rollbackMutation(rctx, before, merged, localSettings)
+		rcancel()
 		if rerr == nil && moves != nil {
 			moves.Rollback()
 		}
@@ -1030,20 +1047,41 @@ func payloadFiles(it model.Item) []string {
 func (s *Syncer) unreferencedFiles(old, next []model.Item) []string {
 	keep := map[string]bool{}
 	for _, it := range next {
-		for _, p := range payloadFiles(it) {
+		for _, p := range append(payloadFiles(it), s.fileCacheFiles(it)...) {
 			keep[filepath.Clean(p)] = true
 		}
 	}
 	seen := map[string]bool{}
 	var out []string
 	for _, it := range old {
-		for _, p := range payloadFiles(it) {
+		for _, p := range append(payloadFiles(it), s.fileCacheFiles(it)...) {
 			c := filepath.Clean(p)
 			if keep[c] || seen[c] || !s.ownPayload(c) {
 				continue
 			}
 			seen[c] = true
 			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// fileCacheFiles is the copy Klip keeps of a file-list item. A history
+// migrated from C# names the user's documents in FilePaths, so the cache is
+// found from the item id instead.
+func (s *Syncer) fileCacheFiles(it model.Item) []string {
+	if it.Kind != model.KindFileList || strings.TrimSpace(it.ID) == "" {
+		return nil
+	}
+	dir := filepath.Join(s.cfg.Layout.Files(), it.IDN())
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range ents {
+		if !e.IsDir() {
+			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}
 	return out
@@ -1063,6 +1101,44 @@ func (s *Syncer) ownPayload(p string) bool {
 		}
 	}
 	return false
+}
+
+// rollbackItems is the history after a failed mutation: the items before it,
+// with the note, pin and copy count edits made meanwhile, plus the captures
+// that were added. Items that only the failed mutation added are dropped.
+func rollbackItems(before, applied, current []model.Item) []model.Item {
+	currentByID := make(map[string]model.Item, len(current))
+	for _, it := range current {
+		currentByID[strings.ToLower(it.ID)] = it
+	}
+	appliedIDs := make(map[string]bool, len(applied))
+	for _, it := range applied {
+		appliedIDs[strings.ToLower(it.ID)] = true
+	}
+	beforeIDs := make(map[string]bool, len(before))
+	out := make([]model.Item, 0, len(before)+len(current))
+	for _, it := range before {
+		id := strings.ToLower(it.ID)
+		beforeIDs[id] = true
+		if cur, ok := currentByID[id]; ok {
+			// Keep the user's edits to an item that also existed before.
+			it.Note, it.Pinned, it.CopyCount = cur.Note, cur.Pinned, cur.CopyCount
+		}
+		out = append(out, it)
+	}
+	for _, it := range current {
+		id := strings.ToLower(it.ID)
+		if !appliedIDs[id] && !beforeIDs[id] {
+			out = append(out, it)
+		}
+	}
+	return MergeItems(out, nil)
+}
+
+// cleanupContext bounds the rollback of a failed operation; it is not the
+// cancelled context that may have failed the save.
+func cleanupContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 30*time.Second)
 }
 
 // itemsNotIn is the items whose id is not in exclude.
@@ -1086,7 +1162,7 @@ func itemsNotIn(exclude, items []model.Item) []model.Item {
 // portable settings are restored too.
 func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.Item, oldSettings model.Settings) error {
 	if err := s.cfg.History.Mutate(ctx, func(current []model.Item) ([]model.Item, error) {
-		return MergeItems(before, itemsNotIn(applied, current)), nil
+		return rollbackItems(before, applied, current), nil
 	}); err != nil {
 		return err
 	}
