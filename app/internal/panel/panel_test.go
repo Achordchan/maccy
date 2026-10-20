@@ -748,3 +748,27 @@ func TestRowTextOfAHugeTextIsCheap(t *testing.T) {
 		t.Fatal("headRunes")
 	}
 }
+
+// The window comes back as it was left: the query and the folder stay, the
+// first row is chosen (PrepareForOpen).
+func TestOpenedKeepsQueryAndFolder(t *testing.T) {
+	r := newRig(t, "apple pie", "banana", "apple tart")
+	r.m.Reset()
+	r.tt.Frame()
+	r.tt.Type("apple")
+	r.tt.Key(0, ui.KeyDown)
+	if r.m.chosen != 1 {
+		t.Fatalf("chosen = %d", r.m.chosen)
+	}
+	r.m.Opened()
+	r.tt.Frame()
+	if r.m.query != "apple" || r.m.chosen != 0 || r.tt.HasText("banana") {
+		t.Fatalf("query=%q chosen=%d texts=%q", r.m.query, r.m.chosen, r.tt.Texts())
+	}
+	r.m.sec = sectionFavorites
+	r.m.dlg = &dialog{kind: "confirm", title: "x"}
+	r.m.Opened()
+	if r.m.sec != sectionFavorites || r.m.dlg != nil {
+		t.Fatalf("sec=%v dlg=%v", r.m.sec, r.m.dlg)
+	}
+}

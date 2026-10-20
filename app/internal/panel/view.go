@@ -142,7 +142,7 @@ func Button(c *ui.Context, p Palette, label string, padV, padH, font float32) ui
 }
 
 func (m *Model) topBar(c *ui.Context, p Palette) {
-	ui.Row(c).FillWidth().Padding(8, 10).Gap(10).AlignItems(ui.Center).Background(p.Panel).Children(func() {
+	ui.Row(c).FillWidth().Padding(8, 10).Gap(10).AlignItems(ui.Center).Background(p.Panel).DragWindow().Children(func() {
 		about := ui.ButtonBase(c)
 		bg := p.Control
 		if about.Pressed() {
@@ -303,7 +303,7 @@ func (m *Model) imageCell(c *ui.Context, p Palette, it model.Item, text ui.Color
 func (m *Model) bottomBar(c *ui.Context, p Palette, act **action) {
 	hline(c, p)
 	sv := m.Host.Sync()
-	ui.Row(c).FillWidth().Padding(8, 10).Gap(8).AlignItems(ui.Center).Background(p.Panel).Children(func() {
+	ui.Row(c).FillWidth().Padding(8, 10).Gap(8).AlignItems(ui.Center).Background(p.Panel).DragWindow().Children(func() {
 		ui.Text(c, m.Host.Version()).FontSize(11).TextColor(p.Muted2).SingleLine()
 
 		if v := m.Host.UpdateAvailable(); v != "" {

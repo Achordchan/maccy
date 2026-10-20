@@ -80,16 +80,21 @@ func main() {
 		os.Exit(code)
 	}
 	if !mygo.App.RequestSingleInstanceLock() {
-		return // the Klip that runs shows itself (OnSecondInstance)
+		// Windows: the .NET client refuses a second start with a box, and the
+		// running one does nothing. Elsewhere the running Klip shows itself
+		// (OnSecondInstance).
+		platform.ShowAlreadyRunning()
+		return
 	}
 	if platform.HoldAppMutex() {
-		return // another instance holds the named mutex of 1.0.10 and the installer
+		platform.ShowAlreadyRunning() // another instance, perhaps 1.0.10, holds the named mutex
+		return
 	}
 	mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
 	mygo.App.OnWindowAllClosed(func() {})
 	p := &program{}
 	mygo.App.OnSecondInstance(func([]string, string) {
-		if p.win != nil {
+		if p.win != nil && runtime.GOOS != "windows" {
 			p.show()
 		}
 	})
@@ -159,7 +164,7 @@ func (p *program) ready() {
 
 	registered := ""
 	for _, s := range shortcuts {
-		if err := mygo.GlobalShortcut.Register(s, p.toggle); err == nil {
+		if err := mygo.GlobalShortcut.Register(s, p.shortcut); err == nil {
 			registered = s
 			break
 		} else {
@@ -414,18 +419,14 @@ func (p *program) showCentered() {
 
 func (p *program) open(x, y int) {
 	p.win.SetPosition(x, y)
-	p.model.Reset()
+	p.model.Opened()
 	p.win.Show()
 	p.win.Focus()
 }
 
-func (p *program) toggle() {
-	if p.win.IsVisible() {
-		p.hide()
-	} else {
-		p.show()
-	}
-}
+// shortcut is the global shortcut: it opens the window near the cursor, also
+// when it is open already (ToggleWindowNearCursor does not close it).
+func (p *program) shortcut() { p.show() }
 
 // host is what the panel asks of the program.
 type host struct{ p *program }

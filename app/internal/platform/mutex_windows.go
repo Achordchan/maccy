@@ -26,3 +26,15 @@ func HoldAppMutex() (alreadyRunning bool) {
 	const errorAlreadyExists = syscall.Errno(183)
 	return err == errorAlreadyExists
 }
+
+var procMessageBoxW = syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
+
+// ShowAlreadyRunning tells the user that Klip runs already, in the box the
+// .NET client shows (MB_OK, information icon, in front of everything).
+func ShowAlreadyRunning() {
+	text, _ := syscall.UTF16PtrFromString("Klip 已在运行，禁止多开。")
+	title, _ := syscall.UTF16PtrFromString("Klip")
+	const mbOK, mbIconInformation, mbSetForeground, mbTopmost = 0x0, 0x40, 0x10000, 0x40000
+	_, _, _ = procMessageBoxW.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)),
+		uintptr(mbOK|mbIconInformation|mbSetForeground|mbTopmost))
+}

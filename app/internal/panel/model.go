@@ -183,6 +183,20 @@ func (m *Model) Reset() {
 	m.input.Focus()
 }
 
+// Opened is for each time the window is shown again (PrepareForOpen): the
+// first row is chosen and the search box has the focus. The query and the
+// folder stay as they were left, as in the .NET client. Call it on the UI
+// thread.
+func (m *Model) Opened() {
+	m.dlg = nil
+	m.chosen = 0
+	if len(m.rows()) > 0 {
+		m.list.ScrollIntoView(0)
+	}
+	m.dropHover()
+	m.input.Focus()
+}
+
 // refresh rebuilds the rows when the history or the query changed, and keeps
 // the chosen item chosen.
 func (m *Model) refresh() {
