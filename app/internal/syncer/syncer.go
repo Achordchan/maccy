@@ -594,7 +594,8 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		Fingerprint:    Fingerprint(retainedItems(applied, s.cfg.History.Items())),
 		SnapshotSHA256: sum, Merged: merged, Account: account,
 	}
-	removed := unreferencedFiles(before, applied)
+	// What the limits pruned is unreferenced too.
+	removed := unreferencedFiles(before, s.cfg.History.Items())
 	s.timing("download", "import_snapshot", started, reason)
 
 	report(progress, "persist_local", "保存本地状态", 90)
@@ -775,7 +776,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	s.cfg.History.ApplyLimits(s.settings())
 	s.timing("merge", "merge_snapshot", started, fmt.Sprintf("%s;localItems=%d;remoteItems=%d;mergedItems=%d", reason, len(local), len(remote.Items), len(merged)))
 
-	removed := unreferencedFiles(before, merged)
+	removed := unreferencedFiles(before, s.cfg.History.Items())
 	report(progress, "persist_local", "persist local", 90)
 	if err := s.cfg.Flush(ctx); err != nil {
 		// The history was not saved: put the old one, its settings and its
