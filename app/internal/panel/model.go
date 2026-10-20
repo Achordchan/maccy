@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -147,6 +148,11 @@ const (
 	// thumbMaxPixels is the largest picture that is decoded for a thumbnail
 	// (an 8K screen is 33 million): decoding costs four bytes a pixel.
 	thumbMaxPixels = 40_000_000
+	// thumbMaxBytes is the largest file that is read for one: a bitmap of
+	// thumbMaxPixels is about this big; a format that only MyGo knows (its size
+	// cannot be told beforehand) gets a tenth of it.
+	thumbMaxBytes        = 256 << 20
+	thumbMaxUnknownBytes = 32 << 20
 )
 
 // get returns the thumbnail, or nil while it is being made (the window is
@@ -192,16 +198,40 @@ func (t *thumbCache) make(path string, redraw func()) {
 
 // smallBitmap reads a picture and cuts it down to fit thumbSize.
 func smallBitmap(path string) *ui.Bitmap {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
-	// A small file can hold a huge picture; look at its size before making it.
-	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil && cfg.Width*cfg.Height > thumbMaxPixels {
+	defer f.Close()
+	// A small file can hold a huge picture, and a big one can be a huge bitmap:
+	// the header says which, before anything is read into memory.
+	known := false
+	if cfg, _, err := image.DecodeConfig(f); err == nil {
+		if cfg.Width*cfg.Height > thumbMaxPixels {
+			return nil
+		}
+		known = true
+	}
+	limit := int64(thumbMaxBytes)
+	if !known {
+		limit = thumbMaxUnknownBytes
+	}
+	st, err := f.Stat()
+	if err != nil || st.Size() > limit {
 		return nil
 	}
-	img, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil || int64(len(data)) > limit {
+		return nil
+	}
+	var img image.Image
+	if known {
+		img, _, err = image.Decode(bytes.NewReader(data))
+	}
+	if !known || err != nil {
 		bm, _ := ui.DecodeBitmap(data) // a format only MyGo knows
 		return bm
 	}

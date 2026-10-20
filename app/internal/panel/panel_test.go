@@ -482,3 +482,35 @@ func TestPreviewLineMatchesTheOldRuleAndStopsEarly(t *testing.T) {
 		t.Fatalf("a long text took %v to preview", time.Since(start))
 	}
 }
+
+func TestSmallBitmapDoesNotReadHugeFiles(t *testing.T) {
+	dir := t.TempDir()
+	// A file of a format nobody can tell the size of beforehand: too big to be
+	// read just to find out.
+	big := filepath.Join(dir, "big.dat")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Truncate(thumbMaxUnknownBytes + 1)
+	f.Close()
+	if smallBitmap(big) != nil {
+		t.Fatal("a file over the limit was turned into a thumbnail")
+	}
+	// A bitmap whose header says 20000 x 20000: refused from the header alone,
+	// the file itself is a few bytes.
+	hdr := make([]byte, 54)
+	copy(hdr, "BM")
+	le := func(b []byte, v uint32) { b[0], b[1], b[2], b[3] = byte(v), byte(v>>8), byte(v>>16), byte(v>>24) }
+	le(hdr[2:], 54)
+	le(hdr[10:], 54)
+	le(hdr[14:], 40)
+	le(hdr[18:], 20000)
+	le(hdr[22:], 20000)
+	hdr[26], hdr[28] = 1, 32
+	huge := filepath.Join(dir, "huge.bmp")
+	_ = os.WriteFile(huge, hdr, 0o644)
+	if smallBitmap(huge) != nil {
+		t.Fatal("a picture over the pixel limit was decoded")
+	}
+}
