@@ -47,7 +47,7 @@ def _infer_base_url_from_manifest(manifest_path: Path) -> str:
         if not url:
             return ""
 
-        m = re.match(r"^(.*?)/v\d+\.\d+\.\d+/klip-\d+\.\d+\.\d+-setup\.exe$", url)
+        m = re.match(r"^(.*?)/v\d+\.\d+\.\d+/maccy-\d+\.\d+\.\d+-setup\.exe$", url)
         if m:
             return m.group(1)
         return url.rsplit("/", 1)[0]
@@ -569,7 +569,7 @@ def _run_pipeline(repo: Path, cfg: dict, *, is_gui: bool, yes: bool) -> tuple[in
     _run([str(iscc), str(iss)], cwd=repo)
     completed.append("生成安装包（Inno Setup）")
 
-    installer_path = installer_dir / f"klip-{version}-setup.exe"
+    installer_path = installer_dir / f"maccy-{version}-setup.exe"
     if not installer_path.exists():
         raise FileNotFoundError(f"installer not found: {installer_path}")
 
@@ -812,7 +812,7 @@ def _create_update_package(publish_dir: Path, output_dir: Path, *, version: str,
         if not path.is_file():
             continue
         rel = path.relative_to(publish_dir).as_posix()
-        if rel == "klip-package.json":
+        if rel == "maccy-package.json":
             continue
         files.append(
             {
@@ -822,18 +822,18 @@ def _create_update_package(publish_dir: Path, output_dir: Path, *, version: str,
             }
         )
 
-    if not any(str(x.get("path", "")).lower() == "klip.exe" for x in files):
-        raise RuntimeError("publish output missing klip.exe")
+    if not any(str(x.get("path", "")).lower() == "maccy.exe" for x in files):
+        raise RuntimeError("publish output missing maccy.exe")
 
     manifest = {
-        "appId": "klip",
+        "appId": "maccy",
         "version": version,
         "runtime": runtime,
         "files": files,
     }
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    package_path = output_dir / f"klip-{version}-{runtime}.zip"
+    package_path = output_dir / f"maccy-{version}-{runtime}.zip"
     if package_path.exists():
         package_path.unlink()
 
@@ -848,7 +848,7 @@ def _create_update_package(publish_dir: Path, output_dir: Path, *, version: str,
             rel = str(item["path"])
             zf.write(publish_dir / rel, rel)
         zf.writestr(
-            "klip-package.json",
+            "maccy-package.json",
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         )
 
@@ -1185,7 +1185,7 @@ def _update_manifest(
     if installer_url and installer_url.strip():
         installer["url"] = installer_url.strip()
     else:
-        url = base_url.rstrip("/") + f"/v{version}/klip-{version}-setup.exe"
+        url = base_url.rstrip("/") + f"/v{version}/maccy-{version}-setup.exe"
         installer["url"] = url
     installer["sha256"] = sha256
     installer["size"] = int(size)
@@ -1198,7 +1198,7 @@ def _update_manifest(
         if package_url and package_url.strip():
             package["url"] = package_url.strip()
         else:
-            package["url"] = base_url.rstrip("/") + f"/v{version}/klip-{version}-{package_runtime}.zip"
+            package["url"] = base_url.rstrip("/") + f"/v{version}/maccy-{version}-{package_runtime}.zip"
         package["sha256"] = package_sha256
         package["size"] = int(package_size)
         latest["package"] = package
@@ -1362,7 +1362,7 @@ def main() -> int:
     _run([str(iscc), str(iss)], cwd=repo)
     completed.append("生成安装包（Inno Setup）")
 
-    installer_path = installer_dir / f"klip-{version}-setup.exe"
+    installer_path = installer_dir / f"maccy-{version}-setup.exe"
     if not installer_path.exists():
         raise FileNotFoundError(f"installer not found: {installer_path}")
 

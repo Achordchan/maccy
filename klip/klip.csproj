@@ -2,6 +2,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <AssemblyName>maccy</AssemblyName>
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <Version>1.0.10</Version>

@@ -229,7 +229,7 @@ public sealed class UpdateService
         if (string.IsNullOrWhiteSpace(update.InstallerUrl))
             throw new InvalidOperationException("manifest missing installer url");
 
-        var fileName = "klip-" + update.Version + "-setup.exe";
+        var fileName = "maccy-" + update.Version + "-setup.exe";
         var target = Path.Combine(downloadFolder, fileName);
 
         await DownloadAndVerifyFileAsync(
@@ -253,7 +253,7 @@ public sealed class UpdateService
         Directory.CreateDirectory(packageDir);
         Directory.CreateDirectory(stagingRoot);
 
-        var packagePath = Path.Combine(packageDir, "klip-" + update.Version + "-" + update.PackageRuntime + ".zip");
+        var packagePath = Path.Combine(packageDir, "maccy-" + update.Version + "-" + update.PackageRuntime + ".zip");
         await DownloadAndVerifyFileAsync(
             update.PackageUrl,
             packagePath,
@@ -276,7 +276,7 @@ public sealed class UpdateService
 
         ct.ThrowIfCancellationRequested();
 
-        var manifestPath = Path.Combine(stagingPath, "klip-package.json");
+        var manifestPath = Path.Combine(stagingPath, "maccy-package.json");
         if (!File.Exists(manifestPath))
             throw new InvalidOperationException("package manifest missing");
 
@@ -320,7 +320,7 @@ public sealed class UpdateService
 
     private static void ValidatePackageManifest(UpdateInfo update, string stagingPath, UpdatePackageManifest manifest)
     {
-        if (!string.Equals(manifest.AppId, "klip", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(manifest.AppId, "maccy", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("package app id mismatch");
         if (!string.Equals(NormalizeVersion(manifest.Version), update.Version, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("package version mismatch");
@@ -336,7 +336,7 @@ public sealed class UpdateService
             if (IsProtectedRelativePath(relativePath))
                 throw new InvalidOperationException("package contains protected data path: " + file.Path);
 
-            if (string.Equals(ToManifestPath(relativePath), "klip.exe", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(ToManifestPath(relativePath), "maccy.exe", StringComparison.OrdinalIgnoreCase))
                 hasExe = true;
 
             var absolutePath = GetPathInsideRoot(stagingPath, relativePath);
@@ -356,7 +356,7 @@ public sealed class UpdateService
         }
 
         if (!hasExe)
-            throw new InvalidOperationException("package missing klip.exe");
+            throw new InvalidOperationException("package missing maccy.exe");
     }
 
     private async Task DownloadAndVerifyFileAsync(

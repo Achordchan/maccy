@@ -6,7 +6,7 @@ namespace klip.Services;
 public sealed class WindowsAutoStartService
 {
     private const string RunKeyPath = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-    private const string ValueName = "klip";
+    private const string ValueName = "maccy";
 
     public bool IsEnabled()
     {

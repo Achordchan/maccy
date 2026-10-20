@@ -52,7 +52,7 @@ public partial class App : Application
     private DateTimeOffset _lastTrayClickUtc = DateTimeOffset.MinValue;
     private static readonly TimeSpan TrayDoubleClickThreshold = TimeSpan.FromMilliseconds(380);
 
-    private const string AppMutexName = "klip_mutex";
+    private const string AppMutexName = "maccy_mutex";
 
     private const string StartupAlreadyRunningMessage = "Klip 已在运行，禁止多开。";
 
@@ -81,7 +81,7 @@ public partial class App : Application
 
     private void SetupTrayIcon(MainWindow window)
     {
-        var icon = new WindowIcon(new Bitmap(AssetLoader.Open(new Uri("avares://klip/Assets/avalonia-logo.ico"))));
+        var icon = new WindowIcon(new Bitmap(AssetLoader.Open(new Uri("avares://maccy/Assets/avalonia-logo.ico"))));
 
         var menu = new NativeMenu();
 

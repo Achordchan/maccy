@@ -5,7 +5,7 @@ namespace klip.Services;
 public sealed class UpdateManifest
 {
     [JsonPropertyName("appId")]
-    public string AppId { get; set; } = "klip";
+    public string AppId { get; set; } = "maccy";
 
     [JsonPropertyName("latest")]
     public UpdateRelease Latest { get; set; } = new();

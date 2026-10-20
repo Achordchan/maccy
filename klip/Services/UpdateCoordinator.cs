@@ -591,7 +591,7 @@ public sealed class UpdateCoordinator
         sb.AppendLine("    if ((File-Sha256 $src) -ne $expected) { throw ('sha256 mismatch before copy: ' + $file.path) }");
         sb.AppendLine("    $newFiles[(To-Key $rel)] = $true");
         sb.AppendLine("  }");
-        sb.AppendLine("  if (-not $newFiles.ContainsKey('klip.exe')) { throw 'package missing klip.exe' }");
+        sb.AppendLine("  if (-not $newFiles.ContainsKey('maccy.exe')) { throw 'package missing maccy.exe' }");
         sb.AppendLine("  New-Item -ItemType Directory -Force -Path $backupDir | Out-Null");
         sb.AppendLine("  foreach ($file in $manifest.files) {");
         sb.AppendLine("    $rel = Normalize-Rel ([string]$file.path)");
@@ -630,7 +630,7 @@ public sealed class UpdateCoordinator
         sb.AppendLine("  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installedManifest) | Out-Null");
         sb.AppendLine("  Copy-Item -LiteralPath $packageManifest -Destination $installedManifest -Force");
         sb.AppendLine("  Write-UpdateLog 'light update applied'");
-        sb.AppendLine("  Start-Process -FilePath (Join-Path $installDir 'klip.exe')");
+        sb.AppendLine("  Start-Process -FilePath (Join-Path $installDir 'maccy.exe')");
         sb.AppendLine("} catch {");
         sb.AppendLine("  $err = $_.Exception.ToString()");
         sb.AppendLine("  Write-UpdateLog ('failed: ' + $err)");
@@ -645,7 +645,7 @@ public sealed class UpdateCoordinator
         sb.AppendLine("    $ws = New-Object -ComObject WScript.Shell");
         sb.AppendLine("    [void]$ws.Popup(('轻量更新失败，已尝试回滚。日志：' + $logPath), 0, 'Klip 更新失败', 16)");
         sb.AppendLine("  } catch {}");
-        sb.AppendLine("  $exe = Join-Path $installDir 'klip.exe'");
+        sb.AppendLine("  $exe = Join-Path $installDir 'maccy.exe'");
         sb.AppendLine("  if (Test-Path -LiteralPath $exe -PathType Leaf) { try { Start-Process -FilePath $exe } catch {} }");
         sb.AppendLine("  exit 1");
         sb.AppendLine("}");

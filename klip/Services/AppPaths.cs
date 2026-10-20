@@ -11,7 +11,7 @@ public static class AppPaths
         {
             var root = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "klip");
+                "maccy");
             Directory.CreateDirectory(root);
             return root;
         }
