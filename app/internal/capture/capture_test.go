@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -35,6 +36,7 @@ type fakeClip struct {
 	wroteImage []byte
 	wroteWith  string
 	reads      int
+	filesErr   error
 	onRead     func() // runs inside ReadText, as a write that comes during a read
 }
 
@@ -46,7 +48,7 @@ func (c *fakeClip) ReadText() string {
 	}
 	return c.text
 }
-func (c *fakeClip) ReadFiles() ([]string, error) { c.reads++; return c.files, nil }
+func (c *fakeClip) ReadFiles() ([]string, error) { c.reads++; return c.files, c.filesErr }
 func (c *fakeClip) ReadImage() []byte            { c.reads++; return c.image }
 func (c *fakeClip) WriteText(s string) error     { c.wroteText = &s; return nil }
 func (c *fakeClip) WriteFiles(p []string) error  { c.wroteFiles = p; return nil }
@@ -682,5 +684,54 @@ func TestSamePictureSeesASmallChange(t *testing.T) {
 	}
 	if !samePicture(enc(true), enc(true)) {
 		t.Fatal("the same picture")
+	}
+}
+
+func TestOwnershipEndsWhenSomethingElseIsSeen(t *testing.T) {
+	r := newRig(t)
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "A"
+	a := "A"
+	_ = r.s.Apply(model.Item{Kind: model.KindText, Text: &a})
+	r.clip.text = "B"
+	r.capture() // B is another program's
+	if r.h.Len() != 1 {
+		t.Fatal("B must be captured")
+	}
+	r.clip.text = "A"
+	lim := r.h.Limits()
+	lim.MergeDuplicates = false
+	r.h.SetLimits(lim)
+	r.capture()
+	if r.h.Len() != 2 {
+		t.Fatalf("a later copy of A is a new copy, got %d items", r.h.Len())
+	}
+}
+
+func TestTransparentPicturesAreCompared(t *testing.T) {
+	enc := func(c color.NRGBA) []byte {
+		img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+		for i := 0; i < 16; i++ {
+			img.SetNRGBA(i%4, i/4, c)
+		}
+		var b bytes.Buffer
+		_ = png.Encode(&b, img)
+		return b.Bytes()
+	}
+	if samePicture(enc(color.NRGBA{255, 0, 0, 128}), enc(color.NRGBA{0, 0, 255, 128})) {
+		t.Fatal("two see-through pictures of different colours are different")
+	}
+}
+
+func TestUnreadableFileListIsRetried(t *testing.T) {
+	r := newRig(t)
+	r.clip.formats = []string{"text/uri-list"}
+	r.clip.filesErr = errors.New("clipboard busy")
+	retried := make(chan struct{}, 8)
+	r.s.Retry = func() { retried <- struct{}{} }
+	r.s.Capture(context.Background())
+	select {
+	case <-retried:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a file list that could not be read must be looked at again")
 	}
 }

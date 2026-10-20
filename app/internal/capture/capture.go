@@ -89,6 +89,7 @@ type Service struct {
 	ownCheck    atomic.Pointer[func() bool] // reads the clipboard back; true while it holds what we wrote
 	setMu       sync.RWMutex                // guards the capture settings below
 	capMu       sync.Mutex                  // one Capture at a time (the watcher and Retry)
+	fileTries   atomic.Int32                // retries of an unreadable file list in a row
 	skipped     atomic.Bool                 // a Capture gave way to an Apply
 	writeGen    atomic.Int64                // moves at the start and the end of every Apply
 }
@@ -175,6 +176,18 @@ func (s *Service) markWritten(verify func() bool) {
 	}
 }
 
+// checkOwn asks the verifier. Once it says the clipboard holds something
+// else, the ownership is over: a later copy of the same text is a new copy.
+func (s *Service) checkOwn(check *func() bool) bool {
+	if (*check)() {
+		return true
+	}
+	s.ownCheck.Store(nil)
+	s.ownSeq.Store(0)
+	s.lastOwnWrit.Store(0)
+	return false
+}
+
 // ownSeqTTL is how long the counter after our write is trusted.
 const ownSeqTTL = 5 * time.Second
 
@@ -194,14 +207,14 @@ func (s *Service) isOwnChange() bool {
 					return true
 				}
 				// Seen late (the machine slept?): the content has the say.
-				return (*check)()
+				return s.checkOwn(check)
 			}
 		}
 	}
 	// No counter: ours if the clipboard still holds what we wrote, however
 	// late it is looked at; before that is known, the window decides.
 	if check != nil {
-		return (*check)()
+		return s.checkOwn(check)
 	}
 	w := s.OwnWindow
 	if w <= 0 {
@@ -317,7 +330,14 @@ func (s *Service) Capture(ctx context.Context) error {
 	}
 
 	if opt.files && has(set, fileFormats) {
-		files, _ := s.Clipboard.ReadFiles()
+		files, ferr := s.Clipboard.ReadFiles()
+		if ferr != nil && len(nonBlank(files)) == 0 {
+			// Not "no files" but "could not look" (the clipboard was busy):
+			// the watcher has moved on, so look again a little later.
+			s.retryLater()
+		} else {
+			s.fileTries.Store(0)
+		}
 		files = nonBlank(files)
 		if len(files) > 0 {
 			if opt.images && len(files) == 1 && isImagePath(files[0]) && isFile(files[0]) {
@@ -653,10 +673,11 @@ func samePath(a, b string) bool {
 }
 
 // samePicture says whether two encoded pictures show the same pixels, give or
-// take the rounding a trip through the clipboard does: no colour channel of
-// any pixel may differ by more than a few levels, so a small change in one
-// corner is a different picture. Pixels that are not opaque in the first are
-// skipped (the clipboard may drop the alpha).
+// take the rounding a trip through the clipboard does: no channel (alpha
+// included) of any pixel may differ by more than a few levels, so a small
+// change in one corner is a different picture. A clipboard that drops the
+// alpha of a see-through picture makes it a different one, which errs on the
+// side of keeping a copy.
 func samePicture(a, b []byte) bool {
 	ia, _, errA := image.Decode(bytes.NewReader(a))
 	ib, _, errB := image.Decode(bytes.NewReader(b))
@@ -668,11 +689,8 @@ func samePicture(a, b []byte) bool {
 	for y := 0; y < ba.Dy(); y++ {
 		for x := 0; x < ba.Dx(); x++ {
 			r1, g1, b1, a1 := ia.At(ba.Min.X+x, ba.Min.Y+y).RGBA()
-			if a1 != 0xffff {
-				continue
-			}
-			r2, g2, b2, _ := ib.At(bb.Min.X+x, bb.Min.Y+y).RGBA()
-			if absDiff(r1, r2) > tolerance || absDiff(g1, g2) > tolerance || absDiff(b1, b2) > tolerance {
+			r2, g2, b2, a2 := ib.At(bb.Min.X+x, bb.Min.Y+y).RGBA()
+			if absDiff(r1, r2) > tolerance || absDiff(g1, g2) > tolerance || absDiff(b1, b2) > tolerance || absDiff(a1, a2) > tolerance {
 				return false
 			}
 		}
@@ -685,6 +703,15 @@ func absDiff(a, b uint32) uint64 {
 		return uint64(a - b)
 	}
 	return uint64(b - a)
+}
+
+// retryLater asks for another look at the clipboard in 300 ms, up to five times
+// in a row.
+func (s *Service) retryLater() {
+	if s.Retry == nil || s.fileTries.Add(1) > 5 {
+		return
+	}
+	time.AfterFunc(300*time.Millisecond, s.Retry)
 }
 
 // noteSkipped registers a capture that gave way to an Apply. The Apply may
