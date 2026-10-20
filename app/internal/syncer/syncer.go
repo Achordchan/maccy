@@ -595,7 +595,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		SnapshotSHA256: sum, Merged: merged, Account: account,
 	}
 	// What the limits pruned is unreferenced too.
-	removed := unreferencedFiles(before, s.cfg.History.Items())
+	removed := s.unreferencedFiles(before, s.cfg.History.Items())
 	s.timing("download", "import_snapshot", started, reason)
 
 	report(progress, "persist_local", "保存本地状态", 90)
@@ -779,7 +779,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	s.cfg.History.ApplyLimits(s.settings())
 	s.timing("merge", "merge_snapshot", started, fmt.Sprintf("%s;localItems=%d;remoteItems=%d;mergedItems=%d", reason, len(local), len(remote.Items), len(merged)))
 
-	removed := unreferencedFiles(before, s.cfg.History.Items())
+	removed := s.unreferencedFiles(before, s.cfg.History.Items())
 	report(progress, "persist_local", "persist local", 90)
 	if err := s.cfg.Flush(ctx); err != nil {
 		// The history was not saved: put the old one, its settings and its
@@ -909,8 +909,10 @@ func payloadFiles(it model.Item) []string {
 
 // unreferencedFiles is the files of old that next does not refer to: the
 // payloads a history mutation made orphans, to be removed only after the new
-// history is on disk.
-func unreferencedFiles(old, next []model.Item) []string {
+// history is on disk. Only files in Klip's own folders are listed: the
+// FilePaths of an item migrated from C# point at the user's documents, and
+// those are never ours to delete.
+func (s *Syncer) unreferencedFiles(old, next []model.Item) []string {
 	keep := map[string]bool{}
 	for _, it := range next {
 		for _, p := range payloadFiles(it) {
@@ -922,13 +924,30 @@ func unreferencedFiles(old, next []model.Item) []string {
 	for _, it := range old {
 		for _, p := range payloadFiles(it) {
 			c := filepath.Clean(p)
-			if !keep[c] && !seen[c] {
-				seen[c] = true
-				out = append(out, p)
+			if keep[c] || seen[c] || !s.ownPayload(c) {
+				continue
 			}
+			seen[c] = true
+			out = append(out, p)
 		}
 	}
 	return out
+}
+
+// ownPayload says the file is inside the folders Klip keeps for images and
+// files. A path from a migrated history that points at the user's documents
+// is not one.
+func (s *Syncer) ownPayload(p string) bool {
+	for _, base := range []string{s.cfg.Layout.Images(), s.cfg.Layout.Files()} {
+		rel, err := filepath.Rel(base, p)
+		if err != nil || filepath.IsAbs(rel) || rel == ".." {
+			continue
+		}
+		if !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // itemsNotIn is the items whose id is not in exclude.

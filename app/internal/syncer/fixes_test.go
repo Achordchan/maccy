@@ -1194,3 +1194,40 @@ func TestDownloadMergeRecordsPendingStateBeforeUpload(t *testing.T) {
 		t.Errorf("retry: %+v, uploads %d", res.Decision, puts.Load())
 	}
 }
+
+// The FilePaths of history migrated from C# can point at the user's
+// documents: cleanup must never pass those to RemoveFiles.
+func TestRemoveFilesOnlyGetsKlipPayloads(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	doc := filepath.Join(t.TempDir(), "my-document.pdf")
+	if err := os.WriteFile(doc, []byte("user data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	local := model.Item{
+		ID: "16fd2706-8baf-433b-82eb-8c7fada847da", Kind: model.KindFileList,
+		CapturedAt: model.Time{Time: time.Now()}, ApproxBytes: 9, FilePaths: []string{doc}, CopyCount: 1,
+	}
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "remote")}))
+	defer srv.Close()
+	h := &cleaningHistory{unitHistory: unitHistory{items: []model.Item{local}}}
+	s := signedIn(model.DefaultSettings())
+	syn := New(Config{
+		Layout:   l,
+		Settings: syncclient.Settings{Get: func() model.Settings { return *s }, Update: func(f func(*model.Settings)) { f(s) }},
+		History:  h,
+		Client:   syncclient.New(srv.URL),
+		BaseURL:  srv.URL,
+		Now:      time.Now,
+	})
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(doc); err != nil {
+		t.Fatal("a file outside Klip's folders was deleted")
+	}
+	for _, p := range h.removed {
+		if filepath.Clean(p) == filepath.Clean(doc) {
+			t.Errorf("RemoveFiles was given the user's document: %s", p)
+		}
+	}
+}
