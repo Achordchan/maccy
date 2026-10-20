@@ -97,3 +97,9 @@ func TestDesktop(t *testing.T) {
 		t.Fatalf("plain path quoted: %q", got)
 	}
 }
+
+func TestDesktopQuoteEscapesPercent(t *testing.T) {
+	if got := desktopQuote("/opt/klip%20/klip"); got != `"/opt/klip%%20/klip"` {
+		t.Fatalf("a percent is a field code in an Exec line: %q", got)
+	}
+}

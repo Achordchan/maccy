@@ -135,6 +135,9 @@ func (s *Service) SignOut() Result {
 // checked with the server (a refused one signs the user out), else the
 // refresh token is used. "" means signed out.
 func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
+	// One refresh at a time, the background sessions included; what the
+	// other one stored is looked at after the wait.
+	defer syncclient.LockRefresh()()
 	cur := s.Store.Get()
 	access := strings.TrimSpace(model.Str(cur.AuthAccessToken))
 	if access != "" && cur.AuthExpiresAtUnixMs > s.now().UnixMilli()+30_000 {

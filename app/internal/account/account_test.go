@@ -3,6 +3,8 @@ package account
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -280,5 +282,25 @@ func TestNetworkFailureKeepsTheLogin(t *testing.T) {
 	}
 	if model.Str(m.Get().AuthRefreshToken) != "the-refresh" {
 		t.Fatal("the login was erased by a network failure")
+	}
+}
+
+func TestServerTroubleKeepsTheLogin(t *testing.T) {
+	for _, status := range []int{500, 503, 429} {
+		hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+		s, m := newService(t, hs.URL)
+		_ = m.Update(func(st *model.Settings) {
+			st.AuthAccessToken, st.AuthRefreshToken = model.Ptr("access"), model.Ptr("refresh")
+			st.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli() // still valid: /auth/me is asked
+		})
+		if _, err := s.EnsureAccessToken(context.Background()); err == nil {
+			t.Errorf("%d: trouble on the server must be an error", status)
+		}
+		if model.Str(m.Get().AuthRefreshToken) != "refresh" {
+			t.Errorf("%d: the login was erased by a server in trouble", status)
+		}
+		hs.Close()
 	}
 }

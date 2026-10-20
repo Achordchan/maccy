@@ -123,7 +123,7 @@ func (d Desktop) SetEnabled(on bool) error {
 
 // desktopQuote quotes a path for the Exec key of a .desktop file.
 func desktopQuote(p string) string {
-	if !strings.ContainsAny(p, " \t\"'\\$`<>~|&;*?#()") {
+	if !strings.ContainsAny(p, " \t\"'\\$`<>~|&;*?#()%") {
 		return p
 	}
 	r := strings.NewReplacer(`\`, `\\\\`, `"`, `\"`, "`", "\\`", `$`, `\$`, `%`, `%%`)
