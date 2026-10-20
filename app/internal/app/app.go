@@ -110,6 +110,22 @@ func New(cfg Config) (*App, error) {
 	}
 	a.Capture = capture.New(cfg.Layout, a.History, cfg.Clipboard)
 	a.Capture.ForegroundApp = cfg.Foreground
+	// The change counter lets Capture tell the change Apply made from a copy
+	// by somebody else; where there is none, the content token does it.
+	seq := cfg.ChangeSeq
+	if seq == nil {
+		seq = platform.ChangeSeq
+	}
+	a.Capture.Seq = seq
+	if seq() < 0 {
+		a.Capture.Token = platform.ContentFingerprint
+	}
+	// Without a counter a write is seen up to one poll late.
+	iv := cfg.Interval
+	if iv <= 0 {
+		iv = platform.DefaultInterval
+	}
+	a.Capture.OwnWindow = iv + 250*time.Millisecond
 
 	st := a.Settings.Get()
 	a.applySettings(st)
@@ -180,7 +196,14 @@ func (a *App) Start() {
 	// A change of the history is a reason to sync, a moment later.
 	a.History.OnChanged(func() { a.Auto.OnHistoryChanged(ctx) })
 
-	w := &platform.Watcher{Interval: a.cfg.Interval, Seq: a.cfg.ChangeSeq, OnChange: func() {
+	// A capture that gave way to an Apply, or could not read a busy
+	// clipboard, comes back here.
+	a.Capture.Retry = func() {
+		if err := a.Capture.Capture(ctx); err != nil {
+			a.cfg.Logf("capture: %v", err)
+		}
+	}
+	w := &platform.Watcher{Interval: a.cfg.Interval, Seq: a.Capture.Seq, OnChange: func() {
 		if err := a.Capture.Capture(ctx); err != nil {
 			a.cfg.Logf("capture: %v", err)
 		}
