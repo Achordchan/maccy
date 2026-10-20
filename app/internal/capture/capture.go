@@ -223,7 +223,7 @@ func has(set map[string]bool, names []string) bool {
 func (s *Service) Capture(ctx context.Context) error {
 	gen := s.writeGen.Load()
 	if s.applying.Load() > 0 {
-		s.skipped.Store(true)
+		s.noteSkipped()
 		return nil
 	}
 	if s.isOwnChange() {
@@ -240,7 +240,7 @@ func (s *Service) Capture(ctx context.Context) error {
 	}
 	add := func(it model.Item) {
 		if s.interfered(gen) {
-			s.skipped.Store(true)
+			s.noteSkipped()
 			// An Apply wrote while we read: this is our own content. The files
 			// made for it belong to no item, so they go too.
 			if p := model.Str(it.ImageFilePath); p != "" {
@@ -446,9 +446,21 @@ func isImagePath(p string) bool {
 
 // baseName is Path.GetFileName: on Windows it cuts at / and \, elsewhere at
 // / only.
+// windowsStyle says whether p looks like a Windows path: a drive letter and a
+// backslash (C:\...) or a share (\\host\...).
+func windowsStyle(p string) bool {
+	if strings.HasPrefix(p, `\\`) {
+		return true
+	}
+	return len(p) >= 3 && p[1] == ':' && p[2] == '\\' && (p[0]|0x20) >= 'a' && (p[0]|0x20) <= 'z'
+}
+
 func baseName(p string) string {
 	cut := strings.LastIndex(p, "/")
-	if runtime.GOOS == "windows" {
+	// A path that came from Windows (a sync, or the C# client) keeps its
+	// backslashes wherever it is read; on Linux and macOS they are otherwise
+	// part of a file name.
+	if runtime.GOOS == "windows" || windowsStyle(p) {
 		if i := strings.LastIndex(p, `\`); i > cut {
 			cut = i
 		}
@@ -482,7 +494,7 @@ func isFile(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
-func copyFile(src, dst string) error {
+func copyFile(src, dst string) (err error) {
 	if !isFile(src) {
 		return errors.New("capture: not a regular file: " + src)
 	}
@@ -491,15 +503,26 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.Create(dst)
+	// Copy to a side file and rename it when whole, so that a copy that
+	// fails half way never stands in for the original.
+	tmp := dst + ".part"
+	out, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	defer func() {
+		if err != nil {
+			os.Remove(tmp)
+		}
+	}()
+	if _, err = io.Copy(out, in); err != nil {
 		out.Close()
 		return err
 	}
-	return out.Close()
+	if err = out.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
 
 func newGUID() string {
@@ -526,14 +549,16 @@ func (s *Service) Apply(it model.Item) error {
 	s.writeGen.Add(1)
 	defer func() {
 		s.writeGen.Add(1)
-		if s.applying.Add(-1) == 0 && s.skipped.Swap(false) && s.Retry != nil {
-			go s.Retry() // a change came during the write and was not looked at
+		if s.applying.Add(-1) == 0 {
+			s.retrySkipped()
 		}
 	}()
 	s.MarkWriteByUs()
 	wrote, files, err := s.write(it)
 	if wrote && err == nil {
 		s.markWritten(s.verifier(it, files)) // only a write that happened can be recognised as ours
+	} else {
+		s.lastOwnWrit.Store(0) // nothing was written: nothing to hold back
 	}
 	return err
 }
@@ -599,6 +624,23 @@ func absDiff(a, b uint32) uint64 {
 		return uint64(a - b)
 	}
 	return uint64(b - a)
+}
+
+// noteSkipped registers a capture that gave way to an Apply. The Apply may
+// have finished already, so the flag is looked at again: one side or the other
+// always finds it set and starts the retry.
+func (s *Service) noteSkipped() {
+	s.skipped.Store(true)
+	if s.applying.Load() == 0 {
+		s.retrySkipped()
+	}
+}
+
+// retrySkipped starts the retry for a change that was not looked at.
+func (s *Service) retrySkipped() {
+	if s.skipped.Swap(false) && s.Retry != nil {
+		go s.Retry()
+	}
 }
 
 // interfered says whether an Apply ran, or is running, since gen was read.

@@ -601,3 +601,30 @@ func TestChangeDuringApplyIsRetried(t *testing.T) {
 		t.Fatal("the change that was skipped must be looked at again when Apply is done")
 	}
 }
+
+func TestBaseNameOfWindowsPaths(t *testing.T) {
+	for in, want := range map[string]string{
+		`C:\Docs\report.pdf`:  "report.pdf",
+		`\\nas\share\a b.txt`: "a b.txt",
+		"/home/u/x.txt":       "x.txt",
+		"/home/u/we\\ird.txt": "we\\ird.txt", // a backslash in a Unix name stays
+	} {
+		if runtime.GOOS == "windows" && in[0] == '/' {
+			continue
+		}
+		if got := baseName(in); got != want {
+			t.Errorf("baseName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestApplyThatWroteNothingHoldsNothingBack(t *testing.T) {
+	r := newRig(t)
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "from elsewhere"
+	_ = r.s.Apply(model.Item{Kind: model.KindImage, ImageFilePath: model.Ptr(filepath.Join(r.l.Images(), "gone.png"))})
+	r.now = r.now.Add(10 * time.Millisecond) // well inside the window
+	r.s.Capture(context.Background())
+	if r.h.Len() != 1 {
+		t.Fatal("a copy right after an Apply that wrote nothing must be kept")
+	}
+}
