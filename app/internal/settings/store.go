@@ -59,12 +59,13 @@ func writeAtomic(path string, data []byte) error {
 	// file are for this user only, also when an older version created them
 	// world-readable.
 	_ = os.Chmod(dir, 0o700)
-	tmp := path + ".tmp"
-	_ = os.Remove(tmp)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	// One temporary file per save: concurrent saves must not rename each
+	// other's file.
+	f, err := os.CreateTemp(dir, "settings.json.tmp-*")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		os.Remove(tmp)
@@ -74,6 +75,7 @@ func writeAtomic(path string, data []byte) error {
 		os.Remove(tmp)
 		return err
 	}
+	_ = os.Chmod(tmp, 0o600)
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return err

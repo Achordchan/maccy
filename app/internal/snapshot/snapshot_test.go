@@ -415,3 +415,19 @@ func TestTimeIsUsableAfterExport(t *testing.T) {
 		t.Errorf("%s", s)
 	}
 }
+
+func TestSanitizeFileNameTrimsWindowsTrailingDotsAndSpaces(t *testing.T) {
+	cases := map[string]string{
+		"notes.":   "notes",
+		"notes ":   "notes",
+		"a.b.":     "a.b",
+		"a:b?.txt": "a_b_.txt",
+		"  ":       "file",
+		"..":       "file",
+	}
+	for in, want := range cases {
+		if got := sanitizeFileName(in); got != want {
+			t.Errorf("%q: %q want %q", in, got, want)
+		}
+	}
+}

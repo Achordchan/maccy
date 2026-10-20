@@ -1183,12 +1183,19 @@ func sanitizeFileName(name string) string {
 	if strings.TrimSpace(name) == "" {
 		return "file"
 	}
-	return strings.Map(func(r rune) rune {
+	name = strings.Map(func(r rune) rune {
 		if r < 32 || strings.ContainsRune(`"<>|:*?\/`, r) {
 			return '_'
 		}
 		return r
 	}, name)
+	// Windows strips a trailing dot or space from a file name, so the file
+	// created there would not match the path recorded here.
+	name = strings.TrimRight(name, ". ")
+	if strings.TrimSpace(name) == "" {
+		return "file"
+	}
+	return name
 }
 
 func hashFile(p string) (size int64, sum string, ok bool) {

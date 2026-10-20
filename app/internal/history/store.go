@@ -64,12 +64,13 @@ func Save(l paths.Layout, items []model.Item) error {
 	// Clipboard history holds what the user copied: it is for this user only,
 	// also when an older version created the folder world-readable.
 	_ = os.Chmod(dir, 0o700)
-	tmp := l.History() + ".tmp"
-	_ = os.Remove(tmp)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	// A temporary file of this call's own: two saves at once (an autosave
+	// and a sync flush) must not rename each other's half-written file.
+	f, err := os.CreateTemp(dir, "history.json.tmp-*")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		os.Remove(tmp)
@@ -79,6 +80,7 @@ func Save(l paths.Layout, items []model.Item) error {
 		os.Remove(tmp)
 		return err
 	}
+	_ = os.Chmod(tmp, 0o600)
 	if err := os.Rename(tmp, l.History()); err != nil {
 		os.Remove(tmp)
 		return err

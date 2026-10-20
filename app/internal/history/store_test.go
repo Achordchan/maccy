@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -238,5 +239,33 @@ func TestNormalizeUsesTheActiveCacheSize(t *testing.T) {
 	got, ok := Normalize(l, it)
 	if !ok || got.ApproxBytes != 5 {
 		t.Errorf("size %d (ok %v), want 5", got.ApproxBytes, ok)
+	}
+}
+
+// Two saves at once must still leave one valid history file.
+func TestConcurrentSavesLeaveAWholeFile(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	items := []model.Item{{ID: "0f8fad5b-d9cb-469f-a165-70867728950e", Kind: model.KindText, CapturedAt: model.Time{Time: time.Now()}, Text: model.Ptr("x"), CopyCount: 1}}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				if err := Save(l, items); err != nil {
+					t.Errorf("save: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	data, err := os.ReadFile(l.History())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []model.Item
+	if err := json.Unmarshal(data, &got); err != nil || len(got) != 1 {
+		t.Errorf("the final file is not a whole history: %v %s", err, data)
 	}
 }
