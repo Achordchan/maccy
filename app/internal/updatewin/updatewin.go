@@ -92,7 +92,7 @@ func (m *Model) View(c *ui.Context) {
 				if st.Info != nil && !st.Check && ui.Button(c, "重试").Clicked() {
 					m.apply()
 				}
-				if st.Info != nil && st.Info.Mandatory {
+				if m.Coordinator.MustUpdate() != nil {
 					// A mandatory update has no way out but the update and
 					// leaving the program.
 					if ui.PrimaryButton(c, "退出").Clicked() {
@@ -128,12 +128,13 @@ func (m *Model) available(c *ui.Context, st update.State) {
 		}
 		ui.Text(c, notes).Wrap().Padding(10).Selectable()
 	})
-	if info.Mandatory {
+	mandatory := m.Coordinator.MustUpdate() != nil
+	if mandatory {
 		ui.Text(c, "这是必须安装的更新。").TextColor(t.Danger).FontSize(12)
 	}
 	m.spacer(c)
 	m.buttons(c, func() {
-		if info.Mandatory {
+		if mandatory {
 			if ui.Button(c, "退出").Clicked() {
 				m.Host.Quit()
 			}

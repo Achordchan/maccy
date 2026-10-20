@@ -100,6 +100,27 @@ func (c *Coordinator) set(f func(*State)) {
 	}
 }
 
+// setChecking is set for a look that the user asked for: once an update is
+// being installed the look no longer has a say in what the window shows.
+func (c *Coordinator) setChecking(f func(*State)) {
+	c.set(func(s *State) {
+		if c.applying {
+			return
+		}
+		f(s)
+	})
+}
+
+// MustUpdate is the newer version when it is mandatory and this system can
+// install it; a release for another system is not a reason to shut this one.
+func (c *Coordinator) MustUpdate() *Info {
+	i := c.Available()
+	if i == nil || !i.Mandatory || !c.Supported {
+		return nil
+	}
+	return i
+}
+
 // Refresh looks for a newer version without a word to the user (the check at
 // start and every few hours): it only changes what Available says, and an
 // error leaves it as it was.
@@ -150,7 +171,7 @@ func (c *Coordinator) Check(ctx context.Context) {
 		// own and is not left "checking" for a request that has ended.
 		if !waited {
 			waited = true
-			c.set(func(s *State) { s.Phase, s.Message = Checking, "已有检查正在进行，稍后继续..." })
+			c.setChecking(func(s *State) { s.Phase, s.Message = Checking, "已有检查正在进行，稍后继续..." })
 		}
 		select {
 		case <-ctx.Done():
@@ -165,19 +186,19 @@ func (c *Coordinator) Check(ctx context.Context) {
 	c.mu.Lock()
 	known := c.state.Info // an update found before stays known if this look fails
 	c.mu.Unlock()
-	c.set(func(s *State) {
+	c.setChecking(func(s *State) {
 		*s = State{Phase: Checking, Message: "正在连接更新服务器，请稍候...", Info: known}
 	})
-	res := c.Client.Check(ctx, func(m string) { c.set(func(s *State) { s.Message = m }) })
+	res := c.Client.Check(ctx, func(m string) { c.setChecking(func(s *State) { s.Message = m }) })
 	switch res.Status {
 	case UpToDate:
-		c.set(func(s *State) { *s = State{Phase: UpToDateNow, Message: "当前已经是最新版本。"} })
+		c.setChecking(func(s *State) { *s = State{Phase: UpToDateNow, Message: "当前已经是最新版本。"} })
 	case Failed:
 		c.set(func(s *State) {
 			*s = State{Phase: Problem, Message: "检查更新失败：" + res.Error, Info: known, Check: true}
 		})
 	default:
-		c.set(func(s *State) { *s = State{Phase: Available, Info: res.Info} })
+		c.setChecking(func(s *State) { *s = State{Phase: Available, Info: res.Info} })
 	}
 }
 

@@ -702,3 +702,33 @@ func TestFailedRecheckKeepsTheKnownUpdate(t *testing.T) {
 		t.Fatalf("closing the message goes back to the update: %+v", r.c.State())
 	}
 }
+
+func TestMandatoryUpdateOfAnotherSystemShutsNothing(t *testing.T) {
+	r := newCoord(t, "1.0.10")
+	m := release("1.0.11")
+	m.Latest.Mandatory = true
+	r.s.setManifest(t, m)
+	r.c.Check(context.Background())
+	r.c.Supported = false
+	if r.c.Available() == nil || r.c.MustUpdate() != nil {
+		t.Fatal("a mandatory release this system cannot install is no reason to shut it")
+	}
+	r.c.Supported = true
+	if r.c.MustUpdate() == nil {
+		t.Fatal("where it can be installed it is a must")
+	}
+}
+
+func TestCheckResultDoesNotReplaceAnInstallation(t *testing.T) {
+	r := newCoord(t, "1.0.10")
+	r.publish(t, "1.0.11", nil, true)
+	r.c.Check(context.Background())
+	r.c.mu.Lock()
+	r.c.applying = true
+	r.c.state.Phase = Downloading
+	r.c.mu.Unlock()
+	r.c.setChecking(func(s *State) { *s = State{Phase: Available} })
+	if r.c.State().Phase != Downloading {
+		t.Fatalf("a check result replaced the download: %+v", r.c.State())
+	}
+}

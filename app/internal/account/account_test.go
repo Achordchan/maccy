@@ -342,3 +342,21 @@ func TestSignInThatCannotBeSavedSaysSo(t *testing.T) {
 		t.Fatalf("the user must be told the login was not saved: %+v", r)
 	}
 }
+
+func TestPasswordCleanupLeavesANewerLoginAlone(t *testing.T) {
+	s, m := newService(t, "http://127.0.0.1:1")
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a1", RefreshToken: "r1", Email: "one@example.com"}, "one@example.com")
+	epoch := s.epoch.Load() // the password request starts under this login
+	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a2", RefreshToken: "r2", Email: "two@example.com"}, "two@example.com")
+	s.afterPasswordUpdated("one@example.com", epoch) // and its answer comes after the other login
+	if model.Str(m.Get().AuthRefreshToken) != "r2" || model.Str(m.Get().AuthUserEmail) != "two@example.com" {
+		t.Fatalf("the newer login was cleared: %+v", m.Get())
+	}
+	// The same login, tokens renewed meanwhile: it is cleared.
+	epoch = s.epoch.Load()
+	_ = m.Update(func(st *model.Settings) { st.AuthRefreshToken = model.Ptr("r2-renewed") })
+	s.afterPasswordUpdated("two@example.com", epoch)
+	if model.Str(m.Get().AuthRefreshToken) != "" {
+		t.Fatal("the session of the password that changed must end, renewed tokens or not")
+	}
+}

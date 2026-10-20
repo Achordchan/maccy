@@ -244,8 +244,7 @@ func (p *program) mandatoryPending() bool {
 	if p.app == nil || p.app.Updates == nil {
 		return false
 	}
-	i := p.app.Updates.Available()
-	if i == nil || !i.Mandatory {
+	if p.app.Updates.MustUpdate() == nil {
 		return false
 	}
 	p.showUpdate()
@@ -258,7 +257,7 @@ func (p *program) gateMandatory() {
 	if p.app == nil || p.app.Updates == nil {
 		return
 	}
-	if i := p.app.Updates.Available(); i != nil && i.Mandatory && p.mandatoryShown.CompareAndSwap(false, true) {
+	if p.app.Updates.MustUpdate() != nil && p.mandatoryShown.CompareAndSwap(false, true) {
 		mygo.RunOnMain(func() {
 			p.win.Hide()
 			p.showUpdate()
@@ -284,7 +283,7 @@ func (p *program) showUpdate() {
 			e.PreventDefault()
 			// A mandatory update leaves two ways out, the window's own
 			// buttons: update, or quit. The close box is the second.
-			if i := p.app.Updates.Available(); i != nil && i.Mandatory {
+			if p.app.Updates.MustUpdate() != nil {
 				mygo.App.Quit()
 				return
 			}

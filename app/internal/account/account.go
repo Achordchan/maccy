@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,6 +29,9 @@ type Service struct {
 	// epoch moves whenever a sign-in begins or ends. It names a login across the
 	// renewals of its tokens, which a refresh token does not.
 	epoch atomic.Int64
+	// sessMu makes a change of login (sign-in, sign-out, the clearing that follows
+	// a password change) and the check of epoch that goes before it one step.
+	sessMu sync.Mutex
 
 	Client *syncclient.Client
 	Store  Store
@@ -81,6 +85,8 @@ func (s *Service) StatusText() string {
 }
 
 func (s *Service) storeTokens(t syncclient.TokenSet, fallbackEmail string) error {
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
 	s.epoch.Add(1)
 	email := t.Email
 	if strings.TrimSpace(email) == "" {
@@ -137,6 +143,8 @@ func (s *Service) enter(ctx context.Context, email, password, okMsg, failMsg, ca
 
 // SignOut forgets the tokens and the address.
 func (s *Service) SignOut() Result {
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
 	s.epoch.Add(1)
 	if err := s.Store.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, true) }); err != nil {
 		// The tokens are gone from memory but the file still has them: after
@@ -365,6 +373,8 @@ func (s *Service) ChangePassword(ctx context.Context, typedEmail, code, pw, conf
 // request started in (refresh is its refresh token, "" for a reset made while
 // signed out); if somebody else is signed in by now, that one is left alone.
 func (s *Service) afterPasswordUpdated(email string, epoch int64) {
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
 	if s.epoch.Load() != epoch {
 		return // somebody signed in or out since: not the login whose password changed
 	}
