@@ -249,7 +249,7 @@ def build_installer(version: str, runtime: str, iscc_arg: str | None, publish_di
     iscc = base._find_iscc(iscc_arg or None)
     base._set_iss_version(iss, version)
     write_legacy_delete(publish_dir, legacy_from)
-    run([str(iscc), f"/DMyPublishDir={publish_dir.resolve()}", str(iss)], cwd=REPO)
+    run([str(iscc), "/DGoBuild", f"/DMyPublishDir={publish_dir.resolve()}", str(iss)], cwd=REPO)
     out = REPO / "artifacts" / "installer" / f"maccy-{version}-setup.exe"
     if not out.exists():
         raise FileNotFoundError(str(out))

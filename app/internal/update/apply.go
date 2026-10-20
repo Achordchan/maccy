@@ -158,19 +158,38 @@ func RunPlan(p Plan, h Hooks) error {
 	// What the last package left as its list of files: put back too if this
 	// one has to be undone.
 	prevList, prevListErr := os.ReadFile(p.InstalledManifest)
-	undo := func() {
+	// undo puts everything back and returns the first thing that could not be
+	// (nil: the old version is whole again). A file a scanner holds for a moment
+	// is tried a few times.
+	undo := func() error {
+		var first error
+		note := func(err error) {
+			if first == nil {
+				first = err
+			}
+		}
 		for i := len(rollback) - 1; i >= 0; i-- {
 			it := rollback[i]
 			var rerr error
-			if it.existed {
-				if rerr = os.MkdirAll(filepath.Dir(it.path), 0o755); rerr == nil {
-					rerr = copyFile(it.backup, it.path)
+			for try := 0; try < 4; try++ {
+				if try > 0 {
+					h.Sleep(300 * time.Millisecond)
 				}
-			} else if _, serr := os.Stat(it.path); serr == nil {
-				rerr = os.Remove(it.path)
+				rerr = nil
+				if it.existed {
+					if rerr = os.MkdirAll(filepath.Dir(it.path), 0o755); rerr == nil {
+						rerr = copyFile(it.backup, it.path)
+					}
+				} else if _, serr := os.Stat(it.path); serr == nil {
+					rerr = os.Remove(it.path)
+				}
+				if rerr == nil {
+					break
+				}
 			}
 			if rerr != nil {
 				lg.say("rollback failed: " + rerr.Error())
+				note(rerr)
 			}
 		}
 		if p.InstalledManifest != "" {
@@ -184,8 +203,10 @@ func RunPlan(p Plan, h Hooks) error {
 			}
 			if rerr != nil {
 				lg.say("rollback of the file list failed: " + rerr.Error())
+				note(rerr)
 			}
 		}
+		return first
 	}
 	err := applyFiles(p, h, lg, &rollback)
 	if err == nil {
@@ -195,18 +216,29 @@ func RunPlan(p Plan, h Hooks) error {
 			// it): that is a failed update, and the old files come back.
 			lg.say("failed to start the new program: " + lerr.Error())
 			err = lerr
-			undo()
-			h.Alert("Klip 更新失败", "新版本无法启动："+lerr.Error()+"\n\n已恢复旧版本。日志："+p.LogPath)
-			if exe := filepath.Join(p.InstallDir, ExeName); fileExists(exe) {
-				_ = h.Launch(exe)
+			if uerr := undo(); uerr != nil {
+				h.Alert("Klip 更新失败", "新版本无法启动："+lerr.Error()+"\n\n旧版本没能完全恢复（"+uerr.Error()+"），Klip 可能无法使用，请重新下载安装包安装。日志："+p.LogPath)
+				return err
 			}
+			if exe := filepath.Join(p.InstallDir, ExeName); fileExists(exe) {
+				if oerr := h.Launch(exe); oerr != nil {
+					lg.say("failed to start the old program: " + oerr.Error())
+					h.Alert("Klip 更新失败", "新版本无法启动："+lerr.Error()+"\n\n旧版本已恢复，但也没能启动："+oerr.Error()+"\n日志："+p.LogPath)
+					return err
+				}
+			}
+			h.Alert("Klip 更新失败", "新版本无法启动："+lerr.Error()+"\n\n已恢复旧版本。日志："+p.LogPath)
 			return err
 		}
 		return nil
 	}
 	lg.say("failed: " + err.Error())
-	undo()
-	h.Alert("Klip 更新失败", "轻量更新失败，已尝试回滚。日志："+p.LogPath)
+	if uerr := undo(); uerr != nil {
+		lg.say("rollback incomplete: " + uerr.Error())
+		h.Alert("Klip 更新失败", "轻量更新失败，回滚也没能完成（"+uerr.Error()+"），Klip 可能无法使用，请重新下载安装包安装。日志："+p.LogPath)
+		return err
+	}
+	h.Alert("Klip 更新失败", "轻量更新失败，已回滚。日志："+p.LogPath)
 	if exe := filepath.Join(p.InstallDir, ExeName); fileExists(exe) {
 		_ = h.Launch(exe)
 	}

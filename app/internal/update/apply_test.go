@@ -204,7 +204,7 @@ func TestApplyFailsBeforeTouchingAnything(t *testing.T) {
 	if _, serr := os.Stat(filepath.Join(r.install, "mygo-sqlite3.dll")); serr == nil {
 		t.Error("a file was copied")
 	}
-	if len(r.alerts) != 1 || !strings.Contains(r.alerts[0], "轻量更新失败，已尝试回滚") {
+	if len(r.alerts) != 1 || !strings.Contains(r.alerts[0], "轻量更新失败，已回滚") {
 		t.Errorf("alerts: %v", r.alerts)
 	}
 	// The old program is started again.
@@ -758,5 +758,21 @@ func TestUnwritableInstallFolderGoesToTheInstaller(t *testing.T) {
 	plan, _ := os.ReadFile(r.spawn[0][1])
 	if !strings.Contains(string(plan), "setup.exe") && !strings.Contains(string(plan), "installer") {
 		t.Fatalf("the plan should be the installer's, not the helper's file replacing: %s", plan)
+	}
+}
+
+func TestApplyTellsWhenTheOldVersionCouldNotBeRestored(t *testing.T) {
+	r := newRig(t, newPkg, nil)
+	h := r.hooks()
+	h.Sleep = func(time.Duration) {}
+	h.Launch = func(p string) error {
+		_ = os.RemoveAll(r.plan.BackupDir) // what the rollback needs is gone (a scanner took it)
+		return errors.New("blocked by the virus scanner")
+	}
+	if err := RunPlan(r.plan, h); err == nil {
+		t.Fatal("a program that cannot start is a failed update")
+	}
+	if len(r.alerts) != 1 || !strings.Contains(r.alerts[0], "没能完全恢复") || strings.Contains(r.alerts[0], "已恢复旧版本") {
+		t.Fatalf("an incomplete recovery must not be called a recovery: %v", r.alerts)
 	}
 }

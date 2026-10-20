@@ -51,12 +51,17 @@ Source: "{#MyPublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdi
 // (--legacy-from) without the files the new package has itself: other DLLs or a
 // folder of the user's own in the same place are not touched, nor is the user's
 // data (settings.json, history.json, images, files, blobs, sync, updates).
+// Only release_go.py passes /DGoBuild: the list belongs to the Go payload, and a
+// build of the C# program from the same script (whose files are the ones named)
+// must never run it.
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+#ifdef GoBuild
 #if FileExists(SourcePath + "legacy-delete.iss")
     #include "legacy-delete.iss"
+#endif
 #endif
     // the shortcuts that were called Maccy before the program was renamed Klip
     DeleteFile(ExpandConstant('{userprograms}\Maccy.lnk'));
