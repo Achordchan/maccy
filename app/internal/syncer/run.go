@@ -40,6 +40,9 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 	if err := s.checkBound(account); err != nil {
 		return RunResult{}, err
 	}
+	if err := s.bindFor(account); err != nil {
+		return RunResult{}, err
+	}
 	report(progress, "check_remote", "检查远端", 10)
 	manifest, err := s.remoteManifest(ctx)
 	if err != nil {
@@ -128,6 +131,9 @@ func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.Uplo
 	if err := s.checkBound(account); err != nil {
 		return nil, err
 	}
+	if err := s.bindFor(account); err != nil {
+		return nil, err
+	}
 	up, fp, err := s.uploadWithFingerprint(ctx, nil, "local_mutation", account)
 	if err != nil {
 		return nil, err
@@ -201,6 +207,9 @@ func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) er
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
 	if err := s.checkBound(dr.Account); err != nil {
+		return err
+	}
+	if err := s.bindFor(dr.Account); err != nil {
 		return err
 	}
 	if s.accountChanged(dr.Account) {

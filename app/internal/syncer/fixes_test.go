@@ -1449,3 +1449,66 @@ func TestUploadStopsWhenTheSessionChangesWhileReadingHistory(t *testing.T) {
 		t.Errorf("the server was contacted %d times for another account's history", n)
 	}
 }
+
+// A first sync that fails after applying the remote snapshot has still put
+// that account's data into the local history: the binding must be recorded
+// before the operation, so a later sign-in to another account cannot upload it.
+func TestFailedFirstSyncStillBindsTheAccount(t *testing.T) {
+	remote := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "account a data")
+	data := snapshotFile(t, []model.Item{remote})
+	tmp := filepath.Join(t.TempDir(), "remote.sqlite")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sha, err := snapshot.FileSHA256(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch {
+		case r.URL.Path == "/sync/manifest":
+			io.WriteString(w, `{"schema":1,"latest":{"version":"v1","updatedAt":"2026-05-30T12:00:00+00:00","snapshot":{"sha256":"`+sha+`","size":1}}}`)
+		case r.URL.Path == "/sync/snapshot" && r.Method == http.MethodGet:
+			w.Write(data)
+		case r.URL.Path == "/sync/snapshot" && r.Method == http.MethodPut:
+			w.WriteHeader(http.StatusInternalServerError)
+		case r.URL.Path == "/sync/blobs/check":
+			io.WriteString(w, `{"missing":[]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	s.AuthRefreshToken = model.Ptr("ra")
+	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	syn := New(Config{
+		Layout:   paths.Layout{Root: t.TempDir()},
+		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		History:  &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}},
+		Client:   syncclient.New(srv.URL),
+		BaseURL:  srv.URL,
+		Now:      time.Now,
+	})
+	if _, err := syn.Run(context.Background(), nil, "test"); err == nil {
+		t.Fatal("the failed upload stopped nothing")
+	}
+	if got := syn.boundAccount(); got != "account-a" {
+		t.Fatalf("bound account %q: the applied state was not bound", got)
+	}
+
+	// Another account signs in: no request goes out, the local state stays A's.
+	s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+	s.AuthRefreshToken = model.Ptr("rb")
+	before := requests.Load()
+	if _, err := syn.Run(context.Background(), nil, "test"); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("sync with another account's state: %v", err)
+	}
+	if n := requests.Load(); n != before {
+		t.Errorf("the server was contacted %d more times with the new account", n-before)
+	}
+}

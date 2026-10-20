@@ -319,6 +319,9 @@ func (s *Syncer) Upload(ctx context.Context, progress func(Progress), reason str
 	if err := s.checkBound(account); err != nil {
 		return nil, err
 	}
+	if err := s.bindFor(account); err != nil {
+		return nil, err
+	}
 	up, _, err := s.uploadWithFingerprint(ctx, progress, reason, account)
 	if err != nil {
 		return nil, err
@@ -537,6 +540,9 @@ func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), 
 	if err := s.checkBound(account); err != nil {
 		return DownloadResult{}, err
 	}
+	if err := s.bindFor(account); err != nil {
+		return DownloadResult{}, err
+	}
 	res, err := s.downloadAndApply(ctx, progress, reason, expectFingerprint, account)
 	if err != nil {
 		return DownloadResult{}, err
@@ -745,6 +751,9 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	defer s.workflow.Unlock()
 	account := s.currentAccount()
 	if err := s.checkBound(account); err != nil {
+		return err
+	}
+	if err := s.bindFor(account); err != nil {
 		return err
 	}
 	if err := s.mergeAndApply(ctx, basis, preMergeFingerprint, progress, reason, account); err != nil {
@@ -1213,6 +1222,16 @@ func (s *Syncer) bindAccount(account string) error {
 		return err
 	}
 	return os.WriteFile(s.accountFile(), []byte(account), 0o600)
+}
+
+// bindFor records the account when no state has been bound yet: the local
+// history is about to be used, so from now on it belongs to this account even
+// if the operation does not finish.
+func (s *Syncer) bindFor(account string) error {
+	if strings.TrimSpace(account) == "" || s.boundAccount() != "" {
+		return nil
+	}
+	return s.bindAccount(account)
 }
 
 // checkBound refuses to sync a state that belongs to another account. After a
