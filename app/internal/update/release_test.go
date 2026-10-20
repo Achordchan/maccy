@@ -186,7 +186,7 @@ func TestInstallerDeletesOnlyNamedLegacyFiles(t *testing.T) {
 	var b bytes.Buffer
 	zw := zip.NewWriter(&b)
 	w, _ := zw.Create("maccy-package.json")
-	_, _ = w.Write([]byte(`{"appId":"maccy","version":"1.0.10","runtime":"win-x64","files":[{"path":"maccy.exe"},{"path":"maccy.dll"},{"path":"runtimes/win-x64/native/x.dll"},{"path":"settings.json"}]}`))
+	_, _ = w.Write([]byte(`{"appId":"maccy","version":"1.0.10","runtime":"win-x64","files":[{"path":"maccy.exe"},{"path":"maccy.dll"},{"path":"runtimes/win-x64/native/x.dll"},{"path":"settings.json"},{"path":"../history.json"},{"path":"*.dll"},{"path":"{userdocs}/x.txt"},{"path":"C:/Windows/x.dll"},{"path":"a.dll."}]}`))
 	_ = zw.Close()
 	if err := os.WriteFile(old, b.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
@@ -209,7 +209,7 @@ release_go.write_legacy_delete(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4])
 			t.Errorf("missing %s in:\n%s", want, text)
 		}
 	}
-	for _, bad := range []string{"*.dll", "settings.json", "Name: \"{app}\\maccy.exe\""} {
+	for _, bad := range []string{"*.dll", "history.json", "{userdocs}", "C:", "a.dll.", "settings.json", "Name: \"{app}\\maccy.exe\""} {
 		if strings.Contains(text, bad) {
 			t.Errorf("%s must not be deleted:\n%s", bad, text)
 		}

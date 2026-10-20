@@ -154,10 +154,15 @@ def legacy_files_from(source: str, new_paths: set[str]) -> list[str]:
         if not pkg.get("url"):
             raise RuntimeError("the manifest names no package to take the old file list from")
         source = pkg["url"]
+        want_sha = str(pkg.get("sha256") or "").strip().lower()
+    else:
+        want_sha = ""
     if re.match(r"^https?://", source):
         print("downloading", source, flush=True)
         with urllib.request.urlopen(source, timeout=300) as r:
             blob = r.read()
+        if want_sha and hashlib.sha256(blob).hexdigest() != want_sha:
+            raise RuntimeError("the old package does not match the checksum the manifest gives for it")
         zf = zipfile.ZipFile(io.BytesIO(blob))
     else:
         zf = zipfile.ZipFile(source)
@@ -195,6 +200,19 @@ def create_package(publish_dir: Path, output_dir: Path, *, version: str, runtime
 # ---- the whole release ---------------------------------------------------
 
 
+_UNSAFE_PART = re.compile(r'[<>:"|?*{}\[\]]|~\d|[. ]$')
+
+
+def safe_legacy_path(rel: str) -> bool:
+    """A name that may become a deletion rule: relative, inside the folder, one
+    plain file, nothing the installer would expand (wildcards, {constants}) or
+    Windows would read as another file."""
+    if not rel or rel.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", rel):
+        return False
+    parts = rel.replace("\\", "/").split("/")
+    return all(p and p not in (".", "..") and not _UNSAFE_PART.search(p) for p in parts)
+
+
 def write_legacy_delete(publish_dir: Path, legacy_from: str | None, out: Path | None = None) -> Path:
     """installer/legacy-delete.iss: [InstallDelete] lines for exactly the files
     of the earlier program (the list of its package), none when it is not
@@ -204,6 +222,9 @@ def write_legacy_delete(publish_dir: Path, legacy_from: str | None, out: Path | 
     if legacy_from:
         new_paths = {f["path"] for f in package_file_list(publish_dir)}
         for rel in legacy_files_from(legacy_from, new_paths):
+            if not safe_legacy_path(rel):
+                print("not deleted by the installer (unsafe name): " + rel, flush=True)
+                continue
             lines.append('Type: files; Name: "{app}\\' + rel.replace("/", "\\").replace('"', '""') + '"')
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
