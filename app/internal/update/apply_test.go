@@ -305,9 +305,21 @@ func TestInstallerPlanStartsTheInstallerAfterExit(t *testing.T) {
 	}
 	r.launched = nil
 	h := r.hooks()
-	h.Launch = func(string) error { return errors.New("blocked") }
+	starts := 0
+	h.Launch = func(path string) error {
+		starts++
+		if path == p.Installer {
+			return errors.New("blocked")
+		}
+		r.launched = append(r.launched, path)
+		return nil
+	}
+	p.RestartExe = filepath.Join(r.install, "maccy.exe")
 	if err := RunPlan(p, h); err == nil || len(r.alerts) != 1 {
 		t.Errorf("a failing installer must be reported: %v %v", err, r.alerts)
+	}
+	if len(r.launched) != 1 || r.launched[0] != p.RestartExe {
+		t.Errorf("Klip has exited for the installer: it must be started again, got %v", r.launched)
 	}
 }
 

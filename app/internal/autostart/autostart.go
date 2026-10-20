@@ -121,11 +121,15 @@ func (d Desktop) SetEnabled(on bool) error {
 	return os.WriteFile(f, []byte(body), 0o644)
 }
 
-// desktopQuote quotes a path for the Exec key of a .desktop file.
+// desktopQuote quotes a path for the Exec key of a .desktop file. A value
+// there goes through two readings: first the escapes of the string value
+// (\\ for a backslash), then the quoting rules of Exec (inside quotes a
+// backslash makes the next character itself, and " ` $ \ must have one).
+// So the Exec-level backslashes are written doubled in the file.
 func desktopQuote(p string) string {
 	if !strings.ContainsAny(p, " \t\"'\\$`<>~|&;*?#()%") {
 		return p
 	}
-	r := strings.NewReplacer(`\`, `\\\\`, `"`, `\"`, "`", "\\`", `$`, `\$`, `%`, `%%`)
-	return `"` + r.Replace(p) + `"`
+	exec := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`", `$`, `\$`, `%`, `%%`).Replace(p)
+	return strings.ReplaceAll(`"`+exec+`"`, `\`, `\\`)
 }

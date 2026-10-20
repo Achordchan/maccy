@@ -24,8 +24,11 @@ type Plan struct {
 	// InstalledManifest remembers what the last package put there, so the
 	// next one can remove the files it no longer has.
 	InstalledManifest string `json:"installedManifest"`
-	BackupDir         string `json:"backupDir"`
-	LogPath           string `json:"logPath"`
+	// RestartExe is the program to start again when the installer cannot be
+	// started (only used by an installer plan).
+	RestartExe string `json:"restartExe,omitempty"`
+	BackupDir  string `json:"backupDir"`
+	LogPath    string `json:"logPath"`
 	// Installer, when set, is a full installer to start instead of copying
 	// files.
 	Installer string `json:"installer,omitempty"`
@@ -132,6 +135,10 @@ func RunPlan(p Plan, h Hooks) error {
 		if err := h.Launch(p.Installer); err != nil {
 			lg.say("failed: " + err.Error())
 			h.Alert("Klip 更新失败", "无法启动安装程序："+err.Error())
+			// Klip has already exited for this: start it again.
+			if p.RestartExe != "" && fileExists(p.RestartExe) {
+				_ = h.Launch(p.RestartExe)
+			}
 			return err
 		}
 		return nil

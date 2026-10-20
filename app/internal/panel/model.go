@@ -86,6 +86,7 @@ func (m *Model) Reset() {
 	m.query, m.editID = "", ""
 	m.dirty.Store(true)
 	m.rows, m.chosen = nil, 0 // the first row, not the one that was chosen before
+	m.list.ScrollIntoView(0)  // and the list shows it, whatever it was scrolled to
 	m.input.Focus()
 }
 

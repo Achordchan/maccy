@@ -337,7 +337,7 @@ func (c *Coordinator) startPackage(p *Prepared) error {
 }
 
 func (c *Coordinator) startInstaller(path, version string) error {
-	return c.launchPlan(Plan{PID: c.pid(), Installer: path, LogPath: filepath.Join(c.Root, "last_light_update.log")}, version)
+	return c.launchPlan(Plan{PID: c.pid(), Installer: path, RestartExe: c.Exe, LogPath: filepath.Join(c.Root, "last_light_update.log")}, version)
 }
 
 func (c *Coordinator) launchPlan(plan Plan, version string) error {

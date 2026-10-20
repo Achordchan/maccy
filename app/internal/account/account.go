@@ -145,6 +145,10 @@ func (s *Service) SignOut() Result {
 func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 	// One refresh at a time, the background sessions included; what the
 	// other one stored is looked at after the wait.
+	// The refresh lock is held while the server is asked, so the asking is
+	// bounded: a server that never answers must not hold up every other renewal.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	defer syncclient.LockRefresh()()
 	cur := s.Store.Get()
 	access := strings.TrimSpace(model.Str(cur.AuthAccessToken))
@@ -159,6 +163,11 @@ func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 			return "", err
 		}
 		if strings.TrimSpace(email) != "" {
+			// The answer may have taken a while: if the user has signed out or
+			// in as somebody else since, the token is not theirs to be used.
+			if strings.TrimSpace(model.Str(s.Store.Get().AuthAccessToken)) != access {
+				return "", nil
+			}
 			return access, nil
 		}
 		s.clearSession(model.Str(cur.AuthRefreshToken), access)
@@ -379,8 +388,13 @@ func None(status string) Subscription {
 
 // Subscription asks the server (RefreshSubscriptionAsync).
 func (s *Service) Subscription(ctx context.Context) Subscription {
+	ctx, cancel := context.WithTimeout(ctx, passwordTimeout)
+	defer cancel()
 	token, err := s.EnsureAccessToken(ctx)
-	if err != nil || token == "" {
+	if err != nil {
+		return None("查询失败") // no answer: the login is still there
+	}
+	if token == "" {
 		return None("未登录")
 	}
 	st, err := s.Client.SubscriptionStatus(ctx, token)
@@ -433,8 +447,13 @@ func (s *Service) Redeem(ctx context.Context, code string) Result {
 	if code == "" {
 		return fail("请输入卡密")
 	}
+	ctx, cancel := context.WithTimeout(ctx, passwordTimeout)
+	defer cancel()
 	token, err := s.EnsureAccessToken(ctx)
-	if err != nil || token == "" {
+	if err != nil {
+		return fail("暂时无法连接服务器，请稍后再试")
+	}
+	if token == "" {
 		return fail("请先登录")
 	}
 	res, err := s.Client.RedeemCard(ctx, token, code)

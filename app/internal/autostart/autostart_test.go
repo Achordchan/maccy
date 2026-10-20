@@ -103,3 +103,16 @@ func TestDesktopQuoteEscapesPercent(t *testing.T) {
 		t.Fatalf("a percent is a field code in an Exec line: %q", got)
 	}
 }
+
+func TestDesktopQuoteSurvivesBothReadings(t *testing.T) {
+	for in, want := range map[string]string{
+		"/opt/$apps/klip": `"/opt/\\$apps/klip"`,
+		"/opt/a`b/klip":   "\"/opt/a\\\\`b/klip\"",
+		"/opt/my apps/k":  `"/opt/my apps/k"`,
+		`/opt/a"b/klip`:   `"/opt/a\\"b/klip"`,
+	} {
+		if got := desktopQuote(in); got != want {
+			t.Errorf("desktopQuote(%q) = %s, want %s", in, got, want)
+		}
+	}
+}

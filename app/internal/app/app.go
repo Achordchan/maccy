@@ -86,6 +86,8 @@ type App struct {
 	started     bool
 	ctx         context.Context    // lives as long as the program, once started
 	syncing     atomic.Int32       // syncs running, background or asked for
+	acctGen     atomic.Int64       // moves when the account changes
+	runGen      atomic.Int64       // the account generation the running sync started under
 	retrying    atomic.Bool        // the loop that tries the first sync again is running
 	loginWanted atomic.Bool        // a sync for a new sign-in is owed (one was running when it was asked for)
 	initialOK   atomic.Bool        // a background sync has gone through
@@ -160,6 +162,7 @@ func New(cfg Config) (*App, error) {
 	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
 		a.syncing.Add(1)
 		defer a.syncing.Add(-1)
+		a.runGen.Store(a.acctGen.Load()) // which account this sync is for
 		return run(ctx, reason, manual)
 	}
 
@@ -395,6 +398,7 @@ func (a *App) SyncNow() {
 // AccountChanged is for the preferences window: after a sign-in the history
 // is synchronized at once, as the C# client does.
 func (a *App) AccountChanged(signedIn bool) {
+	a.acctGen.Add(1)
 	a.mu.Lock()
 	ctx, started := a.ctx, a.started
 	a.mu.Unlock()
@@ -427,10 +431,13 @@ func (a *App) setStatus(s string) {
 }
 
 func (a *App) syncDone(reason string, manual bool, err error) {
-	if err == nil && !manual {
+	// A sync that began before the account changed says nothing about the new
+	// account: it neither counts as its first sync nor settles what it is owed.
+	current := a.runGen.Load() == a.acctGen.Load()
+	if err == nil && !manual && current {
 		a.initialOK.Store(true)
 	}
-	if reason == "login" {
+	if reason == "login" && current {
 		a.loginWanted.Store(false)
 	} else if a.loginWanted.Load() {
 		// The sync for the new sign-in was asked for while this one ran and was
