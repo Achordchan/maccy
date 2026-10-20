@@ -16,6 +16,7 @@ import (
 	"log"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -65,7 +66,7 @@ type klip struct {
 
 	// poller bookkeeping, read by the footer
 	reads     int // clipboard reads made
-	skipped   int // polls that the change counter spared
+	skipped   atomic.Int64 // polls that the change counter spared; counted off the UI thread, so no redraw per poll
 	captures  int
 	lastFmts  string
 	lastHash  string
@@ -185,7 +186,7 @@ func (k *klip) statsLine() string {
 		avg = k.viewTotal / time.Duration(k.frames)
 	}
 	return fmt.Sprintf("items %d  shown %d | polls: reads %d spared %d captured %d | view avg %v max %v (%d frames) | heap %d MB sys %d MB",
-		len(k.items), len(k.results), k.reads, k.skipped, k.captures,
+		len(k.items), len(k.results), k.reads, k.skipped.Load(), k.captures,
 		avg.Round(time.Microsecond), k.viewMax.Round(time.Microsecond), k.frames,
 		k.mem.HeapAlloc>>20, k.mem.Sys>>20)
 }
@@ -200,6 +201,7 @@ func oneLine(s string) string {
 
 func (k *klip) filter() {
 	q := strings.ToLower(strings.TrimSpace(k.query))
+	clear(k.results) // drop the references the backing array still holds
 	k.results = k.results[:0]
 	for _, it := range k.items {
 		if q == "" || strings.Contains(strings.ToLower(it.text), q) {
@@ -290,7 +292,7 @@ func (k *klip) poll() {
 		if k.seqActive {
 			s := changeSeq()
 			if s == k.seqLast {
-				k.panel.Update(func() { k.skipped++ })
+				k.skipped.Add(1)
 				continue
 			}
 			log.Printf("change counter %d -> %d", k.seqLast, s)
