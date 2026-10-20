@@ -27,6 +27,11 @@ var ErrUnauthorized = errors.New("sync events unauthorized")
 // with ":" are comments, "event:" names the event, "data:" lines are joined
 // with newlines, and an empty line sends the event.
 func (c *Client) Listen(ctx context.Context, accessToken string, onEvent func(Event)) error {
+	return c.listen(ctx, accessToken, nil, onEvent)
+}
+
+// listen is Listen that also says when the stream is open (onOpen may be nil).
+func (c *Client) listen(ctx context.Context, accessToken string, onOpen func(), onEvent func(Event)) error {
 	if c.baseURL == "" {
 		return ErrNoBaseURL
 	}
@@ -46,6 +51,9 @@ func (c *Client) Listen(ctx context.Context, accessToken string, onEvent func(Ev
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return errors.New("sync events failed: " + http.StatusText(resp.StatusCode))
+	}
+	if onOpen != nil {
+		onOpen()
 	}
 	return parseEvents(resp.Body, onEvent)
 }
@@ -137,6 +145,17 @@ func (c *Client) Watch(ctx context.Context, ts TokenSource, opts WatchOptions, o
 		}()
 	}
 
+	// An upload made while the stream was down is never announced on the new
+	// one: when it is open again after having been open, the other devices'
+	// changes are asked for as if an event had come.
+	opened := false
+	onOpen := func() {
+		if opened {
+			dispatch(Event{Name: "sync-updated"})
+		}
+		opened = true
+	}
+
 	delay := opts.InitialDelay
 	wait := func(d time.Duration) bool {
 		select {
@@ -154,7 +173,7 @@ func (c *Client) Watch(ctx context.Context, ts TokenSource, opts WatchOptions, o
 			}
 			continue
 		}
-		err = c.Listen(ctx, token, dispatch)
+		err = c.listen(ctx, token, onOpen, dispatch)
 		switch {
 		case ctx.Err() != nil:
 			return
