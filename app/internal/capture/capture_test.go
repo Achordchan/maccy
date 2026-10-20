@@ -798,3 +798,19 @@ func TestRetryIsDroppedWhenTheClipboardMovedOn(t *testing.T) {
 		t.Fatalf("%d retries of a change that is no longer the newest", n.Load())
 	}
 }
+
+func TestRetryIsDroppedWithoutCounterWhenContentMoved(t *testing.T) {
+	r := newRig(t)
+	var tok atomic.Value
+	tok.Store("a")
+	r.s.Token = func() string { return tok.Load().(string) }
+	var n atomic.Int32
+	r.s.Retry = func() { n.Add(1) }
+	r.clip.formats = nil
+	r.s.Capture(context.Background())
+	tok.Store("b") // new content before the retry
+	time.Sleep(500 * time.Millisecond)
+	if n.Load() != 0 {
+		t.Fatalf("%d retries of content that was replaced", n.Load())
+	}
+}

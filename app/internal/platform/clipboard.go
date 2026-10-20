@@ -91,10 +91,8 @@ func ContentFingerprint() string {
 		h.Write([]byte(strings.Join(files, "\x00")))
 	}
 	h.Write([]byte{1})
-	// Screenshot tools name their picture format in odd ways, and Capture
-	// tries a picture whenever there is no text or file, so do the same.
-	if strings.TrimSpace(text) == "" && len(files) == 0 {
-		h.Write(c.ReadImage())
-	}
+	// The picture always counts: which kinds are captured is a setting that
+	// may change, and screenshot tools name their format in odd ways.
+	h.Write(c.ReadImage())
 	return hex.EncodeToString(h.Sum(nil))
 }

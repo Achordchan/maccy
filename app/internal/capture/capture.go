@@ -75,6 +75,10 @@ type Service struct {
 	// none); may be nil. With it, the change made by Apply is recognised by
 	// its number, however long the poll takes to notice it.
 	Seq func() int64
+	// Token stands in for Seq on a platform without a counter: a string that
+	// changes with the clipboard content (platform.ContentFingerprint); may be
+	// nil.
+	Token func() string
 	// Retry is called when a change was not looked at because an Apply was
 	// running; it should capture again (may be nil).
 	Retry func()
@@ -731,14 +735,24 @@ func (s *Service) retryLater() {
 	if s.Retry == nil || s.tries.Add(1) > 5 {
 		return
 	}
-	at := int64(-1)
-	if s.Seq != nil {
-		at = s.Seq()
-	}
+	// Which change this is a retry of: the counter, or without one the
+	// content token.
+	moved := func() func() bool {
+		if s.Seq != nil {
+			if at := s.Seq(); at >= 0 {
+				return func() bool { return s.Seq() != at }
+			}
+		}
+		if s.Token != nil {
+			at := s.Token()
+			return func() bool { return s.Token() != at }
+		}
+		return func() bool { return false }
+	}()
 	time.AfterFunc(300*time.Millisecond, func() {
 		// A newer change is the watcher's to take; looking at it here too
 		// would capture it twice.
-		if at >= 0 && s.Seq() != at {
+		if moved() {
 			return
 		}
 		s.Retry()
