@@ -5,7 +5,7 @@
 // name: put "127.0.0.1 gitee.com" in the hosts file, trust the certificate it
 // writes, and run it as administrator (it listens on port 443).
 //
-//	klip-testbed -dir artifacts/testbed -cert-dir artifacts/testbed/cert
+//	klip-testbed -dir artifacts/testbed
 //
 // The folder holds manifest.json and the files it names (the installer and
 // the zip). See docs/upgrade-verification-1.0.11.md.
@@ -36,11 +36,19 @@ import (
 func main() {
 	dir := flag.String("dir", "artifacts/testbed", "folder with manifest.json and the files it names")
 	addr := flag.String("addr", "127.0.0.1:443", "address to listen on (the machine itself; the hosts file points gitee.com here)")
-	certDir := flag.String("cert-dir", "", "where to keep the certificate (default: <dir>/cert)")
+	certDir := flag.String("cert-dir", "", "where to keep the certificate and its key (default: a private folder in the user profile)")
 	plain := flag.Bool("http", false, "serve plain HTTP (for tests of the testbed itself)")
 	flag.Parse()
 	if *certDir == "" {
-		*certDir = filepath.Join(*dir, "cert")
+		// The key of a certificate that people are told to trust must not sit in
+		// a folder others can read: the profile of the user is private, a
+		// checkout often is not (and a Windows file takes the access rights of
+		// its folder, whatever mode it is created with).
+		if cfg, err := os.UserConfigDir(); err == nil {
+			*certDir = filepath.Join(cfg, "klip-testbed")
+		} else {
+			*certDir = filepath.Join(*dir, "cert")
+		}
 	}
 
 	h := Handler(*dir, log.Printf)
@@ -126,6 +134,8 @@ func LoadOrCreateCert(dir, host string) (tls.Certificate, string, error) {
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().AddDate(0, 0, 30),
 		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true, IsCA: true, DNSNames: []string{host}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+		// Trusted as a root, it may sign for this name only.
+		PermittedDNSDomainsCritical: true, PermittedDNSDomains: []string{host},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
 	if err != nil {

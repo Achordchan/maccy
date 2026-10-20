@@ -412,3 +412,23 @@ func TestMigratedLoginSignedOutThenAnotherAccountDoesNotInheritTheSyncState(t *t
 		t.Fatal("the new account inherited the checkpoints of the old one")
 	}
 }
+
+func TestSyncAccountFileThatCannotBeWrittenDoesNotKeepTheOldName(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := newService(t, "http://127.0.0.1:1")
+	s.AccountFile = filepath.Join(dir, "sync", "account.txt")
+	s.setSyncAccount("a@example.com")
+	if s.syncAccount() != "a@example.com" {
+		t.Fatal("not remembered")
+	}
+	_ = os.Chmod(s.AccountFile, 0o400) // the file can no longer be written
+	if f, err := os.OpenFile(s.AccountFile, os.O_WRONLY, 0); err == nil {
+		f.Close()
+		t.Skip("writable anyway (root?)")
+	}
+	s.setSyncAccount("b@example.com")
+	s2 := &Service{AccountFile: s.AccountFile} // a later run
+	if got := s2.syncAccount(); got == "a@example.com" {
+		t.Fatalf("a later run would read %q as the account of the checkpoints", got)
+	}
+}

@@ -130,3 +130,14 @@ func expiredPair(t *testing.T, dir string) []byte {
 	_ = os.WriteFile(filepath.Join(dir, "key.pem"), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600)
 	return der
 }
+
+func TestCertificateMaySignOnlyForTheTestedHost(t *testing.T) {
+	c, _, err := LoadOrCreateCert(t.TempDir(), "gitee.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := x509.ParseCertificate(c.Certificate[0])
+	if len(leaf.PermittedDNSDomains) != 1 || leaf.PermittedDNSDomains[0] != "gitee.com" || !leaf.PermittedDNSDomainsCritical {
+		t.Fatalf("a trusted root with no limit on the names it may sign for: %v", leaf.PermittedDNSDomains)
+	}
+}

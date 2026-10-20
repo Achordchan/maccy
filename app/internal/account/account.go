@@ -105,6 +105,9 @@ func (s *Service) afterChange() {
 }
 
 func (s *Service) syncAccount() string {
+	if s.lastAccount != "" {
+		return s.lastAccount // set in this run: newer than anything on disk
+	}
 	if s.AccountFile != "" {
 		if b, err := os.ReadFile(s.AccountFile); err == nil {
 			return strings.TrimSpace(string(b))
@@ -117,7 +120,11 @@ func (s *Service) setSyncAccount(email string) {
 	s.lastAccount = email
 	if s.AccountFile != "" {
 		_ = os.MkdirAll(filepath.Dir(s.AccountFile), 0o700)
-		_ = os.WriteFile(s.AccountFile, []byte(email), 0o600)
+		if err := os.WriteFile(s.AccountFile, []byte(email), 0o600); err != nil {
+			// A file that could not be updated must not be left saying the old
+			// account: that would outlive this run and name the wrong one.
+			_ = os.Remove(s.AccountFile)
+		}
 	}
 }
 
