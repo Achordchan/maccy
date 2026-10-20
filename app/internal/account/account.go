@@ -194,11 +194,13 @@ func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 	// The user may have signed out, or in as somebody else, while the request
 	// was on its way: the answer belongs to the session that asked.
 	same := false
+	var issued string // the token of the session that asked, as it was stored
 	_ = s.Store.Update(func(m *model.Settings) {
 		if strings.TrimSpace(model.Str(m.AuthRefreshToken)) != refresh {
 			return
 		}
 		same = true
+		issued = t.AccessToken
 		m.AuthAccessToken = &t.AccessToken
 		if strings.TrimSpace(t.RefreshToken) != "" {
 			m.AuthRefreshToken = &t.RefreshToken
@@ -215,7 +217,7 @@ func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 	if !same {
 		return "", nil
 	}
-	return model.Str(s.Store.Get().AuthAccessToken), nil
+	return issued, nil // not read again: the user may be somebody else by now
 }
 
 // refused says whether an HTTP status is the server turning the token down

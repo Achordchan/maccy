@@ -79,19 +79,20 @@ type App struct {
 	Prefs     *prefs.Controller
 	Updates   *update.Coordinator
 
-	mu          sync.Mutex
-	status      string
-	cancel      context.CancelFunc
-	done        sync.WaitGroup
-	started     bool
-	ctx         context.Context    // lives as long as the program, once started
-	syncing     atomic.Int32       // syncs running, background or asked for
-	acctGen     atomic.Int64       // moves when the account changes
-	runGen      atomic.Int64       // the account generation the running sync started under
-	retrying    atomic.Bool        // the loop that tries the first sync again is running
-	loginWanted atomic.Bool        // a sync for a new sign-in is owed (one was running when it was asked for)
-	initialOK   atomic.Bool        // a background sync has gone through
-	stopWatch   context.CancelFunc // ends the event stream of the current account
+	mu                sync.Mutex
+	status            string
+	cancel            context.CancelFunc
+	done              sync.WaitGroup
+	started           bool
+	ctx               context.Context    // lives as long as the program, once started
+	syncing           atomic.Int32       // syncs running, background or asked for
+	changedDuringSync atomic.Bool        // the history changed while a sync ran
+	acctGen           atomic.Int64       // moves when the account changes
+	runGen            atomic.Int64       // the account generation the running sync started under
+	retrying          atomic.Bool        // the loop that tries the first sync again is running
+	loginWanted       atomic.Bool        // a sync for a new sign-in is owed (one was running when it was asked for)
+	initialOK         atomic.Bool        // a background sync has gone through
+	stopWatch         context.CancelFunc // ends the event stream of the current account
 }
 
 // New reads the settings and the history and connects the parts. A settings
@@ -216,7 +217,15 @@ func (a *App) Start() {
 	a.mu.Unlock()
 
 	// A change of the history is a reason to sync, a moment later.
-	a.History.OnChanged(func() { a.Auto.OnHistoryChanged(ctx) })
+	a.History.OnChanged(func() {
+		if a.syncing.Load() > 0 {
+			// A sync is running and has taken its picture of the history
+			// already; Auto turns this away, so it is kept for after.
+			a.changedDuringSync.Store(true)
+			return
+		}
+		a.Auto.OnHistoryChanged(ctx)
+	})
 
 	// A capture that gave way to an Apply, or could not read a busy
 	// clipboard, comes back here.
@@ -431,6 +440,11 @@ func (a *App) setStatus(s string) {
 }
 
 func (a *App) syncDone(reason string, manual bool, err error) {
+	if a.changedDuringSync.Swap(false) && err == nil {
+		// Changes that came in while it ran were not part of it: sync again
+		// when it is over (the runner is busy until this returns).
+		time.AfterFunc(150*time.Millisecond, func() { a.Auto.OnHistoryChanged(a.lifetime()) })
+	}
 	// A sync that began before the account changed says nothing about the new
 	// account: it neither counts as its first sync nor settles what it is owed.
 	current := a.runGen.Load() == a.acctGen.Load()

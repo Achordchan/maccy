@@ -419,3 +419,41 @@ func TestLoginSyncAskedForDuringASyncIsNotLost(t *testing.T) {
 		return len(reasons) >= 2 && reasons[len(reasons)-1] == "login"
 	})
 }
+
+func TestChangeDuringASyncIsSyncedAfterIt(t *testing.T) {
+	a, err := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()}, Clipboard: &fakeClip{}, ChangeSeq: (&fakeClip{}).seq.Load,
+		Interval: 5 * time.Millisecond, BaseURL: "http://127.0.0.1:1", Logf: t.Logf,
+		StartupRetry: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Auto.Debounce = 20 * time.Millisecond
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var reasons []string
+	a.Auto.CanSync = func() bool { return true }
+	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
+		a.syncing.Add(1) // as the Run that New installs does
+		defer a.syncing.Add(-1)
+		mu.Lock()
+		reasons = append(reasons, reason)
+		first := len(reasons) == 1
+		mu.Unlock()
+		if first {
+			<-release
+		}
+		return nil
+	}
+	a.Start()
+	defer a.Stop()
+	waitFor(t, "first sync running", func() bool { mu.Lock(); defer mu.Unlock(); return len(reasons) == 1 })
+	a.History.Add(model.Item{ID: "x", Kind: model.KindText, Text: model.Ptr("new while syncing"), CopyCount: 1})
+	close(release)
+	waitFor(t, "a follow-up sync for the change", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(reasons) >= 2
+	})
+}

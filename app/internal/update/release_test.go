@@ -125,16 +125,17 @@ func TestReleaseToolManifestIsReadByTheClient(t *testing.T) {
 		t.Skip("no manifest in the repo")
 	}
 	write(t, manifest, string(orig))
+	// The folder of the tool goes in as an argument, not as text in the script.
 	script := `
 import sys, json
 from pathlib import Path
-sys.path.insert(0, ` + "'" + filepath.Dir(tool) + "'" + `)
+sys.path.insert(0, sys.argv[2])
 import release
 release._update_manifest(Path(sys.argv[1]), version="1.0.11", mandatory=False, notes="line one\nline two",
     base_url="https://gitee.com/Achordchan/maccy/releases/download", sha256="AB"*32, size=1234,
     package_sha256="CD"*32, package_size=5678, package_runtime="win-x64")
 `
-	if res, err := exec.Command("python3", "-c", script, manifest).CombinedOutput(); err != nil {
+	if res, err := exec.Command("python3", "-c", script, manifest, filepath.Dir(tool)).CombinedOutput(); err != nil {
 		t.Fatalf("%v\n%s", err, res)
 	}
 	data, _ := os.ReadFile(manifest)

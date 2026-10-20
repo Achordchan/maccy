@@ -144,6 +144,9 @@ type thumbCache struct {
 const (
 	thumbLimit = 64
 	thumbSize  = 72 // twice the 36 points it is drawn at, for sharp screens
+	// thumbMaxPixels is the largest picture that is decoded for a thumbnail
+	// (an 8K screen is 33 million): decoding costs four bytes a pixel.
+	thumbMaxPixels = 40_000_000
 )
 
 // get returns the thumbnail, or nil while it is being made (the window is
@@ -191,6 +194,10 @@ func (t *thumbCache) make(path string, redraw func()) {
 func smallBitmap(path string) *ui.Bitmap {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		return nil
+	}
+	// A small file can hold a huge picture; look at its size before making it.
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil && cfg.Width*cfg.Height > thumbMaxPixels {
 		return nil
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
