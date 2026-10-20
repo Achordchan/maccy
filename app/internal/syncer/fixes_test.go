@@ -1290,3 +1290,65 @@ func TestDownloadDiscardsItemsWhenTheSessionChangesAtCommit(t *testing.T) {
 		t.Errorf("the old account's items stayed in the new session: %v", h.items)
 	}
 }
+
+// The local sync state belongs to an account: after a sign-in to another one
+// nothing is sent until the app clears that state, so a snapshot of the old
+// account can never be published under the new one.
+func TestSyncRefusesAnotherAccountsState(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		switch {
+		case r.URL.Path == "/sync/manifest":
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPut && r.URL.Path == "/sync/snapshot":
+			io.WriteString(w, `{"version":"v1","sha256":"sha-1","size":1}`)
+		case r.URL.Path == "/sync/blobs/check":
+			io.WriteString(w, `{"missing":[]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	s := model.DefaultSettings()
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	s.AuthRefreshToken = model.Ptr("ra")
+	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	syn := New(Config{
+		Layout:   l,
+		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		History:  &unitHistory{items: []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "account a")}},
+		Client:   syncclient.New(srv.URL),
+		BaseURL:  srv.URL,
+		Now:      time.Now,
+	})
+	if err := syn.bindAccount("account-a"); err != nil {
+		t.Fatal(err)
+	}
+	// The user signs into another account.
+	s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+	s.AuthRefreshToken = model.Ptr("rb")
+
+	if _, err := syn.Run(context.Background(), nil, "test"); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("sync with another account's state: %v", err)
+	}
+	if _, err := syn.Upload(context.Background(), nil, "test"); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("upload with another account's state: %v", err)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("the server was contacted %d times with the new account's token", n)
+	}
+
+	// The app clears the state on sign-in: sync works again.
+	if err := os.Remove(filepath.Join(l.Root, "sync", "account")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syn.Run(context.Background(), nil, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := syn.boundAccount(); got != "account-b" {
+		t.Errorf("bound account %q", got)
+	}
+}

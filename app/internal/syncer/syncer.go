@@ -306,8 +306,16 @@ func nonEmpty(v string) *string {
 func (s *Syncer) Upload(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, error) {
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
-	up, _, err := s.uploadWithFingerprint(ctx, progress, reason, s.currentAccount())
-	return up, err
+	account := s.currentAccount()
+	if err := s.checkBound(account); err != nil {
+		return nil, err
+	}
+	up, _, err := s.uploadWithFingerprint(ctx, progress, reason, account)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.bindAccount(account)
+	return up, nil
 }
 
 // uploadWithFingerprint is Upload, and also says which history went into the
@@ -495,7 +503,16 @@ type DownloadResult struct {
 func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint string) (DownloadResult, error) {
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
-	return s.downloadAndApply(ctx, progress, reason, expectFingerprint, s.currentAccount())
+	account := s.currentAccount()
+	if err := s.checkBound(account); err != nil {
+		return DownloadResult{}, err
+	}
+	res, err := s.downloadAndApply(ctx, progress, reason, expectFingerprint, account)
+	if err != nil {
+		return DownloadResult{}, err
+	}
+	_ = s.bindAccount(account)
+	return res, nil
 }
 
 func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint, account string) (DownloadResult, error) {
@@ -685,7 +702,15 @@ func (s *Syncer) ensureBlob(ctx context.Context, token *string, account string) 
 func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMergeFingerprint string, progress func(Progress), reason string) error {
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
-	return s.mergeAndApply(ctx, basis, preMergeFingerprint, progress, reason, s.currentAccount())
+	account := s.currentAccount()
+	if err := s.checkBound(account); err != nil {
+		return err
+	}
+	if err := s.mergeAndApply(ctx, basis, preMergeFingerprint, progress, reason, account); err != nil {
+		return err
+	}
+	_ = s.bindAccount(account)
+	return nil
 }
 
 func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMergeFingerprint string, progress func(Progress), reason, account string) error {
@@ -1106,4 +1131,49 @@ func (s *Syncer) timing(op, stage string, started time.Time, details string) {
 	}
 	defer f.Close()
 	fmt.Fprintln(f, line)
+}
+
+// ---- account binding
+
+// accountFile is where the sync state's account is kept, next to the backups.
+// It is not part of settings.json: the C# client has no such property, and a
+// Klip 1.0.10 device must keep reading the file.
+func (s *Syncer) accountFile() string {
+	return filepath.Join(s.cfg.Layout.Root, "sync", "account")
+}
+
+// boundAccount is the account the local sync state belongs to, "" when no
+// sync has recorded one yet.
+func (s *Syncer) boundAccount() string {
+	b, err := os.ReadFile(s.accountFile())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// bindAccount records the account of the state that was just saved.
+func (s *Syncer) bindAccount(account string) error {
+	if strings.TrimSpace(account) == "" {
+		return nil
+	}
+	dir := filepath.Join(s.cfg.Layout.Root, "sync")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(s.accountFile(), []byte(account), 0o600)
+}
+
+// checkBound refuses to sync a state that belongs to another account. After a
+// sign-out or an account change the app has to clear the sync state (and this
+// file) before the new account syncs; until then nothing is uploaded with the
+// new account's credentials.
+func (s *Syncer) checkBound(account string) error {
+	if strings.TrimSpace(account) == "" {
+		return nil
+	}
+	if bound := s.boundAccount(); bound != "" && !strings.EqualFold(bound, account) {
+		return ErrSessionChanged
+	}
+	return nil
 }

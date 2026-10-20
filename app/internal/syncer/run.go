@@ -37,6 +37,9 @@ func (s *Syncer) Run(ctx context.Context, progress func(Progress), reason string
 
 func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string) (RunResult, error) {
 	account := s.currentAccount()
+	if err := s.checkBound(account); err != nil {
+		return RunResult{}, err
+	}
 	report(progress, "check_remote", "检查远端", 10)
 	manifest, err := s.remoteManifest(ctx)
 	if err != nil {
@@ -104,6 +107,9 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 			return res, err
 		}
 	}
+	if err := s.bindAccount(account); err != nil {
+		return res, err
+	}
 	return res, nil
 }
 
@@ -113,11 +119,17 @@ func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.Uplo
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
 	account := s.currentAccount()
+	if err := s.checkBound(account); err != nil {
+		return nil, err
+	}
 	up, fp, err := s.uploadWithFingerprint(ctx, nil, "local_mutation", account)
 	if err != nil {
 		return nil, err
 	}
 	if err := s.persistAfterUpload(ctx, up, nil, fp, account); err != nil {
+		return nil, err
+	}
+	if err := s.bindAccount(account); err != nil {
 		return nil, err
 	}
 	return up, nil
@@ -182,6 +194,9 @@ func uploadIsInManifest(up *syncclient.UploadResult, m ManifestInfo) bool {
 func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) error {
 	s.workflow.Lock()
 	defer s.workflow.Unlock()
+	if err := s.checkBound(dr.Account); err != nil {
+		return err
+	}
 	if s.accountChanged(dr.Account) {
 		// The restore belongs to another session: the current one must not
 		// record its snapshot as its own.
@@ -195,6 +210,7 @@ func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) er
 		return ErrSessionChanged
 	}
 	s.PersistSyncState(dr.Fingerprint, snapshotState(dr, m, s.cfg.Now().UTC()))
+	_ = s.bindAccount(dr.Account)
 	return nil
 }
 
