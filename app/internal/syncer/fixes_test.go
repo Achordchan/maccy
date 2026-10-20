@@ -1512,3 +1512,49 @@ func TestFailedFirstSyncStillBindsTheAccount(t *testing.T) {
 		t.Errorf("the server was contacted %d more times with the new account", n-before)
 	}
 }
+
+// A session that only has a refresh token learns its account from the first
+// refreshed token; the binding must be recorded then, before any data is
+// applied.
+func TestRefreshOnlySessionBindsTheAccount(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch r.URL.Path {
+		case "/auth/refresh":
+			io.WriteString(w, `{"accessToken":"`+testJWT("account-a")+`","refreshToken":"ra2","accessTokenExpiresAt":"2030-01-01T00:00:00+00:00"}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	s := model.DefaultSettings()
+	s.AuthRefreshToken = model.Ptr("ra")
+	s.AuthExpiresAtUnixMs = 0
+	syn := New(Config{
+		Layout:   paths.Layout{Root: t.TempDir()},
+		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		History:  &unitHistory{},
+		Client:   syncclient.New(srv.URL),
+		BaseURL:  srv.URL,
+		Now:      time.Now,
+	})
+	if _, err := syn.Run(context.Background(), nil, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := syn.boundAccount(); got != "account-a" {
+		t.Fatalf("bound account %q: a refresh-only session was not bound", got)
+	}
+
+	s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+	s.AuthRefreshToken = model.Ptr("rb")
+	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+	before := requests.Load()
+	if _, err := syn.Run(context.Background(), nil, "test"); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("sync after switching accounts: %v", err)
+	}
+	if n := requests.Load(); n != before {
+		t.Errorf("the server was contacted %d more times", n-before)
+	}
+}
