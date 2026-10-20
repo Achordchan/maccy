@@ -89,7 +89,7 @@ type Service struct {
 	ownCheck    atomic.Pointer[func() bool] // reads the clipboard back; true while it holds what we wrote
 	setMu       sync.RWMutex                // guards the capture settings below
 	capMu       sync.Mutex                  // one Capture at a time (the watcher and Retry)
-	fileTries   atomic.Int32                // retries of an unreadable file list in a row
+	tries       atomic.Int32                // retries of an unreadable clipboard in a row
 	skipped     atomic.Bool                 // a Capture gave way to an Apply
 	writeGen    atomic.Int64                // moves at the start and the end of every Apply
 }
@@ -284,7 +284,21 @@ func (s *Service) Capture(ctx context.Context) error {
 	if s.isOwnChange() {
 		return nil
 	}
+	// When the clipboard could not be read (it was busy), the watcher has
+	// already moved on, so look again a little later: up to five times in a
+	// row, the count starting over with the next clipboard that reads well.
+	wantRetry := false
+	defer func() {
+		if wantRetry {
+			s.retryLater()
+		} else {
+			s.tries.Store(0)
+		}
+	}()
 	formats := s.Clipboard.Formats()
+	if len(formats) == 0 {
+		wantRetry = true
+	}
 	set := map[string]bool{}
 	for _, f := range formats {
 		set[strings.ToLower(f)] = true
@@ -316,6 +330,9 @@ func (s *Service) Capture(ctx context.Context) error {
 
 	if opt.text && has(set, textFormats) {
 		text := s.Clipboard.ReadText()
+		if text == "" {
+			wantRetry = true // the format is there but the text did not come
+		}
 		if strings.TrimSpace(text) != "" {
 			items := s.History.Items()
 			if s.History.Limits().MergeDuplicates && len(items) > 0 && items[0].Kind == model.KindText && model.Str(items[0].Text) == text {
@@ -332,11 +349,7 @@ func (s *Service) Capture(ctx context.Context) error {
 	if opt.files && has(set, fileFormats) {
 		files, ferr := s.Clipboard.ReadFiles()
 		if ferr != nil && len(nonBlank(files)) == 0 {
-			// Not "no files" but "could not look" (the clipboard was busy):
-			// the watcher has moved on, so look again a little later.
-			s.retryLater()
-		} else {
-			s.fileTries.Store(0)
+			wantRetry = true // not "no files" but "could not look"
 		}
 		files = nonBlank(files)
 		if len(files) > 0 {
@@ -656,17 +669,19 @@ func (s *Service) verifier(it model.Item, w written) func() bool {
 	return nil
 }
 
-// samePath compares two paths in full, with the symbolic links resolved when
-// they can be; Windows and macOS file systems ignore case.
+// samePath says whether two paths are the same file: by the file system when
+// both exist, else by their text (Windows ignores case).
 func samePath(a, b string) bool {
-	norm := func(p string) string {
-		if r, err := filepath.EvalSymlinks(p); err == nil {
-			p = r
+	// The file system knows best (case-sensitive volumes, links, hard links).
+	if sa, err := os.Stat(a); err == nil {
+		if sb, err := os.Stat(b); err == nil {
+			return os.SameFile(sa, sb)
 		}
-		return filepath.Clean(p)
+		return false
 	}
+	norm := func(p string) string { return filepath.Clean(p) }
 	a, b = norm(a), norm(b)
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+	if runtime.GOOS == "windows" {
 		return strings.EqualFold(a, b)
 	}
 	return a == b
@@ -705,10 +720,10 @@ func absDiff(a, b uint32) uint64 {
 	return uint64(b - a)
 }
 
-// retryLater asks for another look at the clipboard in 300 ms, up to five times
-// in a row.
+// retryLater asks for another look at the clipboard in 300 ms (the budget of
+// five is kept in tries).
 func (s *Service) retryLater() {
-	if s.Retry == nil || s.fileTries.Add(1) > 5 {
+	if s.Retry == nil || s.tries.Add(1) > 5 {
 		return
 	}
 	time.AfterFunc(300*time.Millisecond, s.Retry)

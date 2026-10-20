@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -733,5 +734,27 @@ func TestUnreadableFileListIsRetried(t *testing.T) {
 	case <-retried:
 	case <-time.After(2 * time.Second):
 		t.Fatal("a file list that could not be read must be looked at again")
+	}
+}
+
+func TestRetryBudgetStartsOverAfterAGoodRead(t *testing.T) {
+	r := newRig(t)
+	var n atomic.Int32
+	r.s.Retry = func() { n.Add(1) }
+	r.clip.formats = nil // a busy clipboard names no format
+	for i := 0; i < 8; i++ {
+		r.s.Capture(context.Background())
+	}
+	time.Sleep(500 * time.Millisecond)
+	if got := n.Load(); got != 5 {
+		t.Fatalf("%d retries, want the budget of 5", got)
+	}
+	r.clip.formats, r.clip.text = []string{"text/plain"}, "fine now"
+	r.s.Capture(context.Background()) // a good read starts the count over
+	r.clip.formats = nil
+	r.s.Capture(context.Background())
+	time.Sleep(500 * time.Millisecond)
+	if got := n.Load(); got != 6 {
+		t.Fatalf("%d retries after a good read, want 6", got)
 	}
 }
