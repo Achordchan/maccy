@@ -128,3 +128,20 @@ func TestItemMatchesCSharpRecord(t *testing.T) {
 		t.Error("ClipboardContentKind order changed: Text, Image, FileList")
 	}
 }
+
+// RestorePortable undoes only the settings that are still what was
+// installed.
+func TestRestorePortable(t *testing.T) {
+	old := DefaultSettings()
+	installed := old
+	installed.MaxItems, installed.Theme, installed.CaptureImages = 500, "Light", false
+	cur := installed
+	cur.Theme = "Dark" // changed since by someone else
+	cur.RestorePortable(installed, old)
+	if cur.MaxItems != old.MaxItems || cur.CaptureImages != old.CaptureImages {
+		t.Fatalf("not undone: %d %v", cur.MaxItems, cur.CaptureImages)
+	}
+	if cur.Theme != "Dark" {
+		t.Fatalf("a later change was undone: %q", cur.Theme)
+	}
+}

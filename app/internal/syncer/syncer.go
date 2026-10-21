@@ -865,6 +865,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		return DownloadResult{}, ErrSessionChanged
 	}
 	oldSettings := s.settings()
+	undo := &settingsUndo{old: oldSettings}
 	var before, applied []model.Item
 	var moves *snapshot.AppliedPayloads
 	merged := false
@@ -925,7 +926,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	}
 	mutatedFP := appliedFP
 	if s.accountChanged(account) {
-		return DownloadResult{}, s.abandonForSession(ctx, applied, moves, oldSettings)
+		return DownloadResult{}, s.abandonForSession(ctx, applied, moves, undo)
 	}
 	// The settings change only after the history was replaced: a failure
 	// above leaves both as they were. A snapshot without settings keeps the
@@ -941,9 +942,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	}
 	// The limits the history now needs must be saved with it: settings left
 	// with the old ones would prune it at the next start.
-	limitPruned, serr := s.applySettingsFor(account, settings)
+	limitPruned, serr := s.applySettingsFor(account, settings, undo)
 	if errors.Is(serr, ErrSessionChanged) {
-		return DownloadResult{}, s.abandonForSession(ctx, applied, moves, oldSettings)
+		return DownloadResult{}, s.abandonForSession(ctx, applied, moves, undo)
 	}
 	res := DownloadResult{
 		Fingerprint:         appliedFP,
@@ -977,7 +978,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	if werr != nil {
 		s.clearPendingMerge() // the history goes back to before
 		rctx, rcancel := cleanupContext()
-		rerr := s.rollbackMutation(rctx, before, applied, oldSettings, limitPruned)
+		rerr := s.rollbackMutation(rctx, before, applied, undo, limitPruned)
 		if rerr == nil {
 			rerr = s.cfg.Flush(rctx)
 		}
@@ -1002,7 +1003,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		// The history was not saved: put the old one, its settings and its
 		// files back. Captures made meanwhile are kept.
 		if s.accountChanged(account) {
-			if derr := s.discardMutation(ctx, applied, moves, oldSettings); derr != nil {
+			if derr := s.discardMutation(ctx, applied, moves, undo); derr != nil {
 				return DownloadResult{}, fmt.Errorf("%w (session cleanup failed: %v)", err, derr)
 			}
 			if derr := s.persistCleanup(); derr != nil {
@@ -1014,7 +1015,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			return DownloadResult{}, ErrSessionChanged
 		}
 		rctx, rcancel := cleanupContext()
-		rerr := s.rollbackMutation(rctx, before, applied, oldSettings, limitPruned)
+		rerr := s.rollbackMutation(rctx, before, applied, undo, limitPruned)
 		if rerr == nil {
 			// Save the restored history before deleting the payloads it may
 			// still be referenced by (an autosave might have saved it).
@@ -1038,7 +1039,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		// The session changed while the new history was being saved: take
 		// this account's items out again and save that, so the new session
 		// cannot publish them later.
-		if err := s.discardMutation(ctx, applied, moves, oldSettings); err != nil {
+		if err := s.discardMutation(ctx, applied, moves, undo); err != nil {
 			return DownloadResult{}, fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
 		}
 		if err := s.persistCleanup(); err != nil {
@@ -1153,6 +1154,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	}
 	local := s.cfg.History.Items()
 	localSettings := s.settings()
+	undo := &settingsUndo{old: localSettings}
 
 	report(progress, "backup_snapshot", "backup local snapshot", 28)
 	backup, err := s.preMergeBackupPath()
@@ -1259,7 +1261,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	}
 	appliedFP := Fingerprint(merged)
 	if s.accountChanged(account) {
-		return s.abandonForSession(ctx, merged, moves, localSettings)
+		return s.abandonForSession(ctx, merged, moves, undo)
 	}
 	mergedSettings := localSettings.Portable()
 	if remote.Settings != nil {
@@ -1269,9 +1271,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 
 	// The limits the merged history needs are saved with it (see the
 	// download).
-	limitPruned, serr := s.applySettingsFor(account, mergedSettings)
+	limitPruned, serr := s.applySettingsFor(account, mergedSettings, undo)
 	if errors.Is(serr, ErrSessionChanged) {
-		return s.abandonForSession(ctx, merged, moves, localSettings)
+		return s.abandonForSession(ctx, merged, moves, undo)
 	}
 	s.timing("merge", "merge_snapshot", started, fmt.Sprintf("%s;localItems=%d;remoteItems=%d;mergedItems=%d", reason, len(local), len(remote.Items), len(merged)))
 
@@ -1299,7 +1301,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	if werr != nil {
 		s.clearPendingMerge() // the history goes back to before
 		rctx, rcancel := cleanupContext()
-		rerr := s.rollbackMutation(rctx, before, merged, localSettings, limitPruned)
+		rerr := s.rollbackMutation(rctx, before, merged, undo, limitPruned)
 		if rerr == nil {
 			rerr = s.cfg.Flush(rctx)
 		}
@@ -1318,7 +1320,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		// The history was not saved: put the old one, its settings and its
 		// files back. Captures made meanwhile are kept.
 		if s.accountChanged(account) {
-			if derr := s.discardMutation(ctx, merged, moves, localSettings); derr != nil {
+			if derr := s.discardMutation(ctx, merged, moves, undo); derr != nil {
 				return fmt.Errorf("%w (session cleanup failed: %v)", err, derr)
 			}
 			if derr := s.persistCleanup(); derr != nil {
@@ -1330,7 +1332,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			return ErrSessionChanged
 		}
 		rctx, rcancel := cleanupContext()
-		rerr := s.rollbackMutation(rctx, before, merged, localSettings, limitPruned)
+		rerr := s.rollbackMutation(rctx, before, merged, undo, limitPruned)
 		if rerr == nil {
 			rerr = s.cfg.Flush(rctx)
 		}
@@ -1351,7 +1353,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		s.clearPendingMerge()
 		// The session changed while the merged history was being saved: take
 		// this account's items out again and save that.
-		if err := s.discardMutation(ctx, merged, moves, localSettings); err != nil {
+		if err := s.discardMutation(ctx, merged, moves, undo); err != nil {
 			return fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
 		}
 		if err := s.persistCleanup(); err != nil {
@@ -1458,7 +1460,9 @@ func (s *Syncer) suppress(on bool) {
 // session signed in meanwhile gets nothing written (ErrSessionChanged), and
 // the limits are not applied to its history. It returns what the limits
 // pruned; another error says the settings were not saved.
-func (s *Syncer) applySettingsFor(account string, settings model.Settings) (map[string]bool, error) {
+//
+// undo learns what was written.
+func (s *Syncer) applySettingsFor(account string, settings model.Settings, undo *settingsUndo) (map[string]bool, error) {
 	skipped := false
 	err := s.cfg.Settings.Update(func(m *model.Settings) {
 		if account != "" {
@@ -1470,6 +1474,10 @@ func (s *Syncer) applySettingsFor(account string, settings model.Settings) (map[
 		}
 		m.CopyPortable(settings)
 	})
+	if !skipped {
+		installed := settings
+		undo.installed = &installed
+	}
 	if skipped || s.accountChanged(account) {
 		return nil, ErrSessionChanged
 	}
@@ -1480,8 +1488,8 @@ func (s *Syncer) applySettingsFor(account string, settings model.Settings) (map[
 // abandonForSession undoes a download or a merge whose session ended before
 // it was recorded: its items, payloads and settings go, and the cleanup is
 // saved. It returns ErrSessionChanged, with what failed.
-func (s *Syncer) abandonForSession(ctx context.Context, applied []model.Item, moves *snapshot.AppliedPayloads, oldSettings model.Settings) error {
-	if err := s.discardMutation(ctx, applied, moves, oldSettings); err != nil {
+func (s *Syncer) abandonForSession(ctx context.Context, applied []model.Item, moves *snapshot.AppliedPayloads, undo *settingsUndo) error {
+	if err := s.discardMutation(ctx, applied, moves, undo); err != nil {
 		return fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
 	}
 	if err := s.persistCleanup(); err != nil {
@@ -2049,13 +2057,13 @@ func itemsNotIn(exclude, items []model.Item) []model.Item {
 // captured while the operation was in flight: they were neither downloaded nor
 // part of the mutation, so losing them would be data loss. The previous
 // portable settings are restored too.
-func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.Item, oldSettings model.Settings, limitPruned map[string]bool) error {
+func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.Item, undo *settingsUndo, limitPruned map[string]bool) error {
 	if err := s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
 		return rollbackItems(before, applied, current, limitPruned), nil
 	}); err != nil {
 		return err
 	}
-	serr := s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(oldSettings.Portable()) })
+	serr := s.restoreSettings(undo)
 	s.cfg.History.ApplyLimits(s.settings())
 	if serr != nil {
 		return fmt.Errorf("settings: %w", serr)
@@ -2067,7 +2075,7 @@ func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.I
 // session changed during its commit: the new session must not inherit them.
 // Unlike rollbackMutation it does not restore before, so a history the new
 // session already replaced (or cleared) is left alone.
-func (s *Syncer) discardMutation(ctx context.Context, applied []model.Item, _ *snapshot.AppliedPayloads, oldSettings model.Settings) error {
+func (s *Syncer) discardMutation(ctx context.Context, applied []model.Item, _ *snapshot.AppliedPayloads, undo *settingsUndo) error {
 	rctx, cancel := cleanupContext()
 	defer cancel()
 	if err := s.mutateHistory(rctx, func(current []model.Item) ([]model.Item, error) {
@@ -2076,10 +2084,30 @@ func (s *Syncer) discardMutation(ctx context.Context, applied []model.Item, _ *s
 		// The history still refers to the moved payloads: keep them.
 		return err
 	}
-	if err := s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(oldSettings.Portable()) }); err != nil {
+	if err := s.restoreSettings(undo); err != nil {
 		return fmt.Errorf("settings: %w", err)
 	}
 	return nil
+}
+
+// settingsUndo is what a download or a merge did to the portable settings:
+// what they were before it (old), and what it wrote (installed; nil while it
+// wrote nothing).
+type settingsUndo struct {
+	old       model.Settings
+	installed *model.Settings
+}
+
+// restoreSettings undoes what the operation wrote to the settings, and only
+// that: a setting that is no longer what it wrote (changed by the user, or by
+// a session signed in meanwhile) keeps its value, and nothing is written when
+// the operation wrote nothing.
+func (s *Syncer) restoreSettings(u *settingsUndo) error {
+	if u == nil || u.installed == nil {
+		return nil
+	}
+	installed, old := u.installed.Portable(), u.old.Portable()
+	return s.cfg.Settings.Update(func(m *model.Settings) { m.RestorePortable(installed, old) })
 }
 
 // retainedItems is the applied items that the history still holds: the limits

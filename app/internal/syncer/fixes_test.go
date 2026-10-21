@@ -2792,7 +2792,7 @@ func TestRollbackSuppressesTheHistoryNotification(t *testing.T) {
 		History:          h,
 		SuppressAutoSync: func(on bool) { events = append(events, on) },
 	})
-	if err := syn.rollbackMutation(context.Background(), nil, nil, model.DefaultSettings(), nil); err != nil {
+	if err := syn.rollbackMutation(context.Background(), nil, nil, &settingsUndo{old: model.DefaultSettings()}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(events) != 2 || !events[0] || events[1] {
@@ -3208,8 +3208,10 @@ func TestDownloadSettingsAreNotWrittenIntoAnotherSession(t *testing.T) {
 		probe := *s
 		f(&probe)
 		if probe.MaxItems != s.MaxItems && model.Str(s.AuthAccessToken) == testJWT("account-a") {
-			// B signs in right before A's settings are written.
+			// B signs in right before A's settings are written, and sets a
+			// preference of its own.
 			s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+			s.Theme = "Dark"
 		}
 		f(s)
 		return nil
@@ -3223,6 +3225,9 @@ func TestDownloadSettingsAreNotWrittenIntoAnotherSession(t *testing.T) {
 	}
 	if h.limited != 0 {
 		t.Fatal("A's limits were applied to B's history")
+	}
+	if s.Theme != "Dark" {
+		t.Fatalf("the undo put A's settings over B's: Theme %q", s.Theme)
 	}
 	if len(h.items) != 0 {
 		t.Fatalf("A's download was left in B's history: %v", h.items)
