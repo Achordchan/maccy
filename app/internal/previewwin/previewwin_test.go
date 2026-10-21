@@ -79,6 +79,9 @@ func TestFormatBytes(t *testing.T) {
 }
 
 func TestLines(t *testing.T) {
+	saved := time.Local
+	time.Local = time.UTC // the times below are written as UTC shows them
+	defer func() { time.Local = saved }()
 	m := &Model{Item: item(model.KindText)}
 	if got := m.Meta(); got != "复制次数：3" {
 		t.Fatalf("meta = %q", got)
@@ -123,6 +126,17 @@ func TestLines(t *testing.T) {
 	s.Item.SourceAppName = model.Ptr("记事本")
 	if s.Source() != "记事本" {
 		t.Fatalf("source = %q", s.Source())
+	}
+}
+
+// The times are shown in the user's time, also when they are stored in UTC.
+func TestTimesAreLocal(t *testing.T) {
+	saved := time.Local
+	time.Local = time.FixedZone("UTC+8", 8*3600)
+	defer func() { time.Local = saved }()
+	m := &Model{Item: item(model.KindText)}
+	if got := m.Times(); got != "首次：2026-05-01 17:00:00\n最后：2026-05-31 02:05:09" {
+		t.Fatalf("times = %q", got)
 	}
 }
 

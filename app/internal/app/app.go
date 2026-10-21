@@ -5,7 +5,9 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -518,23 +520,23 @@ type loginSeen struct {
 }
 
 // ownerLearned watches each change of the settings, as it is made: a login
-// that had no address (one made by an older client, with no token naming it)
-// and learns it with a
-// refresh of its tokens is the same login, and what it noted under no address
-// is that account's. A change of login is not that: it moves the generation
-// (endAccountWork) before it stores the new address, and the login it puts in
+// known only by its session (sessionOwner: an older client's login with no
+// address and no token naming one) that learns its address, or gets a new
+// refresh token, with a refresh is the same login, and what it noted is now
+// under its new name. A change of login is not that: it moves the generation
+// (endAccountWork) before it stores the new login, and the login it puts in
 // place is written down only after (beginAccountWork).
 func (a *App) ownerLearned(before, after model.Settings) {
 	was, is := ownerOf(before), ownerOf(after)
-	if was != "" || is == "" {
+	if was == is || !sessionOwner(was) || is == "" {
 		return
 	}
 	l := a.login.Load()
-	if l == nil || l.owner != "" || l.gen != a.acctGen.Load() {
+	if l == nil || l.owner != was || l.gen != a.acctGen.Load() {
 		return
 	}
 	a.login.Store(&loginSeen{owner: is, gen: l.gen})
-	if err := a.pending.Adopt("", is); err != nil {
+	if err := a.pending.Adopt(was, is); err != nil {
 		a.cfg.Logf("pending deletions: %v", err)
 	}
 }
@@ -552,12 +554,15 @@ func (a *App) workOwner() string {
 // are (see ownerOf).
 func (a *App) owner() string { return ownerOf(a.Settings.Get()) }
 
-// ownerOf is the address of the login in st. A login made by an older client
-// may have none stored; its access token, which the server issued to it and
-// which names the account it was issued to, gives it then. "" only when
-// neither does (a login with nothing but a refresh token): such a login's
-// deletions are its own once a refresh tells its address (ownerLearned), and
-// otherwise cannot be tied to an account, as its checkpoints cannot.
+// ownerOf is whose the deletions made under the login in st are: its address.
+// A login made by an older client may have none stored; its access token,
+// which the server issued to it and which names the account it was issued to,
+// gives it then. A login with nothing but a refresh token is known by that
+// session alone ("session:" and a digest of the token): its deletions are its
+// own, no other login's, and become its account's once a refresh tells its
+// address (ownerLearned). If it ends before that, nothing ties them to an
+// account, as nothing ties its checkpoints to one: they are not given to
+// whoever signs in next. "" when there is no login.
 func ownerOf(st model.Settings) string {
 	if e := strings.TrimSpace(model.Str(st.AuthUserEmail)); e != "" {
 		return e
@@ -567,8 +572,18 @@ func ownerOf(st model.Settings) string {
 			return e
 		}
 	}
+	if r := strings.TrimSpace(model.Str(st.AuthRefreshToken)); r != "" {
+		sum := sha256.Sum256([]byte(r))
+		return sessionPrefix + hex.EncodeToString(sum[:8])
+	}
 	return ""
 }
+
+const sessionPrefix = "session:"
+
+// sessionOwner says that owner names a login by its session (or names none),
+// not an account.
+func sessionOwner(owner string) bool { return owner == "" || strings.HasPrefix(owner, sessionPrefix) }
 
 // tokenEmail is the address a JWT names ("" when tok is not one, or names
 // none). The signature is not checked: the token is this login's own, as kept

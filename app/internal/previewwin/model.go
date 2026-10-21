@@ -162,8 +162,10 @@ func (m *Model) Times() string {
 	if m.Item.FirstCapturedAt != nil {
 		first = m.Item.FirstCapturedAt.Time
 	}
+	// In the user's time: what is stored, and what other devices send, may be
+	// in UTC.
 	const layout = "2006-01-02 15:04:05"
-	return "首次：" + first.Format(layout) + "\n最后：" + m.Item.CapturedAt.Time.Format(layout)
+	return "首次：" + first.Local().Format(layout) + "\n最后：" + m.Item.CapturedAt.Time.Local().Format(layout)
 }
 
 // NoteLine is the note, or its absence.

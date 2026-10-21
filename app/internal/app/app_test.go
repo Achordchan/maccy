@@ -911,7 +911,7 @@ func TestDeletionIsWrittenDownBeforeAndKeptWhenTheUploadFails(t *testing.T) {
 		a.History.Add(model.Item{ID: id, Kind: model.KindText, Text: model.Ptr(id), CopyCount: 1, ContentHash: model.Ptr("text:" + id)})
 	}
 	var owedWhenRemoved atomic.Int32
-	a.History.OnChanged(func() { owedWhenRemoved.Store(int32(len(a.pending.Tombstones("")))) })
+	a.History.OnChanged(func() { owedWhenRemoved.Store(int32(len(a.pending.Tombstones(a.owner())))) })
 
 	a.Delete("x")
 	a.done.Wait()
@@ -920,7 +920,7 @@ func TestDeletionIsWrittenDownBeforeAndKeptWhenTheUploadFails(t *testing.T) {
 	}
 	a.ClearAll()
 	a.done.Wait()
-	got := (&pendingDeletes{path: a.pending.path}).Tombstones("")
+	got := (&pendingDeletes{path: a.pending.path}).Tombstones(a.owner())
 	if a.History.Len() != 0 || len(got) != 3 {
 		t.Fatalf("len %d, owed on disk %v", a.History.Len(), got)
 	}
@@ -1162,4 +1162,36 @@ func TestSignInSyncTurnedAwayByADeletionIsMadeAfterIt(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// A login with nothing but a refresh token is known by its session: another
+// such login does not get its deletions, and a refresh that tells its address
+// (with a new refresh token) gives them to its account.
+func TestSessionWithoutAddressKeepsItsOwnDeletions(t *testing.T) {
+	session := func(refresh string) model.Settings {
+		st := model.DefaultSettings()
+		st.AuthRefreshToken = model.Ptr(refresh)
+		return st
+	}
+	one, two := ownerOf(session("r1")), ownerOf(session("r2"))
+	if !sessionOwner(one) || one == "" || one == two {
+		t.Fatalf("sessions %q %q", one, two)
+	}
+
+	root := t.TempDir()
+	if err := settings.Save(filepath.Join(root, "settings.json"), session("r1")); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp(t, root, &fakeClip{}, "http://127.0.0.1:1")
+	a.pending.Add(a.owner(), item("x", "x"))
+	a.pending.Add(two, item("y", "y"))              // left by another session
+	_ = a.Settings.Update(func(m *model.Settings) { // a refresh
+		m.AuthRefreshToken, m.AuthUserEmail = model.Ptr("r1b"), model.Ptr("a@example.com")
+	})
+	if got := ids(a.pending.Tombstones("a@example.com")); len(got) != 1 || got[0] != "x" {
+		t.Fatalf("the account got %v", got)
+	}
+	if got := ids(a.pending.Tombstones(two)); len(got) != 1 {
+		t.Fatalf("the other session's: %v", got)
+	}
 }
