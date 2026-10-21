@@ -643,6 +643,14 @@ func TestPendingDeletesKeepAcrossRuns(t *testing.T) {
 	if p := (&pendingDeletes{path: path}); p.Owed("a@example.com") || len(p.Tombstones("a@example.com")) != 2 {
 		t.Fatal("a deletion the server has had is kept, as the server's")
 	}
+	// Past the time it is enforced for, it is no longer handed to a sync, even
+	// before the next Ack drops it; one the server never had still is.
+	again.Add("a@example.com", item("c", "c"))
+	later := &pendingDeletes{path: path, now: func() time.Time { return time.Now().Add(keepDeleted + time.Hour) }}
+	if got := ids(later.Tombstones("a@example.com")); len(got) != 1 || got[0] != "c" {
+		t.Fatalf("enforced after the time: %v", got)
+	}
+	again.Ack("a@example.com")
 	// After the time it is kept for, it goes.
 	late := &pendingDeletes{path: path, now: func() time.Time { return time.Now().Add(keepDeleted + time.Hour) }}
 	late.Ack("a@example.com")
@@ -684,9 +692,11 @@ func TestLoginThatLearnsItsAddressKeepsItsDeletions(t *testing.T) {
 	a.beginAccountWork()
 	a.pending.Add("", item("z", "z")) // another login without an address
 	a.endAccountWork()                // B signs in: a change of login, nothing to adopt
+	// A late write of the old login lands first (the settings are told of it
+	// after the generation moved); then the new login is stored.
+	_ = a.Settings.Update(func(m *model.Settings) {})
 	_ = a.Settings.Update(func(m *model.Settings) { m.AuthUserEmail = model.Ptr("b@example.com") })
 	a.beginAccountWork()
-	time.Sleep(50 * time.Millisecond)
 	if got := ids(a.pending.Tombstones("b@example.com")); len(got) != 0 {
 		t.Fatalf("B got %v", got)
 	}

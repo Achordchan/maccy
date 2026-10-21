@@ -97,17 +97,17 @@ type App struct {
 	remoteDuringSync  atomic.Bool     // another device uploaded while a sync ran
 	acctCtx           context.Context
 	acctCancel        context.CancelFunc
-	changedDuringSync atomic.Bool    // the history changed while a sync ran
-	acctGen           atomic.Int64   // moves when the account changes
-	runGen            atomic.Int64   // the account generation the running sync started under
-	retrying          atomic.Bool    // the loop that tries the first sync again is running
-	loginWanted       atomic.Bool    // a sync for a new sign-in is owed (one was running when it was asked for)
-	initialOK         atomic.Bool    // a background sync has gone through
-	runEntered        atomic.Bool    // the sync that syncDone is told about did start (Run was entered)
-	pending           pendingDeletes // what the user deleted here, by account
-	seen              atomic.Pointer[ownerSeen]
-	failStreak        atomic.Int32       // background syncs that failed in a row since the initial one
-	stopWatch         context.CancelFunc // ends the event stream of the current account
+	changedDuringSync atomic.Bool               // the history changed while a sync ran
+	acctGen           atomic.Int64              // moves when the account changes
+	runGen            atomic.Int64              // the account generation the running sync started under
+	retrying          atomic.Bool               // the loop that tries the first sync again is running
+	loginWanted       atomic.Bool               // a sync for a new sign-in is owed (one was running when it was asked for)
+	initialOK         atomic.Bool               // a background sync has gone through
+	runEntered        atomic.Bool               // the sync that syncDone is told about did start (Run was entered)
+	pending           pendingDeletes            // what the user deleted here, by account
+	login             atomic.Pointer[loginSeen] // see ownerLearned
+	failStreak        atomic.Int32              // background syncs that failed in a row since the initial one
+	stopWatch         context.CancelFunc        // ends the event stream of the current account
 }
 
 // New reads the settings and the history and connects the parts. A settings
@@ -134,8 +134,8 @@ func New(cfg Config) (*App, error) {
 	a.History = history.NewService(cfg.Layout)
 	a.pending.path = filepath.Join(cfg.Layout.Root, "sync", "pending-delete.json")
 	a.pending.logf = cfg.Logf
-	a.seen.Store(&ownerSeen{owner: a.owner()})
-	a.Settings.OnChange(a.ownerLearned)
+	a.login.Store(&loginSeen{owner: a.owner()})
+	a.Settings.Watch(a.ownerLearned)
 	a.Persister = history.NewPersister(a.History, cfg.Layout)
 	if err := a.Persister.Load(context.Background()); err != nil {
 		cfg.Logf("history: %v", err)
@@ -493,23 +493,31 @@ func (a *App) acctWork() (ctx context.Context, gen int64, owner string) {
 	}
 }
 
-// ownerSeen is the address the settings had last, and the account generation
-// at that moment.
-type ownerSeen struct {
+// loginSeen is the address a login had when it was put in place, and the
+// account generation it was put in place in.
+type loginSeen struct {
 	owner string
 	gen   int64
 }
 
-// ownerLearned follows the settings: a login that had no address (one made by
-// an older client) and learns it with a refresh of its tokens is the same
-// login, and what it noted under no address is that account's.
-func (a *App) ownerLearned(st model.Settings) {
-	now := &ownerSeen{owner: strings.TrimSpace(model.Str(st.AuthUserEmail)), gen: a.acctGen.Load()}
-	prev := a.seen.Swap(now)
-	if prev != nil && prev.gen == now.gen && prev.owner == "" && now.owner != "" {
-		if err := a.pending.Adopt("", now.owner); err != nil {
-			a.cfg.Logf("pending deletions: %v", err)
-		}
+// ownerLearned watches each change of the settings, as it is made: a login
+// that had no address (one made by an older client) and learns it with a
+// refresh of its tokens is the same login, and what it noted under no address
+// is that account's. A change of login is not that: it moves the generation
+// (endAccountWork) before it stores the new address, and the login it puts in
+// place is written down only after (beginAccountWork).
+func (a *App) ownerLearned(before, after model.Settings) {
+	was, is := strings.TrimSpace(model.Str(before.AuthUserEmail)), strings.TrimSpace(model.Str(after.AuthUserEmail))
+	if was != "" || is == "" {
+		return
+	}
+	l := a.login.Load()
+	if l == nil || l.owner != "" || l.gen != a.acctGen.Load() {
+		return
+	}
+	a.login.Store(&loginSeen{owner: is, gen: l.gen})
+	if err := a.pending.Adopt("", is); err != nil {
+		a.cfg.Logf("pending deletions: %v", err)
 	}
 }
 
@@ -562,6 +570,7 @@ func (a *App) endAccountWork() {
 // beginAccountWork is called by the account service once the new login (or
 // none) is stored: the work of the account that is signed in now may start.
 func (a *App) beginAccountWork() {
+	a.login.Store(&loginSeen{owner: a.owner(), gen: a.acctGen.Load()})
 	a.mu.Lock()
 	if a.started {
 		a.acctCtx, a.acctCancel = context.WithCancel(a.ctx)

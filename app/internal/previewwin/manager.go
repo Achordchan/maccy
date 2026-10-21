@@ -25,7 +25,7 @@ type Manager struct {
 	model *Model
 	win   *mygo.Window
 	id    string
-	seq   int // moves with each Show of a picture and each Hide
+	seq   int // moves with each Show and each Hide
 }
 
 // Preview says which item the window shows ("" when hidden) and whether the
@@ -44,15 +44,16 @@ func (mg *Manager) Preview() (string, bool) {
 const maxPicture = 1960
 
 // Show opens the window for an item beside anchor, which is in screen pixels.
-// A picture is read and cut down in the background; the window opens when it
-// is ready, unless the pointer has moved on by then. Any goroutine.
+// A picture is read and cut down, and the files of an item are looked at, in
+// the background; the window opens when that is done, unless the pointer has
+// moved on by then. Any goroutine.
 func (mg *Manager) Show(it model.Item, anchor Rect) {
-	if it.Kind != model.KindImage {
+	if it.Kind != model.KindImage && it.Kind != model.KindFileList {
 		mg.mu.Lock()
 		mg.seq++ // a picture that is still being made is not wanted
 		seq := mg.seq
 		mg.mu.Unlock()
-		mg.present(it, nil, 0, 0, anchor, seq)
+		mg.present(it, nil, 0, 0, (&Model{Item: it}).Meta(), anchor, seq)
 		return
 	}
 	mg.mu.Lock()
@@ -61,25 +62,30 @@ func (mg *Manager) Show(it model.Item, anchor Rect) {
 	seq := mg.seq
 	mg.mu.Unlock()
 	go func() {
-		bm, pw, ph := panel.ScaledBitmap(model.Str(it.ImageFilePath), maxPicture)
+		var bm *ui.Bitmap
+		var pw, ph int
+		if it.Kind == model.KindImage {
+			bm, pw, ph = panel.ScaledBitmap(model.Str(it.ImageFilePath), maxPicture)
+		}
 		mg.mu.Lock()
 		current := mg.seq == seq
 		mg.mu.Unlock()
 		if !current {
 			return // another item, or none, since
 		}
-		if bm == nil {
+		if it.Kind == model.KindImage && bm == nil {
 			mg.hide(seq) // the file is gone, or too big to show: nothing to show
 			return
 		}
-		mg.present(it, bm, pw, ph, anchor, seq)
+		meta := (&Model{Item: it, Bitmap: bm, Width: pw, Height: ph}).Meta()
+		mg.present(it, bm, pw, ph, meta, anchor, seq)
 	}()
 }
 
 // present puts the window up for an item whose content is ready, if seq is
 // still the latest request when the UI thread gets to it (a Hide or another
 // Show in between voids it).
-func (mg *Manager) present(it model.Item, bm *ui.Bitmap, pw, ph int, anchor Rect, seq int) {
+func (mg *Manager) present(it model.Item, bm *ui.Bitmap, pw, ph int, meta string, anchor Rect, seq int) {
 	mygo.RunOnMain(func() {
 		mg.mu.Lock()
 		defer mg.mu.Unlock()
@@ -90,6 +96,7 @@ func (mg *Manager) present(it model.Item, bm *ui.Bitmap, pw, ph int, anchor Rect
 			mg.model = &Model{IconOf: mg.IconOf, Left: mg.Left, Open: func(p string) { _ = mygo.Shell.OpenPath(p) }}
 		}
 		mg.model.Item, mg.model.Bitmap, mg.model.Width, mg.model.Height = it, bm, pw, ph
+		mg.model.MetaLine = meta
 		mg.id = it.ID
 		w, h := Size(it, pw, ph)
 		d := mygo.Screen.DisplayNearestPoint(mygo.Point{X: anchor.X + anchor.W/2, Y: anchor.Y + anchor.H/2})

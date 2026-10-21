@@ -164,18 +164,20 @@ func (p *pendingDeletes) Add(owner string, items ...model.Item) error {
 	return p.save()
 }
 
-// Tombstones are the deletions of the account owner that are still enforced.
+// Tombstones are the deletions of the account owner that are still enforced:
+// those the server has not had, and those it has had for less than
+// keepDeleted.
 func (p *pendingDeletes) Tombstones(owner string) []syncer.Tombstone {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.load()
-	l := p.lists[p.account(owner)]
-	if len(l) == 0 {
-		return nil
-	}
-	out := make([]syncer.Tombstone, len(l))
-	for i, d := range l {
-		out[i] = syncer.Tombstone{ID: d.ID, Key: d.Key, At: d.At}
+	cut := p.clock().Add(-keepDeleted)
+	var out []syncer.Tombstone
+	for _, d := range p.lists[p.account(owner)] {
+		if d.Acked && d.At.Before(cut) {
+			continue // kept long enough; Ack drops it
+		}
+		out = append(out, syncer.Tombstone{ID: d.ID, Key: d.Key, At: d.At})
 	}
 	return out
 }

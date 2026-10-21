@@ -129,6 +129,7 @@ func TestLines(t *testing.T) {
 func TestViewAndLeft(t *testing.T) {
 	m := &Model{Item: item(model.KindText)}
 	m.Item.Text = model.Ptr("hello preview")
+	m.MetaLine = m.Meta() // as the manager does, off the UI thread
 	left := 0
 	m.Left = func() { left++ }
 	tt := ui.NewTester(m.View, 360, 320)
@@ -168,6 +169,7 @@ func TestImageButtonOpens(t *testing.T) {
 	}
 	m := &Model{Item: item(model.KindImage), Bitmap: bm, Width: 40, Height: 20}
 	m.Item.ImageFilePath = model.Ptr(p)
+	m.MetaLine = m.Meta()
 	var opened string
 	m.Open = func(path string) { opened = path }
 	tt := ui.NewTester(m.View, 324, 260)

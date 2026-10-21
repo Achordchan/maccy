@@ -24,6 +24,9 @@ type Model struct {
 	// Bitmap is the picture of an image item, Width and Height its size.
 	Bitmap        *ui.Bitmap
 	Width, Height int
+	// MetaLine is Meta, worked out off the UI thread: it reads the files,
+	// which may be on a network share that answers slowly or not at all.
+	MetaLine string
 	// IconOf gives the icon of the program the item came from (may be nil).
 	IconOf func(path string) *ui.Bitmap
 	// Open opens the original of an image.
@@ -118,7 +121,7 @@ func trimZero(s string) string {
 }
 
 // Meta is the first line under the content: how often it was copied and
-// what size it has.
+// what size it has. It reads the files of the item: not on the UI thread.
 func (m *Model) Meta() string {
 	it := m.Item
 	meta := fmt.Sprintf("复制次数：%d", max(1, int(it.CopyCount)))
@@ -263,20 +266,18 @@ func (m *Model) View(c *ui.Context) {
 					ui.Text(c, src).FontSize(11).TextColor(p.Muted).Wrap()
 				})
 			}
-			ui.Text(c, m.Meta()).FontSize(11).TextColor(p.Muted).Wrap()
+			ui.Text(c, m.MetaLine).FontSize(11).TextColor(p.Muted).Wrap()
 			ui.Text(c, m.Times()).FontSize(11).TextColor(p.Muted2).Wrap()
 			ui.Text(c, m.NoteLine()).FontSize(12).TextColor(p.Text).Wrap()
 		})
 	})
 }
 
+// openable says that the original of the picture is there to open: it was
+// read for the window just now (the window draws often, and does not look at
+// the disk each time).
 func (m *Model) openable() bool {
-	p := strings.TrimSpace(model.Str(m.Item.ImageFilePath))
-	if p == "" {
-		return false
-	}
-	_, err := os.Stat(p)
-	return err == nil
+	return m.Bitmap != nil && strings.TrimSpace(model.Str(m.Item.ImageFilePath)) != ""
 }
 
 var _ = time.Now

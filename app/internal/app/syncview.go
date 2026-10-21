@@ -286,8 +286,12 @@ func (a *App) finishView(reason string, manual bool, err error) {
 // cancelled upload, a crash or a quit leaves it owed, and every later sync
 // leaves those items out of what it brings in and uploads the result.
 func (a *App) remove(pick func() []model.Item) {
+	// What the user asked for, as it is now: what is removed when the account
+	// changes before this one's turn comes (the history may then hold the
+	// next account's items, which the user did not ask about).
+	asked := idsOf(pick())
 	if !a.Syncer.CanAutoSync() {
-		a.mutateQuietly(func() { a.History.RemoveMany(idsOf(pick())) })
+		a.mutateQuietly(func() { a.History.RemoveMany(asked) })
 		return
 	}
 	ctx, gen, owner := a.acctWork()
@@ -321,7 +325,7 @@ func (a *App) remove(pick func() []model.Item) {
 		if !ran {
 			// The account changed before its turn came: the change is the user's
 			// all the same, and the cloud copy is not this account's to touch.
-			a.mutateQuietly(func() { a.History.RemoveMany(idsOf(pick())) })
+			a.mutateQuietly(func() { a.History.RemoveMany(asked) })
 			return
 		}
 		if ctx.Err() != nil {
