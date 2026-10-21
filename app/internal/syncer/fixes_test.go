@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2795,5 +2796,64 @@ func TestRollbackSuppressesTheHistoryNotification(t *testing.T) {
 	}
 	if len(events) != 2 || !events[0] || events[1] {
 		t.Errorf("suppress events %v", events)
+	}
+}
+
+// deletedDuringMergeHistory is a history from which items are deleted while
+// the remote snapshot downloads: Items is the history when the merge begins,
+// Mutate sees it without them.
+type deletedDuringMergeHistory struct {
+	mergeHistory
+	deleted map[string]bool
+}
+
+func (h *deletedDuringMergeHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	var current []model.Item
+	for _, it := range h.local {
+		if !h.deleted[it.ID] {
+			current = append(current, it)
+		}
+	}
+	next, err := f(current)
+	if err != nil {
+		return err
+	}
+	h.stored = next
+	return nil
+}
+
+// What the user deletes while the first merge downloads stays deleted: the
+// same item in the snapshot, and the same content under another id, are left
+// out; content the user still keeps a copy of is merged as before.
+func TestMergeKeepsDeletionsMadeDuringTheDownload(t *testing.T) {
+	hashed := func(id, text string) model.Item {
+		it := textItemAt(id, text)
+		it.ContentHash = model.Ptr("text:" + text)
+		return it
+	}
+	gone := hashed("0f8fad5b-d9cb-469f-a165-70867728950e", "deleted")
+	twin := hashed("7c9e6679-7425-40de-944b-e07fc1f90ae7", "deleted")          // the same text, copied on another device
+	keptA := hashed("16fd2706-8baf-433b-82eb-8c7fada847da", "kept")            // a duplicate the user keeps
+	keptB := hashed("6ba7b810-9dad-11d1-80b4-00c04fd430c8", "kept")            // and the one deleted
+	other := hashed("6ba7b811-9dad-11d1-80b4-00c04fd430c8", "from the server") // unrelated
+	srv := serveSnapshot(t, snapshotFile(t, []model.Item{gone, twin, keptB, other}))
+	defer srv.Close()
+	h := &deletedDuringMergeHistory{
+		mergeHistory: mergeHistory{local: []model.Item{gone, keptA, keptB}},
+		deleted:      map[string]bool{gone.ID: true, keptB.ID: true},
+	}
+	syn := unitSyncer(t, srv, signedIn(model.DefaultSettings()), h)
+	if err := syn.MergeAndApply(context.Background(), ManifestInfo{}, "", nil, "test"); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, it := range h.stored {
+		got = append(got, model.Str(it.Text))
+	}
+	if slices.Contains(got, "deleted") {
+		t.Fatalf("a deletion made during the download came back: %v", got)
+	}
+	if !slices.Contains(got, "kept") || !slices.Contains(got, "from the server") || len(got) != 2 {
+		t.Fatalf("merged %v", got)
 	}
 }

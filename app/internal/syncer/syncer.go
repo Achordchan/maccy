@@ -1081,7 +1081,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			return nil, ErrSessionChanged
 		}
 		before = append([]model.Item(nil), current...)
-		merged = MergeItems(remote.Items, current)
+		// What the user deleted while the snapshot was downloading is left out
+		// of it, or the merge would bring it back.
+		merged = MergeItems(withoutDeletedSince(remote.Items, local, current), current)
 		applied, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, merged, before)
 		if err != nil {
 			return nil, err
@@ -1499,6 +1501,43 @@ func sameMergeIdentity(a, b model.Item) bool {
 // baseline.
 func itemMetadataChanged(cur, base model.Item) bool {
 	return !sameNote(cur.Note, base.Note) || cur.Pinned != base.Pinned || cur.CopyCount != base.CopyCount
+}
+
+// withoutDeletedSince leaves out of remote what was deleted from the history
+// between then (when a merge began) and now: an item of the same id, and one
+// of the same content when no item of that content is left now, which the
+// merge would make one with the deleted item. It is applied before
+// MergeItems folds equal content, as in MergeForDownload.
+func withoutDeletedSince(remote, then, now []model.Item) []model.Item {
+	present := make(map[string]bool, len(now))
+	kept := make(map[string]bool, len(now))
+	for _, it := range now {
+		present[strings.ToLower(it.ID)] = true
+		if k := strings.ToLower(mergeKey(it)); k != "" {
+			kept[k] = true
+		}
+	}
+	goneIDs, goneKeys := map[string]bool{}, map[string]bool{}
+	for _, it := range then {
+		if present[strings.ToLower(it.ID)] {
+			continue
+		}
+		goneIDs[strings.ToLower(it.ID)] = true
+		if k := strings.ToLower(mergeKey(it)); k != "" && !kept[k] {
+			goneKeys[k] = true
+		}
+	}
+	if len(goneIDs) == 0 {
+		return remote
+	}
+	out := make([]model.Item, 0, len(remote))
+	for _, it := range remote {
+		if goneIDs[strings.ToLower(it.ID)] || goneKeys[strings.ToLower(mergeKey(it))] {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
 }
 
 // MergeForDownload merges a downloaded history with the local one when a
