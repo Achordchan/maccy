@@ -3180,3 +3180,51 @@ func TestAccountFileIsReplacedWhole(t *testing.T) {
 		}
 	}
 }
+
+// limitsHistory counts the times its limits were applied.
+type limitsHistory struct {
+	unitHistory
+	limited int
+}
+
+func (h *limitsHistory) ApplyLimitsAndSnapshot(model.Settings) ([]model.Item, []string) {
+	h.limited++
+	return h.Items(), nil
+}
+
+// A sign-in to another account just before a download writes its settings:
+// A's settings are not written into B's session, nor A's limits applied to its
+// history, and the download is undone.
+func TestDownloadSettingsAreNotWrittenIntoAnotherSession(t *testing.T) {
+	remote := []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")}
+	srv := serveSnapshot(t, snapshotFile(t, remote))
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
+	s.MaxItems = 123
+	h := &limitsHistory{}
+	syn := unitSyncer(t, srv, s, h)
+	syn.cfg.Settings.Update = func(f func(*model.Settings)) error {
+		probe := *s
+		f(&probe)
+		if probe.MaxItems != s.MaxItems && model.Str(s.AuthAccessToken) == testJWT("account-a") {
+			// B signs in right before A's settings are written.
+			s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+		}
+		f(s)
+		return nil
+	}
+	syn.session.Settings = syn.cfg.Settings
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("download: %v", err)
+	}
+	if s.MaxItems != 123 {
+		t.Fatalf("A's settings were written into B's session: MaxItems %d", s.MaxItems)
+	}
+	if h.limited != 0 {
+		t.Fatal("A's limits were applied to B's history")
+	}
+	if len(h.items) != 0 {
+		t.Fatalf("A's download was left in B's history: %v", h.items)
+	}
+}

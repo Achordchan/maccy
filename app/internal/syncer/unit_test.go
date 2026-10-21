@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"errors"
+	"math"
 	"os"
 	"regexp"
 	"strings"
@@ -313,5 +314,19 @@ func TestExplain(t *testing.T) {
 				t.Errorf("C# no longer says %q", text)
 			}
 		}
+	}
+}
+
+// Copy counts that add up past the largest one stay at it.
+func TestMergedCopyCountsDoNotWrap(t *testing.T) {
+	it := func(id string, n int32) model.Item {
+		return model.Item{ID: id, Kind: model.KindText, ContentHash: model.Ptr("same"), CopyCount: n, CapturedAt: model.Time{Time: time.Now()}}
+	}
+	got := MergeItems([]model.Item{it("a", math.MaxInt32)}, []model.Item{it("b", 1)})
+	if len(got) != 1 || got[0].CopyCount != math.MaxInt32 {
+		t.Fatalf("merged %v", got[0].CopyCount)
+	}
+	if got := addCounts(-5, 3); got != 3 {
+		t.Fatalf("a negative count: %d", got)
 	}
 }

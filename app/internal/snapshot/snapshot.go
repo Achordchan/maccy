@@ -310,29 +310,32 @@ func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]B
 			byKey[cacheKey(f.idx, f.name)] = f
 			byIdx[f.idx] = append(byIdx[f.idx], f)
 		}
-		// at is the cached file of the document at position i called name: the
-		// one of that position and name, else the only one of that position.
-		// Two of that position, neither called name (a stale file beside the
-		// current one), are not guessed between.
+		// at is the cached file of the document at position i called name:
+		// of that position and that name as the cache writes it
+		// (sanitizeFileName; Windows does not tell case apart). Another file of
+		// that position is a stale one from an earlier import, not this
+		// document: exporting it would publish the wrong bytes.
 		at := func(i int, name string) (cachedFile, error) {
 			if f, ok := byKey[cacheKey(i, name)]; ok {
 				return f, nil
 			}
-			switch c := byIdx[i]; len(c) {
-			case 1:
-				return c[0], nil
-			case 0:
-				return cachedFile{}, errors.New("snapshot: local file payload missing")
-			default:
-				return cachedFile{}, fmt.Errorf("snapshot: %d cached files at position %d, none called %q", len(c), i, name)
+			safe := sanitizeFileName(name)
+			if f, ok := byKey[cacheKey(i, safe)]; ok {
+				return f, nil
 			}
+			for _, f := range byIdx[i] {
+				if strings.EqualFold(f.name, name) || strings.EqualFold(f.name, safe) {
+					return f, nil
+				}
+			}
+			return cachedFile{}, fmt.Errorf("snapshot: local file payload missing (%q at position %d)", name, i)
 		}
 		selected := make([]cachedFile, 0, wantFiles)
 		for i, p := range it.FilePaths {
 			if strings.TrimSpace(p) == "" {
 				continue
 			}
-			name := filepath.Base(filepath.Clean(p))
+			name := docName(p)
 			// Only a path inside Klip's files folder names a cached file; an
 			// original document called "2026_report.pdf" is not index 2026.
 			if !within(l.Files(), filepath.Dir(filepath.Clean(p))) {
@@ -1248,6 +1251,16 @@ func blobMatches(p, sha256 string) bool {
 	}
 	sum, err := fileSHA256(p)
 	return err == nil && strings.EqualFold(sum, strings.TrimSpace(sha256))
+}
+
+// docName is the file name of a document path, which may be a Windows one
+// (a history from the C# client) on any platform.
+func docName(p string) string {
+	p = filepath.Clean(p)
+	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
+		p = p[i+1:]
+	}
+	return p
 }
 
 // sanitizeFileName replaces what Windows does not allow in a file name. The

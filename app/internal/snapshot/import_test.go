@@ -685,6 +685,20 @@ func TestExportMatchesMigratedDocumentsByName(t *testing.T) {
 	if _, err := Export(ctx, l, filepath.Join(t.TempDir(), "snapshot.sqlite"), []model.Item{item}, model.DefaultSettings()); err == nil {
 		t.Error("exported one of two files that are not the report")
 	}
+
+	// The only file of the position is a stale one: not the report either.
+	l, item = setup(t, map[string]string{"0000_old.pdf": "stale"})
+	if _, err := Export(ctx, l, filepath.Join(t.TempDir(), "snapshot.sqlite"), []model.Item{item}, model.DefaultSettings()); err == nil {
+		t.Error("exported a stale file as the report")
+	}
+
+	// A name the cache had to change (Windows does not allow ":"), from a
+	// Windows path, is the same document.
+	l, item = setup(t, map[string]string{"0000_a_b.pdf": "current"})
+	item.FilePaths = []string{`C:\docs\a:b.pdf`}
+	if _, err := Export(ctx, l, filepath.Join(t.TempDir(), "snapshot.sqlite"), []model.Item{item}, model.DefaultSettings()); err != nil {
+		t.Errorf("the sanitized name: %v", err)
+	}
 }
 
 // Read creates the data root when the layout is fresh.

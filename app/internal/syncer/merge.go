@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"math"
 	"sort"
 	"strings"
 
@@ -156,6 +157,12 @@ func mergeKey(it model.Item) string {
 
 func itoa(n int) string { return string(rune('0' + n)) } // kinds are 0..2
 
+// addCounts adds two copy counts (a negative one counts as none), and stays
+// at the largest count an item holds instead of wrapping around.
+func addCounts(a, b int32) int32 {
+	return int32(min(int64(max(0, a))+int64(max(0, b)), math.MaxInt32))
+}
+
 func mergeDuplicate(existing, incoming model.Item, incomingIsLocal bool) model.Item {
 	latest := existing
 	if !incoming.CapturedAt.Before(existing.CapturedAt.Time) {
@@ -184,7 +191,7 @@ func mergeDuplicate(existing, incoming model.Item, incomingIsLocal bool) model.I
 	out := latest
 	out.ApproxBytes = max(existing.ApproxBytes, incoming.ApproxBytes)
 	out.Pinned = existing.Pinned || incoming.Pinned
-	out.CopyCount = max(0, existing.CopyCount) + max(0, incoming.CopyCount)
+	out.CopyCount = addCounts(existing.CopyCount, incoming.CopyCount)
 	out.FirstCapturedAt = &first
 	out.Note = mergedNote(existing.Note, incoming.Note, incomingIsLocal)
 	out.ContentHash = hash
