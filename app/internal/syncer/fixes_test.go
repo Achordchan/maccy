@@ -2857,3 +2857,24 @@ func TestMergeKeepsDeletionsMadeDuringTheDownload(t *testing.T) {
 		t.Fatalf("merged %v", got)
 	}
 }
+
+// A download merge leaves out what was deleted here also when the server
+// holds the same content under another id; a copy still kept here is merged
+// as before.
+func TestDownloadMergeKeepsADeletionUnderAnotherID(t *testing.T) {
+	hashed := func(id, text string) model.Item {
+		it := textItemAt(id, text)
+		it.ContentHash = model.Ptr("text:" + text)
+		return it
+	}
+	a := hashed("0f8fad5b-d9cb-469f-a165-70867728950e", "deleted")
+	b := hashed("7c9e6679-7425-40de-944b-e07fc1f90ae7", "deleted") // deduplicated elsewhere under another id
+	if got := MergeForDownload([]model.Item{b}, nil, []model.Item{a}); len(got) != 0 {
+		t.Fatalf("the deletion came back: %v", got)
+	}
+	keep := hashed("16fd2706-8baf-433b-82eb-8c7fada847da", "deleted") // a copy the user keeps
+	got := MergeForDownload([]model.Item{b}, []model.Item{keep}, []model.Item{a, keep})
+	if len(got) != 1 || model.Str(got[0].Text) != "deleted" {
+		t.Fatalf("the kept copy: %v", got)
+	}
+}

@@ -1504,7 +1504,7 @@ func itemMetadataChanged(cur, base model.Item) bool {
 }
 
 // withoutDeletedSince leaves out of remote what was deleted from the history
-// between then (when a merge began) and now: an item of the same id, and one
+// between then (when a merge began, or the baseline of the last sync) and now: an item of the same id, and one
 // of the same content when no item of that content is left now, which the
 // merge would make one with the deleted item. It is applied before
 // MergeItems folds equal content, as in MergeForDownload.
@@ -1512,27 +1512,30 @@ func withoutDeletedSince(remote, then, now []model.Item) []model.Item {
 	present := make(map[string]bool, len(now))
 	kept := make(map[string]bool, len(now))
 	for _, it := range now {
-		present[strings.ToLower(it.ID)] = true
+		present[strings.ToLower(strings.TrimSpace(it.ID))] = true
 		if k := strings.ToLower(mergeKey(it)); k != "" {
 			kept[k] = true
 		}
 	}
 	goneIDs, goneKeys := map[string]bool{}, map[string]bool{}
 	for _, it := range then {
-		if present[strings.ToLower(it.ID)] {
+		id := strings.ToLower(strings.TrimSpace(it.ID))
+		if present[id] {
 			continue
 		}
-		goneIDs[strings.ToLower(it.ID)] = true
+		if id != "" && id != emptyGUID {
+			goneIDs[id] = true
+		}
 		if k := strings.ToLower(mergeKey(it)); k != "" && !kept[k] {
 			goneKeys[k] = true
 		}
 	}
-	if len(goneIDs) == 0 {
+	if len(goneIDs) == 0 && len(goneKeys) == 0 {
 		return remote
 	}
 	out := make([]model.Item, 0, len(remote))
 	for _, it := range remote {
-		if goneIDs[strings.ToLower(it.ID)] || goneKeys[strings.ToLower(mergeKey(it))] {
+		if goneIDs[strings.ToLower(strings.TrimSpace(it.ID))] || goneKeys[strings.ToLower(mergeKey(it))] {
 			continue
 		}
 		out = append(out, it)
@@ -1572,23 +1575,19 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 
 	// Deletions are applied to the inputs, before MergeItems folds equal
 	// content: a deleted id must not take a hash duplicate with it.
-	deletedLocally := map[string]bool{}
 	deletedRemotely := map[string]bool{}
 	for id := range baseIDs {
 		if !localIDs[id] {
-			deletedLocally[id] = true
-			continue
+			continue // deleted here: withoutDeletedSince
 		}
 		if !remoteIDs[id] && !itemMetadataChanged(localByID[id], baseByID[id]) {
 			deletedRemotely[id] = true
 		}
 	}
-	filteredRemote := remote[:0:0]
-	for _, it := range remote {
-		if !deletedLocally[strings.ToLower(it.ID)] {
-			filteredRemote = append(filteredRemote, it)
-		}
-	}
+	// What was deleted here goes from the remote side by id, and by content
+	// when no copy of it is left here: another device may hold it under
+	// another id (withoutDeletedSince).
+	filteredRemote := withoutDeletedSince(remote, baseline, local)
 	filteredLocal := local[:0:0]
 	for _, it := range local {
 		if !deletedRemotely[strings.ToLower(it.ID)] {

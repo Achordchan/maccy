@@ -66,8 +66,10 @@ func (c *Client) SubscriptionStatus(ctx context.Context, accessToken string) (*S
 		}
 		return nil, newAPIError(resp, "get subscription status failed", true)
 	}
-	b, _ := io.ReadAll(resp.Body)
-	obj := decodeObject(b)
+	obj, err := readObject(resp, "get subscription status")
+	if err != nil {
+		return nil, err
+	}
 	st := &SubscriptionStatus{
 		ExpiresAt:         nullableString(obj["expiresAt"]),
 		Tier:              nil,
@@ -110,8 +112,10 @@ func (c *Client) RedeemCard(ctx context.Context, accessToken, code string) (*Red
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return &RedeemResult{Error: readBodySafe(resp)}, nil
 	}
-	b, _ := io.ReadAll(resp.Body)
-	obj := decodeObject(b)
+	obj, err := readObject(resp, "redeem card")
+	if err != nil {
+		return nil, err
+	}
 	r := &RedeemResult{ExpiresAt: nullableString(obj["expiresAt"])}
 	if v := scalarBool(obj["success"]); v != nil {
 		r.Success = *v

@@ -237,6 +237,21 @@ func nullableString(raw json.RawMessage) *string {
 
 // decodeObject reads a JSON object; anything else is an empty one, as
 // ParseJsonOrEmpty does.
+// readObject reads the JSON object of a successful answer: a body cut short
+// (the connection dropped, a timeout) or one that is not an object is an
+// error, not an empty answer.
+func readObject(resp *http.Response, what string) (map[string]json.RawMessage, error) {
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &m); err != nil || m == nil {
+		return nil, fmt.Errorf("%s: malformed response", what)
+	}
+	return m, nil
+}
+
 func decodeObject(b []byte) map[string]json.RawMessage {
 	var m map[string]json.RawMessage
 	if json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &m) != nil || m == nil {

@@ -465,3 +465,27 @@ func TestPasswordCallsRejectANonJSONSuccess(t *testing.T) {
 		t.Error("an HTML 200 was taken as a change")
 	}
 }
+
+// A subscription or a redeemed card whose answer is cut short, or is not an
+// object, is an error, not "not subscribed" or "not redeemed".
+func TestCutShortAnswersAreErrors(t *testing.T) {
+	for _, body := range []string{"cut", "bad"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if body == "bad" {
+				w.Write([]byte("<html>proxy</html>"))
+				return
+			}
+			w.Header().Set("Content-Length", "100")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"subscribed":tr`))
+		}))
+		c := New(srv.URL)
+		if st, err := c.SubscriptionStatus(context.Background(), "token"); err == nil {
+			t.Errorf("%s: subscription %+v without an error", body, st)
+		}
+		if r, err := c.RedeemCard(context.Background(), "token", "CODE"); err == nil {
+			t.Errorf("%s: redeem %+v without an error", body, r)
+		}
+		srv.Close()
+	}
+}
