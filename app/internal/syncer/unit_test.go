@@ -370,6 +370,31 @@ func TestUnwrittenRepairHoldsTheSyncState(t *testing.T) {
 	}
 }
 
+// A repair of one account that could not be written down does not hold the
+// syncs of another.
+func TestUnwrittenRepairHoldsOnlyItsAccount(t *testing.T) {
+	var st model.Settings
+	acct := "a@example.com"
+	deleted := model.Item{ID: "a", Kind: model.KindText, ContentHash: model.Ptr("text:a")}
+	s := &Syncer{cfg: Config{
+		Settings: syncclient.Settings{Get: func() model.Settings { return st }, Update: func(f func(*model.Settings)) { f(&st) }},
+		Deleted:  func() []Tombstone { return []Tombstone{{ID: "a", At: time.Now()}} },
+		Dropped:  func() error { return errors.New("disk full") },
+		Account:  func() string { return acct },
+	}}
+	s.withoutDeleted([]model.Item{deleted})
+	acct = "b@example.com" // another account signs in
+	s.PersistSyncState("b-synced", ManifestInfo{Version: "v1"})
+	if model.Str(st.SyncLastLocalFingerprint) != "b-synced" {
+		t.Fatal("B's sync is held by A's repair")
+	}
+	acct = "a@example.com"
+	s.PersistSyncState("a-synced", ManifestInfo{Version: "v2"})
+	if model.Str(st.SyncLastLocalFingerprint) != "b-synced" {
+		t.Fatal("A's sync was written down before its repair")
+	}
+}
+
 // A tombstone stands for its id and for an item merged with it by content,
 // captured no later than the deletion.
 func TestDeletedMatchesByIDOrMergeKeyUpToTheDeletion(t *testing.T) {

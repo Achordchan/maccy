@@ -199,6 +199,7 @@ func New(cfg Config) (*App, error) {
 		// the work running was started for (runOwner), whatever is signed in by
 		// the time it asks: an upload made for A tells of A's server.
 		Deleted: func() []syncer.Tombstone { return a.pending.Tombstones(a.workOwner()) },
+		Account: a.workOwner,
 		Dropped: func() error {
 			err := a.pending.MarkRepair(a.workOwner())
 			if err != nil {

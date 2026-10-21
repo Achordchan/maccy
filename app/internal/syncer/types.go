@@ -137,6 +137,9 @@ type Config struct {
 	// which lacks the items, then differs from the last state written, and the
 	// next sync uploads it, also after a restart. It may be nil.
 	Dropped func() error
+	// Account names the account the work running is for, which Deleted and
+	// Dropped are about; it may be nil (one account).
+	Account func() string
 	// Uploaded is called after an upload went through (or was found not to be
 	// needed), with the items the server now has. It may be nil.
 	Uploaded func(items []model.Item)

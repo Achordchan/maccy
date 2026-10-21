@@ -32,9 +32,10 @@ type Syncer struct {
 	// uploaded are the items the last upload took its snapshot from (under
 	// gate).
 	uploaded []model.Item
-	// unrepaired says that the server still has items the user deleted, and
-	// that Dropped could not write it down (see Config.Dropped).
-	unrepaired atomic.Bool
+	// unrepaired is the account (Config.Account) whose server still has
+	// items the user deleted, which Dropped could not write down (see
+	// Config.Dropped); nil when there is none.
+	unrepaired atomic.Pointer[string]
 }
 
 // New returns a Syncer. cfg.Client, Settings, History, Layout and BaseURL are
@@ -192,7 +193,7 @@ func (s *Syncer) Decide(manifest ManifestInfo) Decision {
 // that only memory knows of (unrepaired): the state from before stays, so
 // that the history looks changed to the next sync.
 func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo) {
-	if s.unrepaired.Load() {
+	if s.holdsState() {
 		return
 	}
 	s.cfg.Settings.Update(func(st *model.Settings) {
@@ -233,7 +234,7 @@ func (s *Syncer) Upload(ctx context.Context, progress func(Progress), reason str
 	defer s.gate.Unlock()
 	up, err := s.upload(ctx, progress, reason)
 	if err == nil {
-		s.unrepaired.Store(false) // the server has the history without them
+		s.repaired() // the server has the history without them
 		if s.cfg.Uploaded != nil {
 			s.cfg.Uploaded(s.uploaded)
 		}
@@ -536,6 +537,29 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	return nil
 }
 
+func (s *Syncer) account() string {
+	if s.cfg.Account != nil {
+		return s.cfg.Account()
+	}
+	return ""
+}
+
+// holdsState says that the account the work is for has a repair that is not
+// written down: its syncs are not written down as done (PersistSyncState).
+// Another account's work is not held by it.
+func (s *Syncer) holdsState() bool {
+	p := s.unrepaired.Load()
+	return p != nil && *p == s.account()
+}
+
+// repaired is for the account the work is for: its repair is written down,
+// or its server has the history without the items.
+func (s *Syncer) repaired() {
+	if p := s.unrepaired.Load(); p != nil && *p == s.account() {
+		s.unrepaired.CompareAndSwap(p, nil)
+	}
+}
+
 // withoutDeleted leaves out of items the ones the user deleted (Config.Deleted).
 func (s *Syncer) withoutDeleted(items []model.Item) []model.Item {
 	gone := s.Deleted(items)
@@ -543,7 +567,12 @@ func (s *Syncer) withoutDeleted(items []model.Item) []model.Item {
 		return items
 	}
 	if s.cfg.Dropped != nil {
-		s.unrepaired.Store(s.cfg.Dropped() != nil)
+		if err := s.cfg.Dropped(); err != nil {
+			acct := s.account()
+			s.unrepaired.Store(&acct)
+		} else {
+			s.repaired()
+		}
 	}
 	skip := map[string]bool{}
 	for _, it := range gone {

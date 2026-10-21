@@ -304,6 +304,31 @@ func (s *Service) RemoveMany(ids []string) {
 	s.fire()
 }
 
+// RemoveSelected removes the items pick selects from the history as it is,
+// in one step: nothing is added or changed between the choice and the
+// removal (pick runs with the history locked, and must not use it). It
+// returns what it removed; one change, or none.
+func (s *Service) RemoveSelected(pick func(items []model.Item) []model.Item) []model.Item {
+	var t trash
+	s.mu.Lock()
+	chosen := pick(append([]model.Item(nil), s.items...))
+	var removed []model.Item
+	for _, it := range chosen {
+		if idx := indexOf(s.items, it.ID); idx >= 0 {
+			removed = append(removed, s.items[idx])
+			s.removeLocked(it.ID, &t)
+		}
+	}
+	if len(removed) == 0 {
+		s.mu.Unlock()
+		return nil
+	}
+	s.empty(context.Background(), t)
+	s.mu.Unlock()
+	s.fire()
+	return removed
+}
+
 func (s *Service) removeLocked(id string, t *trash) bool {
 	idx := indexOf(s.items, id)
 	if idx < 0 {
