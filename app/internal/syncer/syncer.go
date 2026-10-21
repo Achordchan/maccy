@@ -29,6 +29,10 @@ type Syncer struct {
 	// snapshot from, which is what the server has; the history may have moved
 	// on by the time the state is written down.
 	uploadFP atomic.Value
+	// dropped says that a merge or a download left out items the user deleted
+	// (Config.Deleted) which the server still has: the history here is not the
+	// server's until it is uploaded.
+	dropped atomic.Bool
 }
 
 // New returns a Syncer. cfg.Client, Settings, History, Layout and BaseURL are
@@ -218,7 +222,11 @@ func nonEmpty(v string) *string {
 func (s *Syncer) Upload(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
-	return s.upload(ctx, progress, reason)
+	up, err := s.upload(ctx, progress, reason)
+	if err == nil {
+		s.dropped.Store(false) // what was left out here is now left out there
+	}
+	return up, err
 }
 
 func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, error) {
@@ -508,24 +516,62 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 
 // withoutDeleted leaves out of items the ones the user deleted (Config.Deleted).
 func (s *Syncer) withoutDeleted(items []model.Item) []model.Item {
-	if s.cfg.Deleted == nil {
-		return items
-	}
-	gone := map[string]bool{}
-	for _, id := range s.cfg.Deleted() {
-		gone[strings.ToLower(id)] = true
-	}
+	gone := s.Deleted(items)
 	if len(gone) == 0 {
 		return items
 	}
-	out := make([]model.Item, 0, len(items))
+	s.dropped.Store(true)
+	skip := map[string]bool{}
+	for _, it := range gone {
+		skip[strings.ToLower(it.ID)] = true
+	}
+	out := make([]model.Item, 0, len(items)-len(gone))
 	for _, it := range items {
-		if !gone[strings.ToLower(it.ID)] {
+		if !skip[strings.ToLower(it.ID)] {
 			out = append(out, it)
 		}
 	}
 	return out
 }
+
+// Deleted says which of items the user deleted (Config.Deleted): an item of a
+// tombstone's id or merge key, captured no later than the deletion.
+func (s *Syncer) Deleted(items []model.Item) []model.Item {
+	if s.cfg.Deleted == nil {
+		return nil
+	}
+	stones := s.cfg.Deleted()
+	if len(stones) == 0 {
+		return nil
+	}
+	byID, byKey := map[string]time.Time{}, map[string]time.Time{}
+	later := func(m map[string]time.Time, k string, at time.Time) {
+		if k != "" && at.After(m[k]) {
+			m[k] = at
+		}
+	}
+	for _, t := range stones {
+		later(byID, strings.ToLower(t.ID), t.At)
+		later(byKey, strings.ToLower(t.Key), t.At)
+	}
+	var out []model.Item
+	for _, it := range items {
+		at, ok := byID[strings.ToLower(it.ID)]
+		if k := MergeKey(it); k != "" {
+			if kat, kok := byKey[k]; kok && (!ok || kat.After(at)) {
+				at, ok = kat, true
+			}
+		}
+		if ok && !it.CapturedAt.After(at) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// Dropped says that a merge or a download has left out deleted items the
+// server still has, and no upload has been made since.
+func (s *Syncer) Dropped() bool { return s.dropped.Load() }
 
 // ensureLocalBackupBlobs copies the files the backup refers to into the blob
 // store, so that the backup can be read back later.

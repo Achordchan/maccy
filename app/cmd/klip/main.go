@@ -289,7 +289,7 @@ func (p *program) mandatoryPending() bool {
 		return false
 	}
 	p.updates()
-	p.updWins.Sync()
+	p.updWins.Reshow() // also when its window was closed: it is the only way on
 	return true
 }
 

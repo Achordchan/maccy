@@ -16,7 +16,15 @@ type Manager struct {
 }
 
 // Sync shows the window of the state, and hides the one that is not wanted.
-func (mg *Manager) Sync() {
+// A window the user closed stays closed while its state lasts.
+func (mg *Manager) Sync() { mg.sync(false) }
+
+// Reshow is Sync that also brings back the window of the state when it was
+// closed: for a mandatory update, whose window is the only way on while the
+// rest of the program is shut.
+func (mg *Manager) Reshow() { mg.sync(true) }
+
+func (mg *Manager) sync(reshow bool) {
 	mygo.RunOnMain(func() {
 		want := mg.Model.Kind()
 		if mg.wins == nil {
@@ -37,7 +45,7 @@ func (mg *Manager) Sync() {
 			mg.wins[want] = w
 		}
 		w.SetTitle(mg.Model.Title(want))
-		if mg.cur != want {
+		if mg.cur != want || (reshow && !w.IsVisible()) {
 			size := Sizes[want]
 			wa := mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint()).WorkArea
 			w.SetPosition(wa.X+(wa.Width-size[0])/2, wa.Y+(wa.Height-size[1])/2)

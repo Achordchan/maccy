@@ -97,14 +97,15 @@ type App struct {
 	remoteDuringSync  atomic.Bool     // another device uploaded while a sync ran
 	acctCtx           context.Context
 	acctCancel        context.CancelFunc
-	changedDuringSync atomic.Bool        // the history changed while a sync ran
-	acctGen           atomic.Int64       // moves when the account changes
-	runGen            atomic.Int64       // the account generation the running sync started under
-	retrying          atomic.Bool        // the loop that tries the first sync again is running
-	loginWanted       atomic.Bool        // a sync for a new sign-in is owed (one was running when it was asked for)
-	initialOK         atomic.Bool        // a background sync has gone through
-	runEntered        atomic.Bool        // the sync that syncDone is told about did start (Run was entered)
-	pending           pendingDeletes     // deletions the server does not have yet
+	changedDuringSync atomic.Bool    // the history changed while a sync ran
+	acctGen           atomic.Int64   // moves when the account changes
+	runGen            atomic.Int64   // the account generation the running sync started under
+	retrying          atomic.Bool    // the loop that tries the first sync again is running
+	loginWanted       atomic.Bool    // a sync for a new sign-in is owed (one was running when it was asked for)
+	initialOK         atomic.Bool    // a background sync has gone through
+	runEntered        atomic.Bool    // the sync that syncDone is told about did start (Run was entered)
+	pending           pendingDeletes // what the user deleted here, by account
+	seen              atomic.Pointer[ownerSeen]
 	failStreak        atomic.Int32       // background syncs that failed in a row since the initial one
 	stopWatch         context.CancelFunc // ends the event stream of the current account
 }
@@ -133,6 +134,8 @@ func New(cfg Config) (*App, error) {
 	a.History = history.NewService(cfg.Layout)
 	a.pending.path = filepath.Join(cfg.Layout.Root, "sync", "pending-delete.json")
 	a.pending.logf = cfg.Logf
+	a.seen.Store(&ownerSeen{owner: a.owner()})
+	a.Settings.OnChange(a.ownerLearned)
 	a.Persister = history.NewPersister(a.History, cfg.Layout)
 	if err := a.Persister.Load(context.Background()); err != nil {
 		cfg.Logf("history: %v", err)
@@ -184,7 +187,7 @@ func New(cfg Config) (*App, error) {
 		Client:           syncclient.New(cfg.BaseURL),
 		BaseURL:          cfg.BaseURL,
 		SuppressAutoSync: func(on bool) { a.Auto.Suppress(on) },
-		Deleted:          func() []string { return a.pending.IDs(a.owner()) },
+		Deleted:          func() []syncer.Tombstone { return a.pending.Tombstones(a.owner()) },
 	})
 	a.Auto = syncer.NewAuto(a.Syncer, a.syncDone)
 	// Every sync is counted while it runs, so that Stop can wait for them (they
@@ -490,6 +493,26 @@ func (a *App) acctWork() (ctx context.Context, gen int64, owner string) {
 	}
 }
 
+// ownerSeen is the address the settings had last, and the account generation
+// at that moment.
+type ownerSeen struct {
+	owner string
+	gen   int64
+}
+
+// ownerLearned follows the settings: a login that had no address (one made by
+// an older client) and learns it with a refresh of its tokens is the same
+// login, and what it noted under no address is that account's.
+func (a *App) ownerLearned(st model.Settings) {
+	now := &ownerSeen{owner: strings.TrimSpace(model.Str(st.AuthUserEmail)), gen: a.acctGen.Load()}
+	prev := a.seen.Swap(now)
+	if prev != nil && prev.gen == now.gen && prev.owner == "" && now.owner != "" {
+		if err := a.pending.Adopt("", now.owner); err != nil {
+			a.cfg.Logf("pending deletions: %v", err)
+		}
+	}
+}
+
 // owner is the address of the account signed in, whose the pending deletions
 // are ("" for a login without one, from an older client).
 func (a *App) owner() string { return strings.TrimSpace(model.Str(a.Settings.Get().AuthUserEmail)) }
@@ -517,13 +540,12 @@ func (a *App) SyncNow() {
 // still manages to finish is known to be of the old account.
 //
 // The deletions owed to the server stay with the account that owes them
-// (pendingDeletes): a sign-out or a sign-in to the same account keeps them.
-// From here on the old account's work, which may still end later, can no
-// longer give the list to another account. It is not waited for: the account
-// service is holding the login.
+// (pendingDeletes, one list for each): a sign-out or a sign-in to the same
+// account keeps them, and the old account's work, which is not waited for
+// here (the account service is holding the login), can only write to its own.
 func (a *App) endAccountWork() {
 	a.mu.Lock()
-	gen := a.acctGen.Add(1)
+	a.acctGen.Add(1)
 	if a.started {
 		a.acctCancel()
 		// Until the new login is in place the account context is a dead one: a
@@ -533,7 +555,7 @@ func (a *App) endAccountWork() {
 		stop()
 		a.acctCtx, a.acctCancel = dead, func() {}
 	}
-	a.pending.NewGeneration(gen)
+	a.pending.ForgetAliases()
 	a.mu.Unlock()
 }
 

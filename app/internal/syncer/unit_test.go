@@ -315,3 +315,35 @@ func TestExplain(t *testing.T) {
 		}
 	}
 }
+
+// A tombstone stands for its id and for an item merged with it by content,
+// captured no later than the deletion.
+func TestDeletedMatchesByIDOrMergeKeyUpToTheDeletion(t *testing.T) {
+	at := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	text := func(id, s string, captured time.Time) model.Item {
+		return model.Item{ID: id, Kind: model.KindText, Text: model.Ptr(s), ContentHash: model.Ptr("text:" + s), CapturedAt: model.Time{Time: captured}}
+	}
+	deleted := text("a", "hello", at.Add(-time.Hour))
+	s := &Syncer{cfg: Config{Deleted: func() []Tombstone {
+		return []Tombstone{{ID: deleted.ID, Key: MergeKey(deleted), At: at}}
+	}}}
+	items := []model.Item{
+		text("a", "hello", at.Add(-time.Hour)),     // the item itself
+		text("b", "hello", at.Add(-2*time.Hour)),   // the same text, copied on another device
+		text("c", "hello", at.Add(time.Minute)),    // copied again after the deletion
+		text("d", "other", at.Add(-time.Hour)),     // something else
+		text("a", "changed", at.Add(-3*time.Hour)), // the same id
+		text("e", "hello", at),                     // at the moment of the deletion
+	}
+	var got []string
+	for _, it := range s.Deleted(items) {
+		got = append(got, it.ID+":"+model.Str(it.Text))
+	}
+	want := []string{"a:hello", "b:hello", "a:changed", "e:hello"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("deleted %v, want %v", got, want)
+	}
+	if kept := s.withoutDeleted(items); len(kept) != 2 || !s.Dropped() {
+		t.Fatalf("kept %d, dropped %v", len(kept), s.Dropped())
+	}
+}

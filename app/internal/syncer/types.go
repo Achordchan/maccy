@@ -78,6 +78,17 @@ type History interface {
 	ApplyLimits(model.Settings)
 }
 
+// Tombstone is an item the user deleted at At. It stands for the item of
+// that id and for any item that MergeItems takes for the same one (same
+// MergeKey): two devices that copied the same text give it two ids. Only an
+// item captured at or before At is the deleted one; a copy made after it (or
+// an item used, and so moved up, after it) is new, and stays.
+type Tombstone struct {
+	ID  string
+	Key string // MergeKey of the item
+	At  time.Time
+}
+
 // Config is what a Syncer works with.
 type Config struct {
 	Layout   paths.Layout
@@ -92,10 +103,10 @@ type Config struct {
 	// SuppressAutoSync is called with true before the sync changes the
 	// history and with false after, so that the change does not start a sync.
 	SuppressAutoSync func(on bool)
-	// Deleted gives the items the user deleted whose removal the server may
-	// not have yet: a merge or a download leaves them out, instead of bringing
-	// them back. It may be nil.
-	Deleted func() []string
+	// Deleted gives what the user deleted on this device (see Tombstone): a
+	// merge or a download leaves those items out, instead of bringing them
+	// back. It may be nil.
+	Deleted func() []Tombstone
 	// Now is time.Now unless a test sets it.
 	Now func() time.Time
 }

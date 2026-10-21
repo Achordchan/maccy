@@ -55,6 +55,10 @@ func MergeItems(remote, local []model.Item) []model.Item {
 	return out
 }
 
+// MergeKey is what MergeItems takes two items to be the same item by, as it
+// compares it ("" for an item it never merges).
+func MergeKey(it model.Item) string { return strings.ToLower(mergeKey(it)) }
+
 func mergeKey(it model.Item) string {
 	if h := strings.TrimSpace(model.Str(it.ContentHash)); h != "" {
 		return "hash:" + itoa(int(it.Kind)) + ":" + h

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -591,7 +592,7 @@ func TestPendingDeletionIsMadeAgainAfterTheNextSync(t *testing.T) {
 	}
 	// The record of an earlier run: an item was deleted, the upload failed.
 	_ = os.MkdirAll(filepath.Join(root, "sync"), 0o700)
-	_ = os.WriteFile(filepath.Join(root, "sync", "pending-delete.json"), []byte(`{"account":"","ids":["gone"]}`), 0o600)
+	_ = os.WriteFile(filepath.Join(root, "sync", "pending-delete.json"), []byte(`{"accounts":{"":[{"id":"gone","at":"`+time.Now().UTC().Format(time.RFC3339Nano)+`"}]}}`), 0o600)
 	clip := &fakeClip{}
 	a := newApp(t, root, clip, srv.URL)
 	a.History.Add(model.Item{ID: "gone", Kind: model.KindText, Text: model.Ptr("restored by a merge"), CopyCount: 1, ContentHash: model.Ptr("text:restored by a merge")})
@@ -604,63 +605,101 @@ func TestPendingDeletionIsMadeAgainAfterTheNextSync(t *testing.T) {
 				return false
 			}
 		}
-		return len(a.History.Items()) == 1 && len(a.pending.IDs(a.owner())) == 0
+		return len(a.History.Items()) == 1 && !a.pending.Owed(a.owner())
 	})
-	if _, err := os.Stat(filepath.Join(root, "sync", "pending-delete.json")); err == nil {
-		t.Fatal("the record is kept after the server has the deletion")
+	// The server has it now; the mark stays for a while, as the server's.
+	if got := (&pendingDeletes{path: filepath.Join(root, "sync", "pending-delete.json")}); !(len(got.Tombstones("")) == 1 && !got.Owed("")) {
+		t.Fatal("the record on disk does not say that the server has the deletion")
 	}
+}
+
+func item(id, text string) model.Item {
+	return model.Item{ID: id, Kind: model.KindText, Text: model.Ptr(text), CopyCount: 1, ContentHash: model.Ptr("text:" + text)}
+}
+
+func ids(stones []syncer.Tombstone) []string {
+	var out []string
+	for _, t := range stones {
+		out = append(out, t.ID)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func TestPendingDeletesKeepAcrossRuns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sync", "pending-delete.json")
 	p := &pendingDeletes{path: path}
-	if err := p.Add(0, "a@example.com", "a", "b"); err != nil {
+	if err := p.Add("a@example.com", item("a", "a"), item("b", "b")); err != nil {
 		t.Fatal(err)
 	}
 	again := &pendingDeletes{path: path} // a later run
-	if got := again.IDs("A@example.com"); len(got) != 2 {
+	if got := ids(again.Tombstones("A@example.com")); len(got) != 2 || !again.Owed("a@example.com") {
 		t.Fatalf("%v", got)
 	}
-	again.Forget("a@example.com", "a")
-	if got := (&pendingDeletes{path: path}).IDs("a@example.com"); len(got) != 1 || got[0] != "b" {
-		t.Fatalf("%v", got)
-	}
-	if got := again.IDs("b@example.com"); got != nil {
+	if got := again.Tombstones("b@example.com"); got != nil {
 		t.Fatalf("another account reads the list: %v", got)
+	}
+	again.Ack("a@example.com")
+	if p := (&pendingDeletes{path: path}); p.Owed("a@example.com") || len(p.Tombstones("a@example.com")) != 2 {
+		t.Fatal("a deletion the server has had is kept, as the server's")
+	}
+	// After the time it is kept for, it goes.
+	late := &pendingDeletes{path: path, now: func() time.Time { return time.Now().Add(keepDeleted + time.Hour) }}
+	late.Ack("a@example.com")
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("the list outlived its marks")
 	}
 }
 
-// A sign-out, or a sign-in to the same account, keeps what that account owes;
-// another account writing down a deletion of its own takes the list over, and
-// the work of an account that is gone cannot take it back.
+// Each account has its list: a sign-out, a sign-in to the same account, or
+// the work of another account leave it as it is.
 func TestPendingDeletesFollowTheirAccount(t *testing.T) {
 	p := &pendingDeletes{path: filepath.Join(t.TempDir(), "pending-delete.json")}
-	p.Add(0, "a@example.com", "a1")
-	p.NewGeneration(1)              // signed out, then in again
-	p.Add(0, "a@example.com", "a2") // late, from before: still A's
-	if got := p.IDs("a@example.com"); len(got) != 2 {
-		t.Fatalf("A's deletions after signing in again: %v", got)
+	p.Add("a@example.com", item("a1", "a1"))
+	p.Add("b@example.com", item("b1", "b1")) // B signed in and deleted something
+	p.Add("a@example.com", item("a2", "a2")) // the old account's upload failed now
+	p.Ack("b@example.com")
+	if got := ids(p.Tombstones("a@example.com")); len(got) != 2 || !p.Owed("a@example.com") {
+		t.Fatalf("A's list: %v", got)
 	}
-	p.NewGeneration(2)
-	p.Add(2, "b@example.com", "b1")   // B signed in and deleted something
-	p.Add(1, "a@example.com", "late") // the old account's upload failed now
-	p.Forget("a@example.com", "b1")
-	if got := p.IDs("b@example.com"); len(got) != 1 || got[0] != "b1" {
+	if got := ids(p.Tombstones("b@example.com")); len(got) != 1 || got[0] != "b1" || p.Owed("b@example.com") {
 		t.Fatalf("B's list: %v", got)
 	}
-	if got := p.IDs("a@example.com"); got != nil {
-		t.Fatalf("A reads B's list: %v", got)
+}
+
+// A login without an address that learns it keeps what it noted; another
+// login, after a change, does not get it.
+func TestLoginThatLearnsItsAddressKeepsItsDeletions(t *testing.T) {
+	a := newApp(t, t.TempDir(), &fakeClip{}, "http://127.0.0.1:1")
+	a.pending.Add(a.owner(), item("x", "x")) // no address yet
+	_ = a.Settings.Update(func(m *model.Settings) { m.AuthUserEmail = model.Ptr("a@example.com") })
+	waitFor(t, "adopted", func() bool { return len(a.pending.Tombstones("a@example.com")) == 1 })
+	a.pending.Add("", item("y", "y")) // late work of the login, under the old name
+	if got := ids(a.pending.Tombstones("a@example.com")); len(got) != 2 {
+		t.Fatalf("%v", got)
+	}
+
+	a.endAccountWork()
+	_ = a.Settings.Update(func(m *model.Settings) { m.AuthUserEmail = nil })
+	a.beginAccountWork()
+	a.pending.Add("", item("z", "z")) // another login without an address
+	a.endAccountWork()                // B signs in: a change of login, nothing to adopt
+	_ = a.Settings.Update(func(m *model.Settings) { m.AuthUserEmail = model.Ptr("b@example.com") })
+	a.beginAccountWork()
+	time.Sleep(50 * time.Millisecond)
+	if got := ids(a.pending.Tombstones("b@example.com")); len(got) != 0 {
+		t.Fatalf("B got %v", got)
 	}
 }
 
 // The app keeps the list through a change of login.
 func TestAccountChangeKeepsWhatIsOwed(t *testing.T) {
 	a := newApp(t, t.TempDir(), &fakeClip{}, "http://127.0.0.1:1")
-	_, gen, owner := a.acctWork()
-	a.pending.Add(gen, owner, "x")
+	_, _, owner := a.acctWork()
+	a.pending.Add(owner, item("x", "x"))
 	a.endAccountWork()
 	a.beginAccountWork()
-	if got := a.pending.IDs(a.owner()); len(got) != 1 {
+	if got := a.pending.Tombstones(a.owner()); len(got) != 1 {
 		t.Fatalf("%v", got)
 	}
 }
@@ -669,20 +708,20 @@ func TestAccountChangeKeepsWhatIsOwed(t *testing.T) {
 func TestPendingDeletesAreWrittenWhole(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pending-delete.json")
 	p := &pendingDeletes{path: path}
-	if err := p.Add(0, "", "a"); err != nil {
+	if err := p.Add("", item("a", "a")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path + ".tmp"); err == nil {
 		t.Fatal("the temporary file was left")
 	}
 	_ = os.Mkdir(path+".tmp", 0o700) // the next write cannot be made
-	if err := p.Add(0, "", "b"); err == nil {
+	if err := p.Add("", item("b", "b")); err == nil {
 		t.Fatal("a failed write must be reported")
 	}
-	if got := (&pendingDeletes{path: path}).IDs(""); len(got) != 1 || got[0] != "a" {
+	if got := ids((&pendingDeletes{path: path}).Tombstones("")); len(got) != 1 || got[0] != "a" {
 		t.Fatalf("the list on disk: %v", got)
 	}
-	if got := p.IDs(""); len(got) != 2 {
+	if got := p.Tombstones(""); len(got) != 2 {
 		t.Fatalf("still owed in this run: %v", got)
 	}
 }
@@ -756,7 +795,7 @@ func TestDeletionKeepsWhatAnotherDeviceAdded(t *testing.T) {
 	a2 := newApp(t, rootA, &fakeClip{}, srv.URL)
 	a2.Delete(one)
 	waitFor(t, "the deletion went up", func() bool {
-		return !hasText(a2, "one") && len(a2.pending.IDs(a2.owner())) == 0
+		return !hasText(a2, "one") && !a2.pending.Owed(a2.owner())
 	})
 	if !hasText(a2, "from B") || !hasText(a2, "two") {
 		t.Fatalf("A after the deletion: %v", texts(a2))
@@ -790,7 +829,7 @@ func TestDeletionIsWrittenDownBeforeAndKeptWhenTheUploadFails(t *testing.T) {
 		a.History.Add(model.Item{ID: id, Kind: model.KindText, Text: model.Ptr(id), CopyCount: 1, ContentHash: model.Ptr("text:" + id)})
 	}
 	var owedWhenRemoved atomic.Int32
-	a.History.OnChanged(func() { owedWhenRemoved.Store(int32(len(a.pending.IDs("")))) })
+	a.History.OnChanged(func() { owedWhenRemoved.Store(int32(len(a.pending.Tombstones("")))) })
 
 	a.Delete("x")
 	a.done.Wait()
@@ -799,8 +838,79 @@ func TestDeletionIsWrittenDownBeforeAndKeptWhenTheUploadFails(t *testing.T) {
 	}
 	a.ClearAll()
 	a.done.Wait()
-	got := (&pendingDeletes{path: a.pending.path}).IDs("")
+	got := (&pendingDeletes{path: a.pending.path}).Tombstones("")
 	if a.History.Len() != 0 || len(got) != 3 {
 		t.Fatalf("len %d, owed on disk %v", a.History.Len(), got)
+	}
+}
+
+// B was offline with an item A deleted; B comes back with a copy of its own
+// and uploads its history over the server's, the deleted item with it. A
+// takes the item out again at its next sync, and keeps what B added.
+func TestDeviceThatWasOfflineCannotBringBackADeletion(t *testing.T) {
+	srv := nastest.Start(t)
+	ctx := context.Background()
+	tokA := srv.Subscribe(ctx, "owner@example.com", "password1")
+	login := func() syncclient.TokenSet {
+		tok, err := syncclient.New(srv.URL).Login(ctx, "owner@example.com", "password1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	rootA, rootB := signedInRoot(t, tokA), signedInRoot(t, login())
+	remote := syncclient.New(srv.URL)
+	manifest := func() string { m, _ := remote.GetManifestJSON(ctx, tokA.AccessToken); return m }
+
+	clipA := &fakeClip{}
+	a := newApp(t, rootA, clipA, srv.URL)
+	a.Start()
+	defer a.Stop()
+	waitFor(t, "A's first sync", func() bool { return strings.HasPrefix(a.SyncStatus(), "已同步") })
+	time.Sleep(40 * time.Millisecond)
+	clipA.copy("deleted on A")
+	waitFor(t, "A captured", func() bool { return len(texts(a)) == 1 })
+	time.Sleep(40 * time.Millisecond)
+	clipA.copy("kept")
+	waitFor(t, "A synced both", func() bool {
+		return len(texts(a)) == 2 && model.Str(a.Settings.Get().SyncLastLocalFingerprint) == a.Syncer.Fingerprint()
+	})
+
+	b := newApp(t, rootB, &fakeClip{}, srv.URL)
+	b.Start()
+	waitFor(t, "B downloaded", func() bool { return len(texts(b)) == 2 })
+	b.Stop() // B goes offline with the item
+
+	var gone string
+	for _, it := range a.History.Items() {
+		if model.Str(it.Text) == "deleted on A" {
+			gone = it.ID
+		}
+	}
+	m1 := manifest()
+	a.Delete(gone)
+	waitFor(t, "A's deletion went up", func() bool { return !hasText(a, "deleted on A") && !a.pending.Owed(a.owner()) && manifest() != m1 })
+
+	// B, offline, copied something, and comes back. The copy is more than two
+	// seconds newer than A's upload: when both sides changed, the newer one is
+	// sent (Decide's timestamp fallback), and B's goes over the server's.
+	time.Sleep(2500 * time.Millisecond)
+	b2 := newApp(t, rootB, &fakeClip{}, srv.URL)
+	b2.History.Add(model.Item{ID: "from-b", Kind: model.KindText, Text: model.Ptr("from B"), CopyCount: 1, ContentHash: model.Ptr("text:from B"), CapturedAt: model.Time{Time: time.Now()}})
+	b2.Start()
+	defer b2.Stop()
+
+	waitFor(t, "A has B's copy and not the deleted item, and so does the server", func() bool {
+		if !hasText(a, "from B") || hasText(a, "deleted on A") || !hasText(a, "kept") {
+			return false
+		}
+		return model.Str(a.Settings.Get().SyncLastLocalFingerprint) == a.Syncer.Fingerprint() && !a.Syncer.Dropped()
+	})
+	c := newApp(t, signedInRoot(t, login()), &fakeClip{}, srv.URL)
+	c.Start()
+	defer c.Stop()
+	waitFor(t, "C downloaded", func() bool { return len(texts(c)) == 2 })
+	if hasText(c, "deleted on A") || !hasText(c, "from B") {
+		t.Fatalf("the server has %v", texts(c))
 	}
 }

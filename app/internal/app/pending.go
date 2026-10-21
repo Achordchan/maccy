@@ -9,39 +9,72 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
+
+	"klip/internal/model"
+	"klip/internal/syncer"
 )
 
-// pendingDeletes are the items the user deleted (or cleared) whose removal has
-// not reached the server: the upload failed, or the program was closed before
-// it was made. A sync merges what the server has with the local history, which
-// would bring such an item back; so the items here are left out of what a sync
-// brings in, and removed again once it has merged. The list is kept in a file,
-// to survive a restart.
+// keepDeleted is how long a deletion the server has had is still enforced
+// here.
+const keepDeleted = 30 * 24 * time.Hour
+
+// pendingDeletes are the items the user deleted (or cleared) on this device,
+// kept in a file, one list for each account (by its address, as the
+// checkpoints are): another account's work never touches them, and a
+// sign-out or a sign-in to the same account keeps them.
 //
-// The list is owed by one account (its address, as the checkpoints are), and
-// is read and forgotten only for that one: it is kept through a sign-out and a
-// sign-in to the same account, and is replaced when another account writes
-// down a deletion of its own. The work of an account that is gone (an older
-// generation, App.acctGen) cannot replace it: a late failure of the old
-// account's upload does not take the list from the account signed in now.
+// A sync merges what the server has with the local history, which would bring
+// such an item back; so a merge or a download leaves them out (see
+// syncer.Tombstone for which items that is), and when it has left one out the
+// result is uploaded. A deletion that has not reached the server (the upload
+// failed, or the program stopped first) stays until it has. One that has is
+// still enforced for keepDeleted: a device that was offline with the item, and
+// uploads its history merged with the server's, brings it back; this device
+// takes it out again at its next sync.
+//
+// That is the limit of it: the marks are on this device only. The snapshot,
+// which other devices and the C# client read and write as it is, has no place
+// for them, so when this device does not sync again after another has
+// brought the item back, the item stays.
 type pendingDeletes struct {
 	path  string
 	logf  func(string, ...any)
+	now   func() time.Time
 	mu    sync.Mutex
-	owner string
-	ids   map[string]bool
+	lists map[string][]deletion // by account (lower case)
+	alias map[string]string     // an account known by another address since (Adopt)
 	read  bool
-	gen   int64
+}
+
+// deletion is one item the user deleted.
+type deletion struct {
+	ID    string    `json:"id"`
+	Key   string    `json:"key,omitempty"` // syncer.MergeKey
+	At    time.Time `json:"at"`
+	Acked bool      `json:"acked,omitempty"` // the server has had it
 }
 
 // pendingFile is what the file holds.
 type pendingFile struct {
-	Account string   `json:"account"`
-	IDs     []string `json:"ids"`
+	Accounts map[string][]deletion `json:"accounts"`
 }
 
-func sameOwner(a, b string) bool {
-	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+func accountKey(owner string) string { return strings.ToLower(strings.TrimSpace(owner)) }
+
+func (p *pendingDeletes) account(owner string) string {
+	k := accountKey(owner)
+	if to, ok := p.alias[k]; ok {
+		return to
+	}
+	return k
+}
+
+func (p *pendingDeletes) clock() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now()
 }
 
 func (p *pendingDeletes) load() {
@@ -49,7 +82,7 @@ func (p *pendingDeletes) load() {
 		return
 	}
 	p.read = true
-	p.ids = map[string]bool{}
+	p.lists = map[string][]deletion{}
 	b, err := os.ReadFile(p.path)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -62,9 +95,8 @@ func (p *pendingDeletes) load() {
 		p.log("pending deletions: %v", err)
 		return
 	}
-	p.owner = strings.TrimSpace(f.Account)
-	for _, id := range f.IDs {
-		p.ids[id] = true
+	for k, l := range f.Accounts {
+		p.lists[accountKey(k)] = append(p.lists[accountKey(k)], l...)
 	}
 }
 
@@ -74,24 +106,27 @@ func (p *pendingDeletes) log(format string, args ...any) {
 	}
 }
 
-// save writes the list to a file beside it and puts that in its place, so
-// that a crash or a full disk leaves the old list, not a broken one.
+// save writes the lists to a file beside it and puts that in its place, so
+// that a crash or a full disk leaves the old lists, not a broken file.
 func (p *pendingDeletes) save() error {
 	if p.path == "" {
 		return nil
 	}
-	if len(p.ids) == 0 {
+	for k, l := range p.lists {
+		if len(l) == 0 {
+			delete(p.lists, k)
+		}
+	}
+	if len(p.lists) == 0 {
 		if err := os.Remove(p.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 		return nil
 	}
-	list := make([]string, 0, len(p.ids))
-	for id := range p.ids {
-		list = append(list, id)
+	for _, l := range p.lists {
+		sort.SliceStable(l, func(i, j int) bool { return l[i].At.Before(l[j].At) })
 	}
-	sort.Strings(list)
-	b, err := json.Marshal(pendingFile{Account: p.owner, IDs: list})
+	b, err := json.Marshal(pendingFile{Accounts: p.lists})
 	if err != nil {
 		return err
 	}
@@ -110,64 +145,110 @@ func (p *pendingDeletes) save() error {
 	return nil
 }
 
-// Add notes items whose deletion is owed to the server by the account owner,
-// for work of the account generation gen. A list of another account is
-// replaced, unless gen is not the latest: then the work is that of an
-// account that is gone, and the items are not noted. When the file cannot be
-// written the items are still noted for as long as the program runs, and the
-// error says so.
-func (p *pendingDeletes) Add(gen int64, owner string, ids ...string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(ids) == 0 {
+// Add notes that the user of the account owner deleted items, now. When the
+// file cannot be written the items are still noted for as long as the program
+// runs, and the error says so.
+func (p *pendingDeletes) Add(owner string, items ...model.Item) error {
+	if len(items) == 0 {
 		return nil
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.load()
-	if !sameOwner(owner, p.owner) {
-		if gen != p.gen {
-			return nil
-		}
-		p.owner, p.ids = strings.TrimSpace(owner), map[string]bool{}
+	k, at := p.account(owner), p.clock()
+	l := p.lists[k]
+	for _, it := range items {
+		l = append(l, deletion{ID: it.ID, Key: syncer.MergeKey(it), At: at})
 	}
-	for _, id := range ids {
-		p.ids[id] = true
-	}
+	p.lists[k] = l
 	return p.save()
 }
 
-// IDs are the items that are owed by the account owner.
-func (p *pendingDeletes) IDs(owner string) []string {
+// Tombstones are the deletions of the account owner that are still enforced.
+func (p *pendingDeletes) Tombstones(owner string) []syncer.Tombstone {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.load()
-	if !sameOwner(owner, p.owner) {
+	l := p.lists[p.account(owner)]
+	if len(l) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(p.ids))
-	for id := range p.ids {
-		out = append(out, id)
+	out := make([]syncer.Tombstone, len(l))
+	for i, d := range l {
+		out[i] = syncer.Tombstone{ID: d.ID, Key: d.Key, At: d.At}
 	}
 	return out
 }
 
-// Forget drops items whose deletion the server of the account owner now has.
-func (p *pendingDeletes) Forget(owner string, ids ...string) error {
+// Owed says whether the account owner has deletions the server has not had.
+func (p *pendingDeletes) Owed(owner string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.load()
-	if !sameOwner(owner, p.owner) || len(ids) == 0 {
+	for _, d := range p.lists[p.account(owner)] {
+		if !d.Acked {
+			return true
+		}
+	}
+	return false
+}
+
+// Ack notes that the server of the account owner has had all its deletions
+// (they are made, and uploaded, one piece of work at a time), and drops those
+// that have been enforced long enough.
+func (p *pendingDeletes) Ack(owner string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.load()
+	k := p.account(owner)
+	l := p.lists[k]
+	cut := p.clock().Add(-keepDeleted)
+	kept := make([]deletion, 0, len(l))
+	changed := false
+	for _, d := range l {
+		if !d.Acked {
+			d.Acked, changed = true, true
+		}
+		if d.At.Before(cut) {
+			changed = true
+			continue
+		}
+		kept = append(kept, d)
+	}
+	if !changed {
 		return nil
 	}
-	for _, id := range ids {
-		delete(p.ids, id)
-	}
+	p.lists[k] = kept
 	return p.save()
 }
 
-// NewGeneration is for a change of login: from now on only the work of
-// generation gen may give the list to another account. The list itself stays.
-func (p *pendingDeletes) NewGeneration(gen int64) {
+// Adopt is for a login that learned its address: what it noted under the
+// address it had (from) is the account to's. Work of that login that still
+// names from counts as to's until the login changes (ForgetAliases).
+func (p *pendingDeletes) Adopt(from, to string) error {
 	p.mu.Lock()
-	p.gen = gen
+	defer p.mu.Unlock()
+	p.load()
+	f, t := accountKey(from), accountKey(to)
+	if f == t {
+		return nil
+	}
+	if p.alias == nil {
+		p.alias = map[string]string{}
+	}
+	p.alias[f] = t
+	if len(p.lists[f]) == 0 {
+		return nil
+	}
+	p.lists[t] = append(p.lists[t], p.lists[f]...)
+	delete(p.lists, f)
+	return p.save()
+}
+
+// ForgetAliases is for a change of login: the address a login had before it
+// learned its own is nobody's in particular any more.
+func (p *pendingDeletes) ForgetAliases() {
+	p.mu.Lock()
+	p.alias = nil
 	p.mu.Unlock()
 }
