@@ -104,14 +104,26 @@ func Export(ctx context.Context, l paths.Layout, snapshotPath string, items []mo
 	if strings.TrimSpace(snapshotPath) == "" {
 		return ExportResult{}, errors.New("snapshot: path is empty")
 	}
+	// A folder made here is the user's own; one that is there (a shared
+	// temporary folder) keeps its permissions: the snapshot is kept private
+	// by its own.
 	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o700); err != nil {
 		return ExportResult{}, err
 	}
-	_ = os.Chmod(filepath.Dir(snapshotPath), 0o700)
 	for _, suffix := range []string{"", "-journal", "-wal", "-shm"} {
 		if err := os.Remove(snapshotPath + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return ExportResult{}, err
 		}
+	}
+	// The snapshot carries the clipboard history: it is for this user only,
+	// from the moment it exists (SQLite opens the empty file, and gives its
+	// journal the same permissions).
+	f, err := os.OpenFile(snapshotPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return ExportResult{}, err
+	}
+	if err := f.Close(); err != nil {
+		return ExportResult{}, err
 	}
 
 	blobs := map[string]Blob{}
@@ -119,8 +131,7 @@ func Export(ctx context.Context, l paths.Layout, snapshotPath string, items []mo
 		return ExportResult{}, err
 	}
 
-	// The snapshot carries the clipboard history: it is for this user only.
-	_ = os.Chmod(snapshotPath, 0o600)
+	_ = os.Chmod(snapshotPath, 0o600) // a umask cannot widen it, but be sure
 	st, err := os.Stat(snapshotPath)
 	if err != nil {
 		return ExportResult{}, err

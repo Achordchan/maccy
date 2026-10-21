@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -705,5 +706,35 @@ func TestReadCreatesAMissingRoot(t *testing.T) {
 	applied.Commit()
 	if len(res.Items) != 1 {
 		t.Errorf("%+v", res.Items)
+	}
+}
+
+// The snapshot is private, and the folder it is written to keeps its
+// permissions (a shared temporary folder is not narrowed).
+func TestExportKeepsTheFolderAsItIs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permissions")
+	}
+	dir := filepath.Join(t.TempDir(), "shared")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	item := model.Item{ID: "0f8fad5b-d9cb-469f-a165-70867728950e", Kind: model.KindText, CapturedAt: model.Time{Time: time.Now()}, Text: model.Ptr("x"), CopyCount: 1}
+	snap := filepath.Join(dir, "snapshot.sqlite")
+	if _, err := Export(ctx, paths.Layout{Root: t.TempDir()}, snap, []model.Item{item}, model.DefaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o755 || st.Mode()&os.ModeSticky == 0 {
+		t.Errorf("the folder is now %v", st.Mode())
+	}
+	if fs, err := os.Stat(snap); err != nil || fs.Mode().Perm() != 0o600 {
+		t.Errorf("the snapshot is %v (%v)", fs.Mode(), err)
 	}
 }
