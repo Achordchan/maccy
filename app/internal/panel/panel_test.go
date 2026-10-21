@@ -789,3 +789,48 @@ func TestOpenedChoosesTheNewestItemCopiedWhileHidden(t *testing.T) {
 		t.Fatalf("after the frame: chosen=%d row=%q", r.m.chosen, model.Str(rows[r.m.chosen].Text))
 	}
 }
+
+// Dropped below the last row, a row goes to the end.
+func TestDragToTheEnd(t *testing.T) {
+	r := newRig(t, "one", "two", "three")
+	r.tt.Frame()
+	from, ok1 := r.tt.Find("one")
+	last, ok2 := r.tt.Find("three")
+	if !ok1 || !ok2 {
+		t.Fatalf("rows not found: %q", r.tt.Texts())
+	}
+	x, y := last.X+last.W/2, last.Y+last.H-8 // the strip at the foot of the last row
+	r.tt.Press(from.X+from.W/2, from.Y+from.H/2)
+	r.tt.Move(from.X+from.W/2, from.Y+from.H/2+20)
+	r.tt.Frame()
+	r.tt.Move(x, y)
+	r.tt.Frame()
+	r.tt.Release(x, y)
+	r.tt.Frame()
+	if len(r.ho.moved) != 1 || r.ho.moved[0][0] != "00000000-0000-0000-0000-000000000001" || r.ho.moved[0][1] != "" {
+		t.Fatalf("moved = %v", r.ho.moved)
+	}
+}
+
+func TestImageInfoIsReadInTheBackground(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.png")
+	var b bytes.Buffer
+	_ = png.Encode(&b, image.NewRGBA(image.Rect(0, 0, 3, 2)))
+	if err := os.WriteFile(path, b.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{}, 1)
+	var c infoCache
+	if got := c.get(path, func() { done <- struct{}{} }); got != "" {
+		t.Fatalf("the first look must not read the file: %q", got)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("never read")
+	}
+	if got := c.get(path, nil); got != "IMG · 3×2 · 1 KB" {
+		t.Fatalf("info = %q", got)
+	}
+}

@@ -659,6 +659,26 @@ func TestPendingDeletesKeepAcrossRuns(t *testing.T) {
 	}
 }
 
+// The deletion covers the item even when it says it was captured later than
+// now; a copy made after that time is still new.
+func TestDeletionCoversAnItemFromTheFuture(t *testing.T) {
+	p := &pendingDeletes{}
+	future := time.Now().Add(time.Hour)
+	it := item("a", "hello")
+	it.CapturedAt = model.Time{Time: future}
+	p.Add("", it)
+	st := p.Tombstones("")
+	if len(st) != 1 || st[0].At.Before(future) {
+		t.Fatalf("%+v", st)
+	}
+	s := syncer.New(syncer.Config{Deleted: func() []syncer.Tombstone { return st }})
+	later := item("b", "hello")
+	later.CapturedAt = model.Time{Time: future.Add(time.Minute)}
+	if got := s.Deleted([]model.Item{it, later}); len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("deleted %v", got)
+	}
+}
+
 // Each account has its list: a sign-out, a sign-in to the same account, or
 // the work of another account leave it as it is.
 func TestPendingDeletesFollowTheirAccount(t *testing.T) {

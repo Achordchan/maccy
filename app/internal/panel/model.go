@@ -257,9 +257,10 @@ func (m *Model) enter(s section) {
 // ---- actions
 
 type action struct {
-	kind string // apply, pin, note, delete, clear
-	item model.Item
-	from string // reorder: the moved item
+	kind  string // apply, pin, note, delete, clear
+	item  model.Item
+	from  string // reorder: the moved item
+	toEnd bool   // reorder: to the end, rather than before item
 }
 
 func (m *Model) run(a action) {
@@ -278,9 +279,15 @@ func (m *Model) run(a action) {
 	case "clear":
 		m.askClear()
 	case "move":
-		before := a.item.ID
-		m.Host.Reorder(a.from, &before)
-		m.flashID, m.flashUntil = a.item.ID, m.Now().Add(dropFlash)
+		flash := a.item.ID
+		if a.toEnd {
+			m.Host.Reorder(a.from, nil)
+			flash = a.from
+		} else {
+			before := a.item.ID
+			m.Host.Reorder(a.from, &before)
+		}
+		m.flashID, m.flashUntil = flash, m.Now().Add(dropFlash)
 		m.after(dropFlash + 20*time.Millisecond)
 	}
 }

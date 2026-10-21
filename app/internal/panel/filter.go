@@ -188,24 +188,43 @@ func ImageInfo(path string) string {
 }
 
 // infoCache keeps what ImageInfo found, so a row does not read its file in
-// every frame.
+// every frame. The file is read in the background, as the thumbnail is: it
+// may be on a disk that answers slowly, and the window must not wait for it.
 type infoCache struct {
-	mu sync.Mutex
-	m  map[string]string
+	mu      sync.Mutex
+	m       map[string]string
+	pending map[string]bool
 }
 
-func (c *infoCache) get(path string) string {
+// get returns what is known of the picture at path, or "" while it is being
+// read (redraw is called when it has been).
+func (c *infoCache) get(path string, redraw func()) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if s, ok := c.m[path]; ok {
 		return s
 	}
-	if c.m == nil || len(c.m) > 512 {
-		c.m = map[string]string{}
+	if path == "" || c.pending[path] {
+		return ""
 	}
-	s := ImageInfo(path)
-	c.m[path] = s
-	return s
+	if c.pending == nil {
+		c.pending = map[string]bool{}
+	}
+	c.pending[path] = true
+	go func() {
+		s := ImageInfo(path)
+		c.mu.Lock()
+		delete(c.pending, path)
+		if c.m == nil || len(c.m) > 512 {
+			c.m = map[string]string{}
+		}
+		c.m[path] = s
+		c.mu.Unlock()
+		if redraw != nil {
+			redraw()
+		}
+	}()
+	return ""
 }
 
 // DragText is what the ghost of a dragged row says.

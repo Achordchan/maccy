@@ -145,7 +145,8 @@ func (p *pendingDeletes) save() error {
 	return nil
 }
 
-// Add notes that the user of the account owner deleted items, now. When the
+// Add notes that the user of the account owner deleted items, now (or at the
+// time an item says it was captured, when that is later). When the
 // file cannot be written the items are still noted for as long as the program
 // runs, and the error says so.
 func (p *pendingDeletes) Add(owner string, items ...model.Item) error {
@@ -158,7 +159,14 @@ func (p *pendingDeletes) Add(owner string, items ...model.Item) error {
 	k, at := p.account(owner), p.clock()
 	l := p.lists[k]
 	for _, it := range items {
-		l = append(l, deletion{ID: it.ID, Key: syncer.MergeKey(it), At: at})
+		// The deletion covers the item as it was, also when it says it was
+		// captured later than now (a device whose clock is ahead, or a clock
+		// set back here): the time is not what the deletion is about.
+		d := deletion{ID: it.ID, Key: syncer.MergeKey(it), At: at}
+		if it.CapturedAt.After(d.At) {
+			d.At = it.CapturedAt.Time
+		}
+		l = append(l, d)
 	}
 	p.lists[k] = l
 	return p.save()

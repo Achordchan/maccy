@@ -279,6 +279,17 @@ func (m *Model) row(c *ui.Context, p Palette, rows []model.Item, i int, hov **mo
 			*hov, *hovRect = &cp, btn.Bounds()
 		}
 		hline(c, p)
+		if i == len(rows)-1 {
+			// Below the last row: a dragged row dropped here goes to the end
+			// (on a row, it goes before that row).
+			end := ui.Row(c).FillWidth().Height(16)
+			if d, over := ui.DragOver[dragRow](end); over && d.ID != it.ID {
+				end.Background(p.Pressed)
+			}
+			if d, ok := ui.Drop[dragRow](end); ok && d.ID != it.ID {
+				act = &action{kind: "move", from: d.ID, toEnd: true}
+			}
+		}
 	})
 	return act
 }
@@ -292,7 +303,7 @@ func (m *Model) imageCell(c *ui.Context, p Palette, it model.Item, text ui.Color
 				ui.Image(c, bm).Size(36, 36).Fit(ui.Cover)
 			}
 		})
-		info := m.infos.get(model.Str(it.ImageFilePath))
+		info := m.infos.get(model.Str(it.ImageFilePath), m.Redraw)
 		if info == "" {
 			info = "IMG"
 		}
