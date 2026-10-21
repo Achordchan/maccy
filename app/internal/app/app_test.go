@@ -1077,6 +1077,76 @@ func TestDeletionMergesASnapshotWithoutATime(t *testing.T) {
 	}
 }
 
+// A deletion chooses, writes down and removes its items in one step: the
+// same text copied again meanwhile (which keeps the id) waits, then stays,
+// and the deletion written down does not cover it.
+func TestDeletionAndACopyMadeMeanwhile(t *testing.T) {
+	root := t.TempDir()
+	st := model.DefaultSettings()
+	st.AuthRefreshToken, st.AuthUserEmail = model.Ptr("refresh"), model.Ptr("a@example.com")
+	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp(t, root, &fakeClip{}, "http://127.0.0.1:1")
+	old := item("x", "x")
+	old.CapturedAt = model.Time{Time: time.Now().Add(-time.Minute)}
+	a.History.Add(old)
+	again := item("x2", "x") // the same text, copied again
+	again.CapturedAt = model.Time{Time: time.Now().Add(time.Minute)}
+	var calls atomic.Int32
+	copied := make(chan struct{})
+	a.remove(func(all []model.Item) []model.Item {
+		if calls.Add(1) == 2 { // the removal itself
+			go func() { a.History.Add(again); close(copied) }()
+			select {
+			case <-copied:
+				t.Error("the history changed while the items were chosen")
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		for _, it := range all {
+			if it.ID == "x" {
+				return []model.Item{it}
+			}
+		}
+		return nil
+	})
+	waitFor(t, "the removal", func() bool { return calls.Load() >= 2 })
+	<-copied
+	waitFor(t, "the copy", func() bool { return hasText(a, "x") })
+	if got := a.Syncer.Deleted(a.History.Items()); len(got) != 0 {
+		t.Fatalf("the deletion covers the copy made after it: %v", idsOf(got))
+	}
+	a.done.Wait() // its upload, which fails, before the files go
+}
+
+// Deletions noted under a session while the file could not be read are the
+// account's once the file is read and says the session is known by its
+// address.
+func TestDeletionsNotedUnreadJoinTheirAccount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pending-delete.json")
+	before := &pendingDeletes{path: path}
+	if err := before.Add("session:1", nil, item("x", "x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := before.Adopt("session:1", "a@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	p := &pendingDeletes{path: path, readFile: func(string) ([]byte, error) { return nil, fs.ErrPermission }}
+	_ = p.Add("session:1", nil, item("y", "y")) // the file cannot be read now
+	_ = p.MarkRepair("session:1")
+	p.readFile = nil
+	if got := ids(p.Tombstones("a@example.com")); len(got) != 2 {
+		t.Fatalf("the account: %v", got)
+	}
+	if !p.NeedsRepair("a@example.com") || !p.Owed("a@example.com") {
+		t.Fatal("the repair or the owed deletion was left under the session")
+	}
+	if got := ids(p.Tombstones("session:1")); len(got) != 2 {
+		t.Fatalf("the session: %v", got)
+	}
+}
+
 func signedInRoot(t *testing.T, tok syncclient.TokenSet) string {
 	t.Helper()
 	root := t.TempDir()

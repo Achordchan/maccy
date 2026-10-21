@@ -494,10 +494,13 @@ func TestRemoveSelectedIsOneStep(t *testing.T) {
 		}
 		return nil
 	})
-	if len(removed) != 1 || removed[0].ID != a.ID || r.events.Load() != before+1 {
-		t.Fatalf("removed %v, %d changes", removed, r.events.Load()-before)
+	if len(removed) != 1 || removed[0].ID != a.ID {
+		t.Fatalf("removed %v", removed)
 	}
 	<-added
+	if n := r.events.Load() - before; n != 2 { // the removal, then the copy
+		t.Fatalf("%d changes", n)
+	}
 	found := false
 	for _, it := range r.svc.Items() {
 		found = found || model.Str(it.Text) == "a"

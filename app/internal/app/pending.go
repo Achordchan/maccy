@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -142,6 +144,17 @@ func (p *pendingDeletes) load() error {
 		}
 		if _, ok := p.alias[accountKey(k)]; !ok { // one made since is newer
 			p.alias[accountKey(k)] = accountKey(v)
+		}
+	}
+	// What was noted while the file could not be read, under a name the file
+	// says is another's now, is that one's.
+	for _, k := range slices.Collect(maps.Keys(p.lists)) {
+		p.move(k, p.account(k))
+	}
+	for k, on := range p.repair {
+		if a := p.account(k); on && a != k {
+			p.repair[a] = true
+			delete(p.repair, k)
 		}
 	}
 	for k, l := range f.Accounts {
