@@ -1099,3 +1099,67 @@ func TestDeletionsFollowTheAccountTheWorkBeganFor(t *testing.T) {
 		t.Fatal("B's sync got A's deletions")
 	}
 }
+
+// A deletion's upload holds the gate when the login changes: the sync the
+// sign-in asked for was turned away, and is made once the deletion, cut short,
+// lets go.
+func TestSignInSyncTurnedAwayByADeletionIsMadeAfterIt(t *testing.T) {
+	reached, over := make(chan struct{}, 1), make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case reached <- struct{}{}:
+		default:
+		}
+		select { // the server does not answer before the client gives up
+		case <-r.Context().Done():
+		case <-over:
+		}
+	}))
+	defer srv.Close()
+	defer close(over)
+	root := t.TempDir()
+	st := model.DefaultSettings()
+	st.AuthRefreshToken, st.AuthUserEmail = model.Ptr("refresh"), model.Ptr("a@example.com")
+	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(Config{Layout: paths.Layout{Root: root}, Clipboard: &fakeClip{}, ChangeSeq: (&fakeClip{}).seq.Load,
+		Interval: 5 * time.Millisecond, BaseURL: srv.URL, Logf: t.Logf, StartupRetry: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var reasons []string
+	a.Auto.Run = func(_ context.Context, reason string, _ bool) error {
+		mu.Lock()
+		reasons = append(reasons, reason)
+		mu.Unlock()
+		return nil
+	}
+	a.History.Add(item("x", "x"))
+	a.Start()
+	defer a.Stop()
+	waitFor(t, "the first sync", func() bool { mu.Lock(); defer mu.Unlock(); return len(reasons) > 0 })
+
+	a.Delete("x")
+	select { // the deletion's upload holds the gate
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the deletion's upload never reached the server")
+	}
+	// A sign-in now: its sync is turned away (what AccountChanged notes when
+	// it is), then the old login's work is ended.
+	a.loginWanted.Store(true)
+	a.endAccountWork()
+	a.beginAccountWork()
+	waitFor(t, "the sign-in's sync", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, r := range reasons {
+			if r == "login" {
+				return true
+			}
+		}
+		return false
+	})
+}

@@ -358,14 +358,14 @@ func (p *program) updates() *updatewin.Model {
 func (p *program) showUpdate() {
 	p.hide()
 	p.updates().ApplyNow()
-	p.updWins.Sync()
+	p.updWins.Reshow() // asked for: its window comes back if it was closed
 }
 
 // checkUpdates is the user asking (the tray, the preferences): the windows
 // show the check and what it finds.
 func (p *program) checkUpdates() {
 	p.updates().CheckNow()
-	p.updWins.Sync()
+	p.updWins.Reshow() // asked for: a window closed while a download goes on comes back
 }
 
 // showPrefs opens the preferences window, made on first use and then only

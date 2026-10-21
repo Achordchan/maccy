@@ -328,16 +328,19 @@ func (a *App) remove(pick func() []model.Item) {
 			// The account changed before its turn came: the change is the user's
 			// all the same, and the cloud copy is not this account's to touch.
 			a.mutateQuietly(func() { a.History.RemoveMany(idsOf(asked)) })
-			return
 		}
-		if ctx.Err() != nil {
-			return
-		}
-		// What was asked for while the gate was shut (a sign-in's sync, a change
-		// of the history) was turned away: ask again.
+		// The sync a sign-in asked for while the gate was shut was turned away,
+		// and this work is no sync whose end asks again (syncDone): ask now, for
+		// the account signed in now, also when this work was the old account's
+		// and was cut short by the change.
 		if a.loginWanted.Load() {
 			a.Auto.Trigger(a.acct(), "login", false)
 		}
+		if !ran || ctx.Err() != nil {
+			return
+		}
+		// A change of the history made while the gate was shut was turned away
+		// too.
 		a.Auto.OnHistoryChanged(a.acct())
 	}()
 }
