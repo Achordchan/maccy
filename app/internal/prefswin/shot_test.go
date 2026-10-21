@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"klip/internal/account"
+	"klip/internal/model"
 )
 
 // KLIP_SHOT=dir go test -run TestShots ./internal/prefswin writes one PNG per
@@ -38,6 +39,19 @@ func TestShots(t *testing.T) {
 	save("shelf")
 	r.click("云同步")
 	save("cloud-out")
+	_ = r.set.Update(func(s *model.Settings) {
+		s.AuthRefreshToken = model.Ptr("r")
+		s.AuthUserEmail = model.Ptr("me@example.com")
+	})
+	r.m.Open()
+	r.m.sub = account.Subscription{Status: "订阅至 2026-11-19", Tier: "Mini", Storage: "12.5 MB / 1 GB", Retention: "30 天", Limit: "正常"}
+	r.tt.Frame()
+	r.click("云同步")
+	save("cloud-in")
+	_ = r.set.Update(func(s *model.Settings) { s.AuthRefreshToken = nil; s.AuthUserEmail = nil; s.AuthAccessToken = nil })
+	r.m.Open()
+	r.tt.Frame()
+	r.click("云同步")
 	r.click("忘记密码")
 	save("dialog")
 }

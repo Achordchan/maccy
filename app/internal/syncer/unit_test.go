@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -177,6 +178,34 @@ func TestDecide(t *testing.T) {
 	}
 }
 
+// With duplicates not merged, two entries of the same content stay two, each
+// with its note; the same entry on both sides is still one.
+func TestMergeItemsKeepingDuplicates(t *testing.T) {
+	entry := func(id, hash, note, captured string) model.Item {
+		return model.Item{ID: id, Kind: model.KindText, ContentHash: model.Ptr(hash), Note: model.Ptr(note), CapturedAt: mt(t, captured), CopyCount: 1}
+	}
+	remote := []model.Item{
+		entry("a", "H1", "one", "2026-05-30T10:00:00Z"),
+		entry("b", "H1", "two", "2026-05-30T09:00:00Z"),
+	}
+	local := []model.Item{
+		entry("a", "H1", "one", "2026-05-30T10:00:00Z"),
+		entry("b", "H1", "two", "2026-05-30T09:00:00Z"),
+		entry("c", "H2", "", "2026-05-30T11:00:00Z"),
+	}
+	got := MergeItemsKeepingDuplicates(remote, local)
+	var notes []string
+	for _, it := range got {
+		notes = append(notes, it.ID+":"+model.Str(it.Note))
+	}
+	if !slices.Equal(notes, []string{"c:", "a:one", "b:two"}) {
+		t.Fatalf("merged %v", notes)
+	}
+	if n := len(MergeItems(remote, local)); n != 2 {
+		t.Fatalf("merged by content: %d", n)
+	}
+}
+
 func TestMergeItems(t *testing.T) {
 	at := func(s string) model.Time { return mt(t, s) }
 	item := func(id, hash string, kind model.Kind, captured string, mut func(*model.Item)) model.Item {
@@ -313,5 +342,88 @@ func TestExplain(t *testing.T) {
 				t.Errorf("C# no longer says %q", text)
 			}
 		}
+	}
+}
+
+// When the server still has a deleted item and that cannot be written down,
+// no sync is written down as done until an upload went through.
+func TestUnwrittenRepairHoldsTheSyncState(t *testing.T) {
+	var st model.Settings
+	fail := errors.New("disk full")
+	deleted := model.Item{ID: "a", Kind: model.KindText, ContentHash: model.Ptr("text:a")}
+	s := &Syncer{cfg: Config{
+		Settings: syncclient.Settings{Get: func() model.Settings { return st }, Update: func(f func(*model.Settings)) { f(&st) }},
+		Deleted:  func() []Tombstone { return []Tombstone{{ID: "a", At: time.Now()}} },
+		Dropped:  func() error { return fail },
+	}}
+	s.withoutDeleted([]model.Item{deleted})
+	s.PersistSyncState("after-download", ManifestInfo{Version: "v2"})
+	if st.SyncLastLocalFingerprint != nil {
+		t.Fatalf("written down as synced: %v", *st.SyncLastLocalFingerprint)
+	}
+	fail = nil // written down now
+	s.cfg.Dropped = func() error { return fail }
+	s.withoutDeleted([]model.Item{deleted})
+	s.PersistSyncState("after-download", ManifestInfo{Version: "v2"})
+	if model.Str(st.SyncLastLocalFingerprint) != "after-download" {
+		t.Fatal("held after the repair was written down")
+	}
+}
+
+// A repair of one account that could not be written down does not hold the
+// syncs of another.
+func TestUnwrittenRepairHoldsOnlyItsAccount(t *testing.T) {
+	var st model.Settings
+	acct := "a@example.com"
+	deleted := model.Item{ID: "a", Kind: model.KindText, ContentHash: model.Ptr("text:a")}
+	s := &Syncer{cfg: Config{
+		Settings: syncclient.Settings{Get: func() model.Settings { return st }, Update: func(f func(*model.Settings)) { f(&st) }},
+		Deleted:  func() []Tombstone { return []Tombstone{{ID: "a", At: time.Now()}} },
+		Dropped:  func() error { return errors.New("disk full") },
+		Account:  func() string { return acct },
+	}}
+	s.withoutDeleted([]model.Item{deleted})
+	acct = "b@example.com" // another account signs in
+	s.PersistSyncState("b-synced", ManifestInfo{Version: "v1"})
+	if model.Str(st.SyncLastLocalFingerprint) != "b-synced" {
+		t.Fatal("B's sync is held by A's repair")
+	}
+	acct = "a@example.com"
+	s.PersistSyncState("a-synced", ManifestInfo{Version: "v2"})
+	if model.Str(st.SyncLastLocalFingerprint) != "b-synced" {
+		t.Fatal("A's sync was written down before its repair")
+	}
+}
+
+// A tombstone stands for its id and for an item merged with it by content,
+// captured no later than the deletion.
+func TestDeletedMatchesByIDOrMergeKeyUpToTheDeletion(t *testing.T) {
+	at := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	text := func(id, s string, captured time.Time) model.Item {
+		return model.Item{ID: id, Kind: model.KindText, Text: model.Ptr(s), ContentHash: model.Ptr("text:" + s), CapturedAt: model.Time{Time: captured}}
+	}
+	deleted := text("a", "hello", at.Add(-time.Hour))
+	dropped := 0
+	s := &Syncer{cfg: Config{Deleted: func() []Tombstone {
+		return []Tombstone{{ID: deleted.ID, Key: MergeKey(deleted), At: at}}
+	}, Dropped: func() error { dropped++; return nil }}}
+	items := []model.Item{
+		text("a", "hello", at.Add(-time.Hour)),     // the item itself
+		text("b", "hello", at.Add(-2*time.Hour)),   // the same text, copied on another device
+		text("c", "hello", at.Add(time.Minute)),    // copied again after the deletion
+		text("d", "other", at.Add(-time.Hour)),     // something else
+		text("a", "changed", at.Add(-3*time.Hour)), // the same id
+		text("e", "hello", at),                     // at the moment of the deletion
+	}
+	var got []string
+	for _, it := range s.Deleted(items) {
+		got = append(got, it.ID+":"+model.Str(it.Text))
+	}
+	want := []string{"a:hello", "b:hello", "a:changed", "e:hello"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("deleted %v, want %v", got, want)
+	}
+	if kept := s.withoutDeleted(items); len(kept) != 2 || dropped != 1 {
+		t.Fatalf("kept %d, dropped told %d times", len(kept), dropped)
 	}
 }

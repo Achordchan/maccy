@@ -1,14 +1,23 @@
-// Package panel is Klip's main window: the search box and the list of
-// history items. The view is plain MyGo UI over a Model, so it runs in a
-// window and, in tests, without one.
+// Package panel is Klip's main window: the search box, the list of history
+// items, the "常用剪贴" folder of favourites and the bar below. The view is
+// plain MyGo UI over a Model, so it runs in a window and, in tests, without
+// one. Its looks and behaviour follow MainWindow of the .NET client.
 package panel
 
 import (
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
-	"unicode"
+
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/webp"
 
 	"klip/internal/model"
 )
@@ -29,67 +38,50 @@ func Match(it model.Item, query string) bool {
 	return false
 }
 
-// Rows is what the list shows: the items that match the query (trimmed; blank
-// matches all), the pinned ones first, each group in history order.
-func Rows(items []model.Item, query string) []model.Item {
+// Filter is the items that match the query (trimmed; blank matches all), in
+// the order of the history. Pinned ones are not moved to the top there.
+func Filter(items []model.Item, query string) []model.Item {
 	q := strings.TrimSpace(query)
-	var pinned, rest []model.Item
+	out := make([]model.Item, 0, len(items))
 	for _, it := range items {
-		if q != "" && !Match(it, q) {
-			continue
+		if q == "" || Match(it, q) {
+			out = append(out, it)
 		}
+	}
+	return out
+}
+
+// Pinned keeps the favourites of a list.
+func Pinned(items []model.Item) []model.Item {
+	var out []model.Item
+	for _, it := range items {
 		if it.Pinned {
-			pinned = append(pinned, it)
-		} else {
-			rest = append(rest, it)
+			out = append(out, it)
 		}
 	}
-	return append(pinned, rest...)
+	return out
 }
 
-// Preview is the first line of an item: its text on one line and cut, the
-// names of its files, or a word for an image.
-func Preview(it model.Item) string {
-	switch it.Kind {
-	case model.KindImage:
-		return "图片"
-	case model.KindFileList:
-		var names []string
-		for _, p := range it.FilePaths {
-			names = append(names, baseName(p))
-		}
-		return strings.Join(names, "、")
+// SingleLine is TextToSingleLineConverter: each run of line breaks becomes
+// one space, and the ends are trimmed.
+func SingleLine(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return s
 	}
-	return previewLine(model.Str(it.Text), 140)
-}
-
-// previewLine is the text on one line (runs of white space as one space) cut
-// to n characters, made as far as n and no further: a copied log of many
-// megabytes costs no more than a short note.
-func previewLine(s string, n int) string {
 	var b strings.Builder
-	count, space, started := 0, false, false
+	brk := false
 	for _, r := range s {
-		if unicode.IsSpace(r) {
-			space = started // a space only between words
+		if r == '\r' || r == '\n' {
+			if !brk {
+				b.WriteByte(' ')
+			}
+			brk = true
 			continue
 		}
-		if space {
-			if count >= n {
-				return b.String() + "…"
-			}
-			b.WriteByte(' ')
-			count++
-			space = false
-		}
-		if count >= n {
-			return b.String() + "…"
-		}
+		brk = false
 		b.WriteRune(r)
-		count++
-		started = true
 	}
-	return b.String()
+	return strings.TrimSpace(b.String())
 }
 
 // baseName is the last element of a path of either kind.
@@ -98,52 +90,169 @@ func baseName(p string) string {
 	return filepath.Base(p)
 }
 
-func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+// FileSummary is FilePathsToSummaryStringConverter: the name of the first
+// file, and how many more there are.
+func FileSummary(paths []string) string {
+	var arr []string
+	for _, p := range paths {
+		if strings.TrimSpace(p) != "" {
+			arr = append(arr, p)
+		}
+	}
+	if len(arr) == 0 {
+		return ""
+	}
+	name := baseName(arr[0])
+	if strings.TrimSpace(name) == "" || name == "." || name == "/" {
+		name = arr[0]
+	}
+	if len(arr) == 1 {
+		return name
+	}
+	return fmt.Sprintf("%s (+%d)", name, len(arr)-1)
+}
 
-func cut(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
+// ExtensionTag is FilePathsToExtensionTagConverter: the extension of the
+// first file in capitals, or FILE.
+func ExtensionTag(paths []string) string {
+	for _, p := range paths {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		ext := strings.TrimPrefix(strings.TrimSpace(filepath.Ext(strings.ReplaceAll(p, "\\", "/"))), ".")
+		if ext == "" {
+			return "FILE"
+		}
+		return strings.ToUpper(ext)
+	}
+	return ""
+}
+
+// Tag is the small label at the right of a row: the extension of a file, IMG
+// for an image, nothing for text.
+func Tag(it model.Item) string {
+	switch it.Kind {
+	case model.KindFileList:
+		return ExtensionTag(it.FilePaths)
+	case model.KindImage:
+		return "IMG"
+	}
+	return ""
+}
+
+// RowText is the one line of a text or file row.
+func RowText(it model.Item) string {
+	if it.Kind == model.KindFileList {
+		return FileSummary(it.FilePaths)
+	}
+	return SingleLine(headRunes(model.Str(it.Text), rowTextRunes))
+}
+
+// rowTextRunes is how much of a text a row looks at: the line is cut by the
+// width of the window long before that, and a copied log of many megabytes
+// must cost no more than a short note, in every frame.
+const rowTextRunes = 2000
+
+// headRunes is the first n characters of s, found without reading the rest.
+func headRunes(s string, n int) string {
+	for i := range s {
+		if n == 0 {
+			return s[:i]
+		}
+		n--
+	}
+	return s
+}
+
+// ImageInfo is ImagePathToImageInfoConverter: "IMG · 640×480 · 12 KB", or
+// nothing when the file is gone.
+func ImageInfo(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return ""
+	}
+	kb := max(1, st.Size()/1024)
+	f, err := os.Open(path)
+	if err != nil {
+		return "IMG"
+	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return "IMG"
+	}
+	return fmt.Sprintf("IMG · %d×%d · %d KB", cfg.Width, cfg.Height, kb)
+}
+
+// infoCache keeps what ImageInfo found, so a row does not read its file in
+// every frame. The file is read in the background, as the thumbnail is: it
+// may be on a disk that answers slowly, and the window must not wait for it.
+type infoCache struct {
+	mu      sync.Mutex
+	m       map[string]string
+	pending map[string]bool
+}
+
+// get returns what is known of the picture at path, or "" while it is being
+// read (redraw is called when it has been).
+func (c *infoCache) get(path string, redraw func()) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s, ok := c.m[path]; ok {
 		return s
 	}
-	return string(r[:n]) + "…"
+	if path == "" || c.pending[path] {
+		return ""
+	}
+	if c.pending == nil {
+		c.pending = map[string]bool{}
+	}
+	c.pending[path] = true
+	go func() {
+		s := ImageInfo(path)
+		c.mu.Lock()
+		delete(c.pending, path)
+		if c.m == nil || len(c.m) > 512 {
+			c.m = map[string]string{}
+		}
+		c.m[path] = s
+		c.mu.Unlock()
+		if redraw != nil {
+			redraw()
+		}
+	}()
+	return ""
 }
 
-// Detail is the second line: when, from where, how often, how big.
-func Detail(it model.Item, now time.Time) string {
-	var parts []string
-	t := it.CapturedAt.Time.In(now.Location())
-	switch {
-	case sameDay(t, now):
-		parts = append(parts, t.Format("15:04"))
-	case t.Year() == now.Year():
-		parts = append(parts, t.Format("01-02 15:04"))
-	default:
-		parts = append(parts, t.Format("2006-01-02 15:04"))
+// DragText is what the ghost of a dragged row says.
+func DragText(it model.Item) string {
+	switch it.Kind {
+	case model.KindFileList:
+		if n := len(it.FilePaths); n > 0 {
+			return fmt.Sprintf("%d 个文件", n)
+		}
+		return "文件"
+	case model.KindImage:
+		return "图片"
 	}
-	if app := strings.TrimSpace(model.Str(it.SourceAppName)); app != "" {
-		parts = append(parts, app)
+	t := strings.NewReplacer("\r\n", " ", "\n", " ").Replace(model.Str(it.Text))
+	if r := []rune(t); len(r) > 42 {
+		t = string(r[:42]) + "…"
 	}
-	if it.CopyCount > 1 {
-		parts = append(parts, fmt.Sprintf("复制 %d 次", it.CopyCount))
+	if strings.TrimSpace(t) == "" {
+		return "文本"
 	}
-	if it.Kind == model.KindFileList && len(it.FilePaths) > 1 {
-		parts = append(parts, fmt.Sprintf("%d 个文件", len(it.FilePaths)))
-	}
-	if it.ApproxBytes > 0 && it.Kind != model.KindText {
-		parts = append(parts, Size(it.ApproxBytes))
-	}
-	return strings.Join(parts, " · ")
-}
-
-func sameDay(a, b time.Time) bool {
-	ay, am, ad := a.Date()
-	by, bm, bd := b.Date()
-	return ay == by && am == bm && ad == bd
+	return t
 }
 
 // Size writes a byte count for people.
 func Size(n int64) string {
 	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
 	case n >= 1<<20:
 		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
 	case n >= 1<<10:
@@ -151,3 +260,5 @@ func Size(n int64) string {
 	}
 	return fmt.Sprintf("%d B", n)
 }
+
+var _ = time.Now

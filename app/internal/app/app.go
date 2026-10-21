@@ -5,11 +5,18 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,7 +65,9 @@ type Config struct {
 	// Changed is called, from any goroutine, when something the windows show
 	// changed (the sync status; history changes are seen through the history).
 	Changed func()
-	Logf    func(format string, args ...any)
+	// Toast shows a short message in the main window (may be nil).
+	Toast func(msg string)
+	Logf  func(format string, args ...any)
 }
 
 // UpdateManifestURL is where the update manifest is published: the address
@@ -83,6 +92,8 @@ type App struct {
 	syncMu            sync.Mutex // the end of a sync and the notes of changes that came during it
 	syncOver          bool       // under syncMu: the running sync has taken its notes and is ending
 	status            string
+	view              SyncView
+	viewSeq           int // under mu: moves when a sync begins
 	cancel            context.CancelFunc
 	done              sync.WaitGroup
 	started           bool
@@ -92,15 +103,18 @@ type App struct {
 	remoteDuringSync  atomic.Bool     // another device uploaded while a sync ran
 	acctCtx           context.Context
 	acctCancel        context.CancelFunc
-	changedDuringSync atomic.Bool        // the history changed while a sync ran
-	acctGen           atomic.Int64       // moves when the account changes
-	runGen            atomic.Int64       // the account generation the running sync started under
-	retrying          atomic.Bool        // the loop that tries the first sync again is running
-	loginWanted       atomic.Bool        // a sync for a new sign-in is owed (one was running when it was asked for)
-	initialOK         atomic.Bool        // a background sync has gone through
-	runEntered        atomic.Bool        // the sync that syncDone is told about did start (Run was entered)
-	failStreak        atomic.Int32       // background syncs that failed in a row since the initial one
-	stopWatch         context.CancelFunc // ends the event stream of the current account
+	changedDuringSync atomic.Bool               // the history changed while a sync ran
+	acctGen           atomic.Int64              // moves when the account changes
+	runGen            atomic.Int64              // the account generation the running sync started under
+	runOwner          atomic.Pointer[string]    // the account the running sync started for
+	retrying          atomic.Bool               // the loop that tries the first sync again is running
+	loginWanted       atomic.Bool               // a sync for a new sign-in is owed (one was running when it was asked for)
+	initialOK         atomic.Bool               // a background sync has gone through
+	runEntered        atomic.Bool               // the sync that syncDone is told about did start (Run was entered)
+	pending           pendingDeletes            // what the user deleted here, by account
+	login             atomic.Pointer[loginSeen] // see ownerLearned
+	failStreak        atomic.Int32              // background syncs that failed in a row since the initial one
+	stopWatch         context.CancelFunc        // ends the event stream of the current account
 }
 
 // New reads the settings and the history and connects the parts. A settings
@@ -125,6 +139,11 @@ func New(cfg Config) (*App, error) {
 		cfg.Logf("settings: %v", err)
 	}
 	a.History = history.NewService(cfg.Layout)
+	a.pending.path = filepath.Join(cfg.Layout.Root, "sync", "pending-delete.json")
+	a.pending.logf = cfg.Logf
+	a.login.Store(&loginSeen{owner: a.owner()})
+	a.Settings.Watch(a.ownerLearned)
+	a.replayOwnerMoves()
 	a.Persister = history.NewPersister(a.History, cfg.Layout)
 	if err := a.Persister.Load(context.Background()); err != nil {
 		cfg.Logf("history: %v", err)
@@ -176,10 +195,29 @@ func New(cfg Config) (*App, error) {
 		Client:           syncclient.New(cfg.BaseURL),
 		BaseURL:          cfg.BaseURL,
 		SuppressAutoSync: func(on bool) { a.Auto.Suppress(on) },
+		// What the syncer asks and tells of the deletions is about the account
+		// the work running was started for (runOwner), whatever is signed in by
+		// the time it asks: an upload made for A tells of A's server.
+		Deleted: func() []syncer.Tombstone { return a.pending.Tombstones(a.workOwner()) },
+		Account: a.workOwner,
+		Dropped: func() error {
+			err := a.pending.MarkRepair(a.workOwner())
+			if err != nil {
+				a.cfg.Logf("pending deletions: %v", err)
+			}
+			return err
+		},
+		Uploaded: func(items []model.Item) {
+			if err := a.pending.Delivered(a.workOwner(), items); err != nil {
+				a.cfg.Logf("pending deletions: %v", err)
+			}
+		},
 	})
 	a.Auto = syncer.NewAuto(a.Syncer, a.syncDone)
 	// Every sync is counted while it runs, so that Stop can wait for them (they
 	// start their own goroutines inside Auto).
+	a.Auto.Begin = a.syncBegin
+	a.Auto.Progress = a.syncProgress
 	run := a.Auto.Run
 	a.Auto.Run = func(ctx context.Context, reason string, manual bool) error {
 		a.syncMu.Lock()
@@ -188,8 +226,15 @@ func New(cfg Config) (*App, error) {
 		a.syncMu.Unlock()
 		a.runActive.Store(true)
 		a.runEntered.Store(true)
-		a.runGen.Store(a.acctGen.Load()) // which account this sync is for
-		return run(ctx, reason, manual)
+		_, gen, owner := a.acctWork()
+		a.runGen.Store(gen) // which account this sync is for
+		a.runOwner.Store(&owner)
+		a.replayOwnerMoves()
+		err := run(ctx, reason, manual)
+		if err != nil {
+			return err
+		}
+		return a.settleDeletions(ctx, owner)
 	}
 
 	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings, AccountFile: filepath.Join(cfg.Layout.Root, "sync", "account.txt"), BeforeLoginChange: a.endAccountWork, AfterLoginChange: a.beginAccountWork}
@@ -455,6 +500,193 @@ func (a *App) acct() context.Context {
 	return context.Background()
 }
 
+// acctWork is acct with the account generation and the address of the account
+// it belongs to, read so that they agree: a change of login moves the
+// generation and ends the context before it stores the new address, and the
+// new context comes after it.
+func (a *App) acctWork() (ctx context.Context, gen int64, owner string) {
+	for {
+		a.mu.Lock()
+		ctx, gen = a.acctCtx, a.acctGen.Load()
+		a.mu.Unlock()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		owner = a.owner()
+		if a.acctGen.Load() == gen {
+			return ctx, gen, owner
+		}
+	}
+}
+
+// loginSeen is the address a login had when it was put in place, and the
+// account generation it was put in place in.
+type loginSeen struct {
+	owner string
+	gen   int64
+}
+
+// ownerLearned watches each change of the settings, as it is made: a login
+// known only by its session (sessionOwner: an older client's login with no
+// address and no token naming one) that learns its address, or gets a new
+// refresh token, with a refresh is the same login, and what it noted is now
+// under its new name. A change of login is not that: it moves the generation
+// (endAccountWork) before it stores the new login, and the login it puts in
+// place is written down only after (beginAccountWork).
+//
+// When the move cannot be written to the deletions' file, it is written with
+// the settings that name the new address (ownerMove), and made again
+// (replayOwnerMoves) until it is: after a restart nothing else tells whose
+// what was noted under the session is.
+func (a *App) ownerLearned(before model.Settings, after *model.Settings) {
+	was, is := ownerOf(before), ownerOf(*after)
+	if was == is || !sessionOwner(was) || is == "" {
+		return
+	}
+	l := a.login.Load()
+	if l == nil || l.owner != was || l.gen != a.acctGen.Load() {
+		return
+	}
+	a.login.Store(&loginSeen{owner: is, gen: l.gen})
+	if err := a.pending.Adopt(was, is); err != nil {
+		a.cfg.Logf("pending deletions: %v", err)
+		setOwnerMoves(after, append(ownerMoves(*after), ownerMove{From: was, To: is}))
+	}
+}
+
+// ownerMovesKey is where the settings keep the moves of deletions that
+// ownerLearned could not write: a property of this client's that the C# one
+// keeps as it is (Extra).
+const ownerMovesKey = "KlipPendingDeleteMoves"
+
+// ownerMove is that what was noted under the address From is To's.
+type ownerMove struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+func ownerMoves(st model.Settings) []ownerMove {
+	var ms []ownerMove
+	if raw, ok := st.Extra[ownerMovesKey]; ok {
+		_ = json.Unmarshal(raw, &ms)
+	}
+	return ms
+}
+
+// setOwnerMoves replaces the moves st keeps, in a new map: the one st has is
+// shared with the settings given out before.
+func setOwnerMoves(st *model.Settings, ms []ownerMove) {
+	extra := maps.Clone(st.Extra)
+	if extra == nil {
+		extra = map[string]json.RawMessage{}
+	}
+	delete(extra, ownerMovesKey)
+	if len(ms) > 0 {
+		raw, _ := json.Marshal(ms)
+		extra[ownerMovesKey] = raw
+	}
+	if len(extra) == 0 {
+		extra = nil
+	}
+	st.Extra = extra
+}
+
+// replayOwnerMoves makes again the moves the settings keep, in order, and
+// forgets those that are written now.
+func (a *App) replayOwnerMoves() {
+	var made []ownerMove
+	for _, m := range ownerMoves(a.Settings.Get()) {
+		if err := a.pending.Move(m.From, m.To); err != nil {
+			a.cfg.Logf("pending deletions: %v", err)
+			break
+		}
+		made = append(made, m)
+	}
+	if len(made) == 0 {
+		return
+	}
+	err := a.Settings.Update(func(s *model.Settings) {
+		ms := ownerMoves(*s)
+		for _, m := range made {
+			if i := slices.Index(ms, m); i >= 0 {
+				ms = slices.Delete(ms, i, i+1)
+			}
+		}
+		setOwnerMoves(s, ms)
+	})
+	if err != nil {
+		a.cfg.Logf("settings: %v", err)
+	}
+}
+
+// workOwner is the account the sync or the upload running was started for
+// (one runs at a time: Auto), read once at its start with its generation.
+func (a *App) workOwner() string {
+	if o := a.runOwner.Load(); o != nil {
+		return *o
+	}
+	return a.owner()
+}
+
+// owner is the address of the account signed in, whose the pending deletions
+// are (see ownerOf).
+func (a *App) owner() string { return ownerOf(a.Settings.Get()) }
+
+// ownerOf is whose the deletions made under the login in st are: its address.
+// A login made by an older client may have none stored; its access token,
+// which the server issued to it and which names the account it was issued to,
+// gives it then. A login with nothing but a refresh token is known by that
+// session alone ("session:" and a digest of the token): its deletions are its
+// own, no other login's, and become its account's once a refresh tells its
+// address (ownerLearned). If it ends before that, nothing ties them to an
+// account, as nothing ties its checkpoints to one: they are not given to
+// whoever signs in next. "" when there is no login.
+func ownerOf(st model.Settings) string {
+	if e := strings.TrimSpace(model.Str(st.AuthUserEmail)); e != "" {
+		return e
+	}
+	for _, tok := range []string{model.Str(st.AuthAccessToken), model.Str(st.AuthIdToken)} {
+		if e := tokenEmail(tok); e != "" {
+			return e
+		}
+	}
+	if r := strings.TrimSpace(model.Str(st.AuthRefreshToken)); r != "" {
+		sum := sha256.Sum256([]byte(r))
+		return sessionPrefix + hex.EncodeToString(sum[:8])
+	}
+	return ""
+}
+
+const sessionPrefix = "session:"
+
+// sessionOwner says that owner names a login by its session (or names none),
+// not an account.
+func sessionOwner(owner string) bool { return owner == "" || strings.HasPrefix(owner, sessionPrefix) }
+
+// tokenEmail is the address a JWT names ("" when tok is not one, or names
+// none). The signature is not checked: the token is this login's own, as kept
+// in the settings, and is used to name the account, not to grant anything.
+func tokenEmail(tok string) string {
+	parts := strings.Split(strings.TrimSpace(tok), ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	b, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return ""
+	}
+	var claims map[string]any
+	if json.Unmarshal(b, &claims) != nil {
+		return ""
+	}
+	for _, k := range []string{"email", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"} {
+		if e, ok := claims[k].(string); ok && strings.TrimSpace(e) != "" {
+			return strings.TrimSpace(e)
+		}
+	}
+	return ""
+}
+
 // Apply puts an item on the clipboard and moves it to the top, as the main
 // window does when one is chosen.
 func (a *App) Apply(it model.Item) {
@@ -467,34 +699,23 @@ func (a *App) Apply(it model.Item) {
 
 // SyncNow is the user asking for a sync.
 func (a *App) SyncNow() {
-	prev := a.SyncStatus()
-	a.setStatus("同步中…")
-	// Only the syncs started in the background count towards "the first sync
-	// is done" (MainWindowViewModel does the same: !manual); a manual one
-	// that succeeds leaves history-triggered syncing to the next background one.
-	if !a.Auto.Trigger(a.acct(), "manual", true) {
-		// Turned away because one is still unwinding: no result will follow this
-		// request, so the footer goes back to what it said (unless that sync has
-		// published something newer in the meantime).
-		a.mu.Lock()
-		restore := a.status == "同步中…"
-		if restore {
-			a.status = prev
-		}
-		a.mu.Unlock()
-		if restore {
-			a.changed()
-		}
-	}
+	// The status and the bar are set when the run starts (Auto.Begin): a request
+	// that is turned away because one is still unwinding changes nothing.
+	a.Auto.Trigger(a.acct(), "manual", true)
 }
 
 // endAccountWork is called by the account service just before it replaces or
 // ends the login: what the old account was doing (a sync, the event stream's
 // callbacks) is stopped before the new tokens are in place, and a sync that
 // still manages to finish is known to be of the old account.
+//
+// The deletions owed to the server stay with the account that owes them
+// (pendingDeletes, one list for each): a sign-out or a sign-in to the same
+// account keeps them, and the old account's work, which is not waited for
+// here (the account service is holding the login), can only write to its own.
 func (a *App) endAccountWork() {
-	a.acctGen.Add(1)
 	a.mu.Lock()
+	a.acctGen.Add(1)
 	if a.started {
 		a.acctCancel()
 		// Until the new login is in place the account context is a dead one: a
@@ -504,12 +725,14 @@ func (a *App) endAccountWork() {
 		stop()
 		a.acctCtx, a.acctCancel = dead, func() {}
 	}
+	a.pending.ForgetAliases()
 	a.mu.Unlock()
 }
 
 // beginAccountWork is called by the account service once the new login (or
 // none) is stored: the work of the account that is signed in now may start.
 func (a *App) beginAccountWork() {
+	a.login.Store(&loginSeen{owner: a.owner(), gen: a.acctGen.Load()})
 	a.mu.Lock()
 	if a.started {
 		a.acctCtx, a.acctCancel = context.WithCancel(a.ctx)
@@ -634,17 +857,5 @@ func (a *App) syncDone(reason string, manual bool, err error) {
 			}
 		})
 	}
-	switch {
-	case err == nil:
-		a.setStatus("已同步 " + time.Now().Format("15:04"))
-	case manual && errors.Is(err, syncer.ErrNotLoggedIn):
-		a.setStatus("请先登录")
-	case manual:
-		a.setStatus(syncer.Explain(err, syncer.InMainWindow))
-	default:
-		// A background failure is not shown as a message in the C# client
-		// either; it is kept for the log and the footer.
-		a.cfg.Logf("sync (%s): %v", reason, err)
-		a.setStatus("同步失败")
-	}
+	a.finishView(reason, manual, err)
 }

@@ -51,3 +51,4 @@ build_tmp/
 
 update.md
 installer/legacy-delete.iss
+dist/

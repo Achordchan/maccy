@@ -1,6 +1,7 @@
-// Package updatewin is the update window: what UpdatePromptWindow,
-// UpdateCheckWindow and UpdateProgressWindow of the C# client show, in one
-// window that follows the state of the update.Coordinator.
+// Package updatewin is the windows of an update: the check, the notice of a
+// new version, the download and the messages (UpdateCheckWindow,
+// UpdatePromptWindow, UpdateProgressWindow and MessageWindow of the C# client).
+// They follow the state of the update.Coordinator, one window at a time.
 package updatewin
 
 import (
@@ -10,23 +11,45 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"klip/internal/panel"
 	"klip/internal/update"
 )
 
-// Host is what the window asks of the program around it.
+// Kind is which of the windows the state calls for.
+type Kind string
+
+const (
+	None     Kind = ""
+	Check    Kind = "check"
+	Prompt   Kind = "prompt"
+	Progress Kind = "progress"
+	Message  Kind = "message"
+)
+
+// Sizes of the windows (the Width and Height of the .axaml files).
+var Sizes = map[Kind][2]int{
+	Check: {420, 148}, Prompt: {520, 360}, Progress: {520, 170}, Message: {480, 220},
+}
+
+// Host is what the windows ask of the program around it.
 type Host interface {
-	// Close hides the window.
-	Close()
 	// Quit ends the program (a mandatory update that is declined).
 	Quit()
 }
 
-// Model is the state of the window.
+// Model is the state of the windows. A window shows only while the user's
+// own request is under way: a version that a silent check found is known to
+// the main window's button, and nothing more.
 type Model struct {
 	Coordinator *update.Coordinator
 	Host        Host
 	// Go runs f in the background (go f()); tests run it at once.
 	Go func(f func())
+	// Quitting says that the program is quitting (may be nil): windows then
+	// close for good.
+	Quitting func() bool
+
+	active bool
 }
 
 // New returns a Model.
@@ -34,153 +57,270 @@ func New(c *update.Coordinator, h Host) *Model {
 	return &Model{Coordinator: c, Host: h, Go: func(f func()) { go f() }}
 }
 
-// View is the window's content.
-func (m *Model) View(c *ui.Context) {
-	t := c.Theme()
-	st := m.Coordinator.State()
-	c.Root().Background(t.Background)
+// Active says that a request of the user is under way.
+func (m *Model) Active() bool { return m.active }
 
-	ui.Column(c).Fill().Padding(20).Gap(12).Children(func() {
-		switch st.Phase {
-		case update.Checking:
-			ui.Text(c, "检查更新").Bold().FontSize(16)
-			ui.Progress(c, -1).Label("检查更新")
-			ui.Text(c, st.Message).TextColor(t.TextMuted).Wrap()
-
-		case update.UpToDateNow:
-			ui.Text(c, "检查更新").Bold().FontSize(16)
-			ui.Text(c, st.Message).Wrap()
-			m.spacer(c)
-			m.buttons(c, func() {
-				if ui.PrimaryButton(c, "好").Clicked() {
-					m.dismiss()
-				}
-			})
-
-		case update.Available:
-			m.available(c, st)
-
-		case update.Downloading:
-			ui.Text(c, "正在下载更新").Bold().FontSize(16)
-			if st.Info != nil {
-				ui.Text(c, "版本 "+st.Info.Version).TextColor(t.TextMuted)
-			}
-			value := -1.0
-			label := "正在连接…"
-			if st.Total > 0 {
-				value = float64(st.Read) / float64(st.Total)
-				label = fmt.Sprintf("%s / %s（%d%%）", size(st.Read), size(st.Total), int(value*100))
-			} else if st.Read > 0 {
-				label = size(st.Read)
-			}
-			ui.Progress(c, value).Label("下载进度")
-			ui.Text(c, label).TextColor(t.TextMuted).FontSize(12)
-			if st.Message != "" {
-				ui.Text(c, st.Message).Wrap().TextColor(t.Danger)
-			}
-
-		case update.Applying:
-			ui.Text(c, "正在更新").Bold().FontSize(16)
-			ui.Progress(c, -1).Label("正在更新")
-			ui.Text(c, st.Message).TextColor(t.TextMuted).Wrap()
-
-		case update.Problem:
-			ui.Text(c, "更新失败").Bold().FontSize(16)
-			ui.Text(c, st.Message).Wrap()
-			m.spacer(c)
-			m.buttons(c, func() {
-				// After a failed look the known update can still be installed.
-				retry := "重试"
-				if st.Check {
-					retry = "立即更新"
-				}
-				if st.Info != nil && ui.Button(c, retry).Clicked() {
-					m.apply()
-				}
-				if m.Coordinator.MustUpdate() != nil {
-					// A mandatory update has no way out but the update and
-					// leaving the program.
-					if ui.PrimaryButton(c, "退出").Clicked() {
-						m.Host.Quit()
-					}
-				} else if ui.PrimaryButton(c, "关闭").Clicked() {
-					m.dismiss()
-				}
-			})
-
-		default:
-			ui.Text(c, "已经是最新版本。").Wrap()
-			m.spacer(c)
-			m.buttons(c, func() {
-				if ui.PrimaryButton(c, "关闭").Clicked() {
-					m.Host.Close()
-				}
-			})
-		}
-	})
-}
-
-func (m *Model) available(c *ui.Context, st update.State) {
-	t := c.Theme()
-	info := st.Info
-	ui.Text(c, "发现新版本").Bold().FontSize(16)
-	ui.Text(c, "版本："+info.Version).TextColor(t.TextMuted)
-	ui.Text(c, "更新内容：").TextColor(t.TextMuted).FontSize(12)
-	ui.Scroll(c).Height(170).Border(1, t.Border).Radius(8).Children(func() {
-		notes := strings.TrimSpace(info.Notes)
-		if notes == "" {
-			notes = "（没有更新说明）"
-		}
-		ui.Text(c, notes).Wrap().Padding(10).Selectable()
-	})
-	mandatory := m.Coordinator.MustUpdate() != nil
-	if mandatory {
-		ui.Text(c, "这是必须安装的更新。").TextColor(t.Danger).FontSize(12)
+// Kind is the window that has to be on screen now.
+func (m *Model) Kind() Kind {
+	if !m.active && !m.mandatory() {
+		return None
 	}
-	m.spacer(c)
-	m.buttons(c, func() {
-		if mandatory {
-			if ui.Button(c, "退出").Clicked() {
-				m.Host.Quit()
-			}
-		} else if ui.Button(c, "稍后").Clicked() {
-			m.dismiss()
-		}
-		if ui.PrimaryButton(c, "立即更新").Clicked() {
-			m.apply()
-		}
-	})
+	switch m.Coordinator.State().Phase {
+	case update.Checking:
+		return Check
+	case update.Available:
+		return Prompt
+	case update.Downloading, update.Applying:
+		return Progress
+	case update.UpToDateNow, update.Problem:
+		return Message
+	}
+	return None
 }
 
-func (m *Model) spacer(c *ui.Context) { ui.Row(c).Grow(1) }
+// mandatory says that an update that must be installed is known: until it is
+// installed (or the program quit) its window stays, whoever asked for it.
+func (m *Model) mandatory() bool { return m.Coordinator.MustUpdate() != nil }
 
-func (m *Model) buttons(c *ui.Context, f func()) {
-	ui.Divider(c)
-	ui.Row(c).Gap(10).Justify(ui.End).Children(f)
+// Title is the title of the window of a kind.
+func (m *Model) Title(k Kind) string {
+	st := m.Coordinator.State()
+	switch k {
+	case Prompt:
+		if st.Info != nil && m.mandatory() {
+			return "需要更新"
+		}
+		return "发现新版本"
+	case Progress:
+		return "正在下载更新"
+	case Message:
+		return st.Title
+	}
+	return "检查更新"
 }
 
-// dismiss closes a message and hides the window.
-func (m *Model) dismiss() {
-	m.Coordinator.Dismiss()
-	m.Host.Close()
+// CheckNow is the user asking for a check (the tray's 检测更新...).
+func (m *Model) CheckNow() {
+	m.active = true
+	m.Go(func() { m.Coordinator.Check(context.Background()) })
+}
+
+// ApplyNow is the user pressing the update button of the main window: the
+// download starts at once, without the notice (ApplyAvailableUpdateAsync).
+func (m *Model) ApplyNow() {
+	m.active = true
+	if m.Coordinator.Available() == nil {
+		m.CheckNow()
+		return
+	}
+	m.apply()
 }
 
 func (m *Model) apply() {
 	m.Go(func() { m.Coordinator.Apply(context.Background()) })
 }
 
-// CheckNow is the user asking for a check: the window should be shown by
-// the caller; the check runs in the background.
-func (m *Model) CheckNow() {
-	m.Go(func() { m.Coordinator.Check(context.Background()) })
+// Finish ends the user's request: a message is read, a notice is put off.
+func (m *Model) Finish() {
+	m.Coordinator.Dismiss()
+	m.active = false
 }
 
+// Declined is the window of a notice closed, or its cancel button: for an
+// update that must be installed, that ends the program.
+func (m *Model) Declined() {
+	if m.mandatory() {
+		m.Host.Quit()
+		return
+	}
+	m.Finish()
+}
+
+// WindowClosed is for the close button of a window of the system.
+func (m *Model) WindowClosed(k Kind) {
+	switch k {
+	case Prompt:
+		m.Declined()
+	case Message:
+		if m.mandatory() {
+			m.Host.Quit() // a mandatory update has no way out but the update and leaving
+			return
+		}
+		m.Finish()
+	}
+}
+
+// ---- views
+
+// card is the Border of the windows: padding 16 over the colour of the
+// window.
+func frame(c *ui.Context, p panel.Palette, body func()) {
+	c.Root().Background(p.Background)
+	ui.Column(c).Fill().Padding(16).Gap(10).Background(p.Background).Children(body)
+}
+
+func button(c *ui.Context, p panel.Palette, label string) bool {
+	return panel.Button(c, p, label, 5, 11, 14).Label(label).Clicked()
+}
+
+func primary(c *ui.Context, label string) bool { return ui.PrimaryButton(c, label).Clicked() }
+
+func footer(c *ui.Context, p panel.Palette, buttons func()) {
+	ui.Row(c).Grow(1)
+	buttonRow(c, p, buttons)
+}
+
+// buttonRow is the line and the buttons at the foot of a window, under what
+// grows to fill the rest of it.
+func buttonRow(c *ui.Context, p panel.Palette, buttons func()) {
+	ui.Box(c).FillWidth().Height(1).Background(p.Divider).Margin(10, 0, 0)
+	ui.Row(c).FillWidth().Gap(10).Justify(ui.End).Children(buttons)
+}
+
+// ViewCheck is the small window of a check under way.
+func (m *Model) ViewCheck(c *ui.Context) {
+	p := panel.PaletteFor(c.Theme().Dark)
+	c.Root().Background(ui.Transparent)
+	st := m.Coordinator.State()
+	msg := st.Message
+	if msg == "" {
+		msg = "正在连接更新服务器，请稍候..."
+	}
+	ui.Column(c).Fill().Padding(16).Gap(12).Background(p.Panel).Border(1, p.Border).Radius(14).Children(func() {
+		ui.Text(c, "检查更新中").FontSize(16).FontWeight(600).TextColor(p.Text)
+		ui.Progress(c, -1).FillWidth().Height(10).Label("检查更新")
+		ui.Text(c, msg).FontSize(12).TextColor(p.Muted).Wrap()
+	})
+}
+
+// ViewPrompt is the notice of a new version.
+func (m *Model) ViewPrompt(c *ui.Context) {
+	p := panel.PaletteFor(c.Theme().Dark)
+	info := m.Coordinator.State().Info
+	if info == nil {
+		return
+	}
+	frame(c, p, func() {
+		ui.Text(c, m.Title(Prompt)).FontSize(16).FontWeight(600).TextColor(p.Text)
+		// The notes take what the window has left above the buttons: the window
+		// is of a fixed size, and the buttons must stay inside it.
+		ui.Column(c).FillWidth().Grow(1).MinHeight(0).Padding(12).Gap(8).Background(p.Panel).Border(1, p.Border).Radius(10).Children(func() {
+			ui.Text(c, "版本："+info.Version).TextColor(p.Text)
+			ui.Text(c, "更新内容：").TextColor(p.Muted)
+			ui.Column(c).FillWidth().Grow(1).MinHeight(0).Padding(10).Background(p.Control).Border(1, p.Border).Radius(10).Children(func() {
+				notes := strings.TrimSpace(info.Notes)
+				if notes == "" {
+					notes = "（无）"
+				}
+				ui.Scroll(c).FillWidth().Grow(1).MinHeight(0).Children(func() {
+					ui.Text(c, notes).TextColor(p.Text).Wrap().FillWidth().Selectable()
+				})
+			})
+		})
+		buttonRow(c, p, func() {
+			mandatory := m.mandatory()
+			if !mandatory && button(c, p, "稍后") {
+				m.Finish()
+			}
+			cancel := "取消"
+			if mandatory {
+				cancel = "退出"
+			}
+			if button(c, p, cancel) {
+				m.Declined()
+			}
+			if primary(c, "立即更新") {
+				m.apply()
+			}
+		})
+	})
+}
+
+// ViewProgress is the download.
+func (m *Model) ViewProgress(c *ui.Context) {
+	p := panel.PaletteFor(c.Theme().Dark)
+	st := m.Coordinator.State()
+	frame(c, p, func() {
+		status := "正在下载..."
+		if st.Phase == update.Applying {
+			status = st.Message
+		}
+		ui.Text(c, status).FontSize(13).TextColor(p.Text).Wrap()
+		value, detail := -1.0, ""
+		switch {
+		case st.Total > 0:
+			value = min(1, float64(st.Read)/float64(st.Total))
+			detail = size(st.Read) + " / " + size(st.Total)
+		case st.Read > 0:
+			detail = size(st.Read)
+		}
+		ui.Progress(c, value).FillWidth().Height(14).Label("下载进度")
+		ui.Text(c, detail).FontSize(12).TextColor(p.Muted)
+		if st.Message != "" && st.Phase == update.Downloading {
+			ui.Text(c, st.Message).FontSize(12).TextColor(p.Red).Wrap()
+		}
+	})
+}
+
+// ViewMessage is a message: that there is nothing newer, or what went wrong.
+func (m *Model) ViewMessage(c *ui.Context) {
+	p := panel.PaletteFor(c.Theme().Dark)
+	st := m.Coordinator.State()
+	frame(c, p, func() {
+		ui.Text(c, st.Title).FontSize(16).FontWeight(600).TextColor(p.Text)
+		ui.Column(c).FillWidth().Padding(12).Background(p.Panel).Border(1, p.Border).Radius(10).Children(func() {
+			ui.Scroll(c).FillWidth().Height(60).Children(func() {
+				ui.Text(c, st.Detail).TextColor(p.Text).Wrap().FillWidth().Selectable()
+			})
+		})
+		footer(c, p, func() {
+			if st.Phase == update.Problem && st.Info != nil {
+				// After a failed look the known update can still be installed.
+				retry := "重试"
+				if st.Check {
+					retry = "立即更新"
+				}
+				if button(c, p, retry) {
+					m.apply()
+				}
+			}
+			if m.mandatory() {
+				if primary(c, "退出") {
+					m.Host.Quit()
+				}
+			} else if primary(c, "确定") {
+				m.Finish()
+			}
+		})
+	})
+}
+
+// View is the view of the window the state calls for, for a window that is
+// the only one (and for the tests).
+func (m *Model) View(c *ui.Context) {
+	switch m.Kind() {
+	case Check:
+		m.ViewCheck(c)
+	case Prompt:
+		m.ViewPrompt(c)
+	case Progress:
+		m.ViewProgress(c)
+	case Message:
+		m.ViewMessage(c)
+	}
+}
+
+// size is UpdateProgressWindow.FormatBytes: two decimals.
 func size(n int64) string {
+	const kb = 1024.0
+	const mb, gb = kb * 1024, kb * 1024 * 1024
 	switch {
-	case n >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
-	case n >= 1<<10:
-		return fmt.Sprintf("%.0f KB", float64(n)/(1<<10))
+	case float64(n) >= gb:
+		return fmt.Sprintf("%.2f GB", float64(n)/gb)
+	case float64(n) >= mb:
+		return fmt.Sprintf("%.2f MB", float64(n)/mb)
+	case float64(n) >= kb:
+		return fmt.Sprintf("%.2f KB", float64(n)/kb)
 	}
 	return fmt.Sprintf("%d B", n)
 }

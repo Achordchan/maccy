@@ -29,6 +29,13 @@ type Syncer struct {
 	// snapshot from, which is what the server has; the history may have moved
 	// on by the time the state is written down.
 	uploadFP atomic.Value
+	// uploaded are the items the last upload took its snapshot from (under
+	// gate).
+	uploaded []model.Item
+	// unrepaired is the account (Config.Account) whose server still has
+	// items the user deleted, which Dropped could not write down (see
+	// Config.Dropped); nil when there is none.
+	unrepaired atomic.Pointer[string]
 }
 
 // New returns a Syncer. cfg.Client, Settings, History, Layout and BaseURL are
@@ -181,7 +188,14 @@ func (s *Syncer) Decide(manifest ManifestInfo) Decision {
 
 // PersistSyncState remembers that this history and that snapshot were the
 // same at this moment.
+//
+// Nothing is remembered while the server still has items the user deleted
+// that only memory knows of (unrepaired): the state from before stays, so
+// that the history looks changed to the next sync.
 func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo) {
+	if s.holdsState() {
+		return
+	}
 	s.cfg.Settings.Update(func(st *model.Settings) {
 		st.SyncLastLocalFingerprint = nonEmpty(localFingerprint)
 		st.SyncLastRemoteVersion = nonEmpty(m.Version)
@@ -218,7 +232,14 @@ func nonEmpty(v string) *string {
 func (s *Syncer) Upload(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
-	return s.upload(ctx, progress, reason)
+	up, err := s.upload(ctx, progress, reason)
+	if err == nil {
+		s.repaired() // the server has the history without them
+		if s.cfg.Uploaded != nil {
+			s.cfg.Uploaded(s.uploaded)
+		}
+	}
+	return up, err
 }
 
 func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, error) {
@@ -237,6 +258,7 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason str
 
 	items := s.cfg.History.Items()
 	s.uploadFP.Store(Fingerprint(items))
+	s.uploaded = items
 	st := s.settings()
 	s.timing("upload", "snapshot_source_ready", started, fmt.Sprintf("%s;items=%d", reason, len(items)))
 
@@ -383,7 +405,7 @@ func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), 
 		s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(*data.Settings) })
 		s.cfg.History.ApplyLimits(s.settings())
 	}
-	if err := s.cfg.History.ReplaceAll(ctx, data.Items); err != nil {
+	if err := s.cfg.History.ReplaceAll(ctx, s.withoutDeleted(data.Items)); err != nil {
 		return err
 	}
 	s.timing("download", "import_snapshot", started, reason)
@@ -481,11 +503,20 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	s.timing("merge", "read_snapshot", started, fmt.Sprintf("%s;remoteItems=%d;images=%d;files=%d", reason, len(remote.Items), remote.ImageCount, remote.FileCount))
 
 	report(progress, "merge_snapshot", "merge snapshots", 78)
-	merged := MergeItems(remote.Items, local)
 	mergedSettings := localSettings.Portable()
 	if remote.Settings != nil {
 		mergedSettings = remote.Settings.Portable()
 	}
+	// What the user deleted goes from each side before the two are merged by
+	// content: merged first, a deleted item could take a kept duplicate with
+	// it. When the history here keeps its duplicates, or will after the merge,
+	// the merge keeps them too: merged, two entries cannot be told apart
+	// again, and their notes are one.
+	merge := MergeItems
+	if !localSettings.MergeDuplicates || !mergedSettings.MergeDuplicates {
+		merge = MergeItemsKeepingDuplicates
+	}
+	merged := merge(s.withoutDeleted(remote.Items), s.withoutDeleted(local))
 	EnsureSettingsCanHoldItems(&mergedSettings, merged)
 
 	s.suppress(true)
@@ -504,6 +535,90 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	s.persistPendingMerge(preMergeFingerprint, basis)
 	s.timing("merge", "persist_local", started, reason)
 	return nil
+}
+
+func (s *Syncer) account() string {
+	if s.cfg.Account != nil {
+		return s.cfg.Account()
+	}
+	return ""
+}
+
+// holdsState says that the account the work is for has a repair that is not
+// written down: its syncs are not written down as done (PersistSyncState).
+// Another account's work is not held by it.
+func (s *Syncer) holdsState() bool {
+	p := s.unrepaired.Load()
+	return p != nil && *p == s.account()
+}
+
+// repaired is for the account the work is for: its repair is written down,
+// or its server has the history without the items.
+func (s *Syncer) repaired() {
+	if p := s.unrepaired.Load(); p != nil && *p == s.account() {
+		s.unrepaired.CompareAndSwap(p, nil)
+	}
+}
+
+// withoutDeleted leaves out of items the ones the user deleted (Config.Deleted).
+func (s *Syncer) withoutDeleted(items []model.Item) []model.Item {
+	gone := s.Deleted(items)
+	if len(gone) == 0 {
+		return items
+	}
+	if s.cfg.Dropped != nil {
+		if err := s.cfg.Dropped(); err != nil {
+			acct := s.account()
+			s.unrepaired.Store(&acct)
+		} else {
+			s.repaired()
+		}
+	}
+	skip := map[string]bool{}
+	for _, it := range gone {
+		skip[strings.ToLower(it.ID)] = true
+	}
+	out := make([]model.Item, 0, len(items)-len(gone))
+	for _, it := range items {
+		if !skip[strings.ToLower(it.ID)] {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// Deleted says which of items the user deleted (Config.Deleted; see
+// Tombstone for which items a deletion stands for).
+func (s *Syncer) Deleted(items []model.Item) []model.Item {
+	if s.cfg.Deleted == nil {
+		return nil
+	}
+	stones := s.cfg.Deleted()
+	if len(stones) == 0 {
+		return nil
+	}
+	byID, byKey := map[string][]Tombstone{}, map[string][]Tombstone{}
+	for _, t := range stones {
+		byID[strings.ToLower(t.ID)] = append(byID[strings.ToLower(t.ID)], t)
+		if k := strings.ToLower(t.Key); k != "" {
+			byKey[k] = append(byKey[k], t)
+		}
+	}
+	covered := func(it model.Item, ts []Tombstone) bool {
+		for _, t := range ts {
+			if t.Covers(it) {
+				return true
+			}
+		}
+		return false
+	}
+	var out []model.Item
+	for _, it := range items {
+		if covered(it, byID[strings.ToLower(it.ID)]) || covered(it, byKey[MergeKey(it)]) {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // ensureLocalBackupBlobs copies the files the backup refers to into the blob

@@ -168,3 +168,45 @@ func TestAutoFailedStartupKeepsChangesQuiet(t *testing.T) {
 		t.Error("only a successful background sync opens the gate (C# _initialSyncCompleted)")
 	}
 }
+
+func TestExclusiveWaitsForTheRunningSyncAndKeepsOthersOut(t *testing.T) {
+	a := &Auto{CanSync: func() bool { return true }}
+	release := make(chan struct{})
+	started := make(chan struct{})
+	a.Run = func(ctx context.Context, reason string, manual bool) error {
+		close(started)
+		<-release
+		return nil
+	}
+	a.Trigger(context.Background(), "auto", false)
+	<-started
+	var ran atomic.Bool
+	done := make(chan bool, 1)
+	go func() { done <- a.Exclusive(context.Background(), func() { ran.Store(true) }) }()
+	time.Sleep(80 * time.Millisecond)
+	if ran.Load() {
+		t.Fatal("it ran while a sync was running")
+	}
+	close(release)
+	if !<-done || !ran.Load() {
+		t.Fatal("it never got its turn")
+	}
+	// While it runs, a sync is turned away.
+	hold, in := make(chan struct{}), make(chan struct{})
+	go a.Exclusive(context.Background(), func() { close(in); <-hold })
+	<-in
+	if a.Trigger(context.Background(), "auto", false) {
+		t.Fatal("a sync started in the middle of it")
+	}
+	close(hold)
+	for a.busy.Load() {
+		time.Sleep(5 * time.Millisecond)
+	}
+	// A caller that gives up is not left waiting.
+	a.busy.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	if a.Exclusive(ctx, func() { t.Error("ran although the gate was shut") }) {
+		t.Fatal("reported a run")
+	}
+}

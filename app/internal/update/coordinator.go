@@ -28,14 +28,19 @@ const (
 
 // State is what a window shows.
 type State struct {
-	Phase   Phase
-	Info    *Info
+	Phase Phase
+	Info  *Info
+	// Message says what happened. For a Problem, Title and Detail are the
+	// two halves of it, as the C# message window has them (the title of the
+	// window, and its text).
 	Message string
 	// Check says that a Problem came from looking for a version, not from
 	// installing one (so there is nothing to retry but the look).
-	Check bool
-	Read  int64
-	Total int64
+	Check  bool
+	Title  string
+	Detail string
+	Read   int64
+	Total  int64
 }
 
 // Coordinator is UpdateCoordinator without the windows: it keeps the newest
@@ -198,10 +203,12 @@ func (c *Coordinator) Check(ctx context.Context) {
 	res := c.Client.Check(ctx, func(m string) { c.setChecking(func(s *State) { s.Message = m }) })
 	switch res.Status {
 	case UpToDate:
-		c.setChecking(func(s *State) { *s = State{Phase: UpToDateNow, Message: "当前已经是最新版本。"} })
+		c.setChecking(func(s *State) {
+			*s = State{Phase: UpToDateNow, Message: "当前已经是最新版本。", Title: "检查更新", Detail: "当前已经是最新版本。"}
+		})
 	case Failed:
 		c.setChecking(func(s *State) {
-			*s = State{Phase: Problem, Message: "检查更新失败：" + res.Error, Info: known, Check: true}
+			*s = State{Phase: Problem, Message: "检查更新失败：" + res.Error, Info: known, Check: true, Title: "检查更新失败", Detail: res.Error}
 		})
 	default:
 		c.setChecking(func(s *State) { *s = State{Phase: Available, Info: res.Info} })
@@ -237,15 +244,19 @@ func (c *Coordinator) Apply(ctx context.Context) {
 	}
 	c.applying = true
 	c.mu.Unlock()
-	fail := func(msg string) {
+	fail := func(title, detail string) {
 		c.mu.Lock()
 		c.applying = false
 		c.mu.Unlock()
-		c.set(func(s *State) { s.Phase, s.Message = Problem, msg })
+		msg := title + "：" + detail
+		if title == "更新失败" {
+			msg = detail
+		}
+		c.set(func(s *State) { s.Phase, s.Message, s.Title, s.Detail = Problem, msg, title, detail })
 	}
 
 	if !c.Supported {
-		fail("当前系统不能自动更新，请到发布页下载新版本：" + strings.TrimSpace(c.manualURL(info)))
+		fail("更新失败", "当前系统不能自动更新，请到发布页下载新版本："+strings.TrimSpace(c.manualURL(info)))
 		return
 	}
 	progress := func(read, total int64) {
@@ -261,7 +272,7 @@ func (c *Coordinator) Apply(ctx context.Context) {
 	canWrite := c.installDirWritable()
 	if info.HasSupportedPackage(c.Client.runtime()) && !canWrite {
 		if !c.hasInstaller(info) {
-			fail("安装目录需要管理员权限，轻量更新无法写入，且这个版本没有提供安装程序。")
+			fail("更新失败", "安装目录需要管理员权限，轻量更新无法写入，且这个版本没有提供安装程序。")
 			return
 		}
 		// The helper runs with our rights and could not replace the files; the
@@ -277,30 +288,30 @@ func (c *Coordinator) Apply(ctx context.Context) {
 				return
 			}
 			if !c.hasInstaller(info) {
-				fail("启动轻量更新失败：" + err.Error())
+				fail("启动轻量更新失败", err.Error())
 				return
 			}
 			notice = "启动轻量更新失败：" + err.Error() + "\n\n将改用完整安装包更新。"
 		} else {
 			if !c.hasInstaller(info) {
-				fail("轻量更新失败：" + err.Error())
+				fail("轻量更新失败", err.Error())
 				return
 			}
 			notice = "轻量更新失败：" + err.Error() + "\n\n将改用完整安装包更新。"
 		}
 	}
 	if !c.hasInstaller(info) {
-		fail("没有可用的安装包下载地址。")
+		fail("更新失败", "没有可用的安装包下载地址。")
 		return
 	}
 	c.set(func(s *State) { s.Phase, s.Read, s.Total, s.Message = Downloading, 0, 0, notice })
 	path, err := c.Client.DownloadInstaller(ctx, *info, c.Root, progress)
 	if err != nil {
-		fail("下载失败：" + err.Error())
+		fail("下载失败", err.Error())
 		return
 	}
 	if err := c.startInstaller(path, info.Version); err != nil {
-		fail("启动安装程序失败：" + err.Error())
+		fail("启动安装程序失败", err.Error())
 		return
 	}
 	c.done()

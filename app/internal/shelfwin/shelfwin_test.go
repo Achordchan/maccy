@@ -216,7 +216,9 @@ func (r *rig) click(s string, mods ...ui.Modifiers) {
 
 func TestViewEmptyAndClose(t *testing.T) {
 	r := newRig(t)
-	if !r.tt.HasText("放置你的内容项") {
+	// An empty shelf is a bare card, as in the old window: the hint is the
+	// title of the opened one.
+	if r.tt.HasText("放置你的内容项") || !r.tt.HasText("×") {
 		t.Fatalf("%q", r.tt.Texts())
 	}
 	r.click("×")
@@ -275,7 +277,7 @@ func TestViewSeveralFiles(t *testing.T) {
 		t.Fatalf("%+v", r.m.Items)
 	}
 	// Fold to the stack, and open it again with its badge.
-	r.click("收起")
+	r.click("折叠")
 	r.frame()
 	if r.m.Expanded || !r.tt.HasText("3 档 >") {
 		t.Fatalf("%v %q", r.m.Expanded, r.tt.Texts())

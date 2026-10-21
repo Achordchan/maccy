@@ -17,7 +17,7 @@ import (
 type Host interface {
 	// OpenStorage shows the data folder in the file manager.
 	OpenStorage()
-	// CheckUpdates starts the update check; nil hides the row.
+	// CheckUpdates starts the update check (may be nil).
 	CheckUpdates() func()
 	// SyncNow starts a sync the user asked for.
 	SyncNow()
@@ -64,6 +64,9 @@ type Model struct {
 	mu     sync.Mutex
 	toasts []string
 	later  time.Time // when the debounced "设置已生效" is due; zero: none
+
+	toastMsg   string
+	toastUntil time.Time
 
 	wg sync.WaitGroup
 }
