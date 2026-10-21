@@ -51,7 +51,7 @@ func (mg *Manager) Toggle(anchorX, anchorY int) {
 				Height:        Height,
 				Content:       ui.View(mg.model.View),
 			})
-			mg.model.Redraw = func() { mg.win.Update(func() {}) }
+			mg.model.Redraw = mg.redraw
 			mg.win.OnClose(func(e *mygo.CloseEvent) {
 				if mg.Quitting != nil && mg.Quitting() {
 					return
@@ -93,13 +93,29 @@ func (mg *Manager) Close() {
 	})
 }
 
-// Destroy ends the window for good (when the program quits).
+// redraw asks for a frame, from any goroutine (the picture of the author
+// arrives on its own): on the UI thread, where Destroy also runs, and only
+// while the window is there.
+func (mg *Manager) redraw() {
+	mygo.RunOnMain(func() {
+		mg.mu.Lock()
+		defer mg.mu.Unlock()
+		if mg.win != nil {
+			mg.win.Update(func() {})
+		}
+	})
+}
+
+// Destroy ends the window for good (when the program quits). It runs on the
+// UI thread, so that a redraw cannot reach the window while it goes.
 func (mg *Manager) Destroy() {
-	mg.mu.Lock()
-	w := mg.win
-	mg.win = nil
-	mg.mu.Unlock()
-	if w != nil {
-		w.Close()
-	}
+	mygo.RunOnMain(func() {
+		mg.mu.Lock()
+		w := mg.win
+		mg.win = nil
+		mg.mu.Unlock()
+		if w != nil {
+			w.Close()
+		}
+	})
 }

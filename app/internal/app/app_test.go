@@ -591,7 +591,7 @@ func TestPendingDeletionIsMadeAgainAfterTheNextSync(t *testing.T) {
 	}
 	// The record of an earlier run: an item was deleted, the upload failed.
 	_ = os.MkdirAll(filepath.Join(root, "sync"), 0o700)
-	_ = os.WriteFile(filepath.Join(root, "sync", "pending-delete.json"), []byte(`["gone"]`), 0o600)
+	_ = os.WriteFile(filepath.Join(root, "sync", "pending-delete.json"), []byte(`{"account":"","ids":["gone"]}`), 0o600)
 	clip := &fakeClip{}
 	a := newApp(t, root, clip, srv.URL)
 	a.History.Add(model.Item{ID: "gone", Kind: model.KindText, Text: model.Ptr("restored by a merge"), CopyCount: 1, ContentHash: model.Ptr("text:restored by a merge")})
@@ -604,47 +604,64 @@ func TestPendingDeletionIsMadeAgainAfterTheNextSync(t *testing.T) {
 				return false
 			}
 		}
-		return len(a.History.Items()) == 1 && len(a.pending.IDs(a.acctGen.Load())) == 0
+		return len(a.History.Items()) == 1 && len(a.pending.IDs(a.owner())) == 0
 	})
 	if _, err := os.Stat(filepath.Join(root, "sync", "pending-delete.json")); err == nil {
 		t.Fatal("the record is kept after the server has the deletion")
 	}
 }
 
-func TestPendingDeletesKeepAcrossRunsAndResetWithTheAccount(t *testing.T) {
+func TestPendingDeletesKeepAcrossRuns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sync", "pending-delete.json")
 	p := &pendingDeletes{path: path}
-	if err := p.Add(0, "a", "b"); err != nil {
+	if err := p.Add(0, "a@example.com", "a", "b"); err != nil {
 		t.Fatal(err)
 	}
 	again := &pendingDeletes{path: path} // a later run
-	if got := again.IDs(0); len(got) != 2 {
+	if got := again.IDs("A@example.com"); len(got) != 2 {
 		t.Fatalf("%v", got)
 	}
-	again.Forget(0, "a")
-	if got := (&pendingDeletes{path: path}).IDs(0); len(got) != 1 || got[0] != "b" {
+	again.Forget("a@example.com", "a")
+	if got := (&pendingDeletes{path: path}).IDs("a@example.com"); len(got) != 1 || got[0] != "b" {
 		t.Fatalf("%v", got)
 	}
-	again.Reset(1)
-	if got := (&pendingDeletes{path: path}).IDs(0); len(got) != 0 {
-		t.Fatalf("%v", got)
+	if got := again.IDs("b@example.com"); got != nil {
+		t.Fatalf("another account reads the list: %v", got)
 	}
 }
 
-// The upload of the old account fails after the account changed: what it
-// would note down is not the new account's to owe.
-func TestOldAccountCannotAddToTheNewAccountsDeletions(t *testing.T) {
+// A sign-out, or a sign-in to the same account, keeps what that account owes;
+// another account writing down a deletion of its own takes the list over, and
+// the work of an account that is gone cannot take it back.
+func TestPendingDeletesFollowTheirAccount(t *testing.T) {
 	p := &pendingDeletes{path: filepath.Join(t.TempDir(), "pending-delete.json")}
-	p.Add(0, "old-before")
-	p.Reset(1)
-	p.Add(0, "old-after") // late, from the old account's work
-	p.Add(1, "new")
-	p.Forget(0, "new")
-	if got := p.IDs(1); len(got) != 1 || got[0] != "new" {
-		t.Fatalf("%v", got)
+	p.Add(0, "a@example.com", "a1")
+	p.NewGeneration(1)              // signed out, then in again
+	p.Add(0, "a@example.com", "a2") // late, from before: still A's
+	if got := p.IDs("a@example.com"); len(got) != 2 {
+		t.Fatalf("A's deletions after signing in again: %v", got)
 	}
-	if got := p.IDs(0); got != nil {
-		t.Fatalf("the old generation reads the new list: %v", got)
+	p.NewGeneration(2)
+	p.Add(2, "b@example.com", "b1")   // B signed in and deleted something
+	p.Add(1, "a@example.com", "late") // the old account's upload failed now
+	p.Forget("a@example.com", "b1")
+	if got := p.IDs("b@example.com"); len(got) != 1 || got[0] != "b1" {
+		t.Fatalf("B's list: %v", got)
+	}
+	if got := p.IDs("a@example.com"); got != nil {
+		t.Fatalf("A reads B's list: %v", got)
+	}
+}
+
+// The app keeps the list through a change of login.
+func TestAccountChangeKeepsWhatIsOwed(t *testing.T) {
+	a := newApp(t, t.TempDir(), &fakeClip{}, "http://127.0.0.1:1")
+	_, gen, owner := a.acctWork()
+	a.pending.Add(gen, owner, "x")
+	a.endAccountWork()
+	a.beginAccountWork()
+	if got := a.pending.IDs(a.owner()); len(got) != 1 {
+		t.Fatalf("%v", got)
 	}
 }
 
@@ -652,20 +669,20 @@ func TestOldAccountCannotAddToTheNewAccountsDeletions(t *testing.T) {
 func TestPendingDeletesAreWrittenWhole(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pending-delete.json")
 	p := &pendingDeletes{path: path}
-	if err := p.Add(0, "a"); err != nil {
+	if err := p.Add(0, "", "a"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path + ".tmp"); err == nil {
 		t.Fatal("the temporary file was left")
 	}
 	_ = os.Mkdir(path+".tmp", 0o700) // the next write cannot be made
-	if err := p.Add(0, "b"); err == nil {
+	if err := p.Add(0, "", "b"); err == nil {
 		t.Fatal("a failed write must be reported")
 	}
-	if got := (&pendingDeletes{path: path}).IDs(0); len(got) != 1 || got[0] != "a" {
+	if got := (&pendingDeletes{path: path}).IDs(""); len(got) != 1 || got[0] != "a" {
 		t.Fatalf("the list on disk: %v", got)
 	}
-	if got := p.IDs(0); len(got) != 2 {
+	if got := p.IDs(""); len(got) != 2 {
 		t.Fatalf("still owed in this run: %v", got)
 	}
 }
@@ -739,7 +756,7 @@ func TestDeletionKeepsWhatAnotherDeviceAdded(t *testing.T) {
 	a2 := newApp(t, rootA, &fakeClip{}, srv.URL)
 	a2.Delete(one)
 	waitFor(t, "the deletion went up", func() bool {
-		return !hasText(a2, "one") && len(a2.pending.IDs(a2.acctGen.Load())) == 0
+		return !hasText(a2, "one") && len(a2.pending.IDs(a2.owner())) == 0
 	})
 	if !hasText(a2, "from B") || !hasText(a2, "two") {
 		t.Fatalf("A after the deletion: %v", texts(a2))
@@ -773,7 +790,7 @@ func TestDeletionIsWrittenDownBeforeAndKeptWhenTheUploadFails(t *testing.T) {
 		a.History.Add(model.Item{ID: id, Kind: model.KindText, Text: model.Ptr(id), CopyCount: 1, ContentHash: model.Ptr("text:" + id)})
 	}
 	var owedWhenRemoved atomic.Int32
-	a.History.OnChanged(func() { owedWhenRemoved.Store(int32(len(a.pending.IDs(0)))) })
+	a.History.OnChanged(func() { owedWhenRemoved.Store(int32(len(a.pending.IDs("")))) })
 
 	a.Delete("x")
 	a.done.Wait()
@@ -782,7 +799,7 @@ func TestDeletionIsWrittenDownBeforeAndKeptWhenTheUploadFails(t *testing.T) {
 	}
 	a.ClearAll()
 	a.done.Wait()
-	got := (&pendingDeletes{path: a.pending.path}).IDs(0)
+	got := (&pendingDeletes{path: a.pending.path}).IDs("")
 	if a.History.Len() != 0 || len(got) != 3 {
 		t.Fatalf("len %d, owed on disk %v", a.History.Len(), got)
 	}

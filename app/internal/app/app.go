@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -183,7 +184,7 @@ func New(cfg Config) (*App, error) {
 		Client:           syncclient.New(cfg.BaseURL),
 		BaseURL:          cfg.BaseURL,
 		SuppressAutoSync: func(on bool) { a.Auto.Suppress(on) },
-		Deleted:          func() []string { return a.pending.IDs(a.acctGen.Load()) },
+		Deleted:          func() []string { return a.pending.IDs(a.owner()) },
 	})
 	a.Auto = syncer.NewAuto(a.Syncer, a.syncDone)
 	// Every sync is counted while it runs, so that Stop can wait for them (they
@@ -198,13 +199,13 @@ func New(cfg Config) (*App, error) {
 		a.syncMu.Unlock()
 		a.runActive.Store(true)
 		a.runEntered.Store(true)
-		gen := a.acctGen.Load()
-		a.runGen.Store(gen) // which account this sync is for
+		a.runGen.Store(a.acctGen.Load()) // which account this sync is for
+		owner := a.owner()
 		err := run(ctx, reason, manual)
 		if err != nil {
 			return err
 		}
-		return a.settleDeletions(ctx, gen)
+		return a.settleDeletions(ctx, owner)
 	}
 
 	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings, AccountFile: filepath.Join(cfg.Layout.Root, "sync", "account.txt"), BeforeLoginChange: a.endAccountWork, AfterLoginChange: a.beginAccountWork}
@@ -462,20 +463,36 @@ func (a *App) Stop() {
 // ends when the account changes, which stops a sync of the old account before
 // it can put its history into the new one's place.
 func (a *App) acct() context.Context {
-	ctx, _ := a.acctAndGen()
-	return ctx
-}
-
-// acctAndGen is acct with the account generation it belongs to, read
-// together: endAccountWork moves the one and ends the other under the lock.
-func (a *App) acctAndGen() (context.Context, int64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.acctCtx != nil {
-		return a.acctCtx, a.acctGen.Load()
+		return a.acctCtx
 	}
-	return context.Background(), a.acctGen.Load()
+	return context.Background()
 }
+
+// acctWork is acct with the account generation and the address of the account
+// it belongs to, read so that they agree: a change of login moves the
+// generation and ends the context before it stores the new address, and the
+// new context comes after it.
+func (a *App) acctWork() (ctx context.Context, gen int64, owner string) {
+	for {
+		a.mu.Lock()
+		ctx, gen = a.acctCtx, a.acctGen.Load()
+		a.mu.Unlock()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		owner = a.owner()
+		if a.acctGen.Load() == gen {
+			return ctx, gen, owner
+		}
+	}
+}
+
+// owner is the address of the account signed in, whose the pending deletions
+// are ("" for a login without one, from an older client).
+func (a *App) owner() string { return strings.TrimSpace(model.Str(a.Settings.Get().AuthUserEmail)) }
 
 // Apply puts an item on the clipboard and moves it to the top, as the main
 // window does when one is chosen.
@@ -499,11 +516,11 @@ func (a *App) SyncNow() {
 // callbacks) is stopped before the new tokens are in place, and a sync that
 // still manages to finish is known to be of the old account.
 //
-// The deletions owed to the server were the old account's: the list is
-// emptied after the old work is cancelled, and is from then on the new
-// generation's, so that an upload of the old account that fails later cannot
-// add to it (pendingDeletes compares the generation under its lock). The old
-// work is not waited for here: the account service is holding the login.
+// The deletions owed to the server stay with the account that owes them
+// (pendingDeletes): a sign-out or a sign-in to the same account keeps them.
+// From here on the old account's work, which may still end later, can no
+// longer give the list to another account. It is not waited for: the account
+// service is holding the login.
 func (a *App) endAccountWork() {
 	a.mu.Lock()
 	gen := a.acctGen.Add(1)
@@ -516,10 +533,8 @@ func (a *App) endAccountWork() {
 		stop()
 		a.acctCtx, a.acctCancel = dead, func() {}
 	}
+	a.pending.NewGeneration(gen)
 	a.mu.Unlock()
-	if err := a.pending.Reset(gen); err != nil {
-		a.cfg.Logf("pending deletions: %v", err)
-	}
 }
 
 // beginAccountWork is called by the account service once the new login (or

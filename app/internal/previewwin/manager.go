@@ -69,7 +69,7 @@ func (mg *Manager) Show(it model.Item, anchor Rect) {
 			return // another item, or none, since
 		}
 		if bm == nil {
-			mg.Hide() // the file is gone, or too big to show: nothing to show
+			mg.hide(seq) // the file is gone, or too big to show: nothing to show
 			return
 		}
 		mg.present(it, bm, pw, ph, anchor, seq)
@@ -125,10 +125,18 @@ func (mg *Manager) present(it model.Item, bm *ui.Bitmap, pw, ph int, anchor Rect
 }
 
 // Hide closes the window.
-func (mg *Manager) Hide() {
+func (mg *Manager) Hide() { mg.hide(-1) }
+
+// hide closes the window if seq is still the latest request when the UI
+// thread gets to it (-1: whatever it is). A picture that could not be read
+// must not close the window another item has opened since.
+func (mg *Manager) hide(seq int) {
 	mygo.RunOnMain(func() {
 		mg.mu.Lock()
 		defer mg.mu.Unlock()
+		if seq >= 0 && mg.seq != seq {
+			return
+		}
 		mg.id = ""
 		mg.seq++ // a picture that is still being made is not wanted
 		if mg.win != nil && mg.win.IsVisible() {

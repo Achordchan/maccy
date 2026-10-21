@@ -289,7 +289,7 @@ func (a *App) remove(pick func() []string) {
 		a.mutateQuietly(func() { a.History.RemoveMany(pick()) })
 		return
 	}
-	ctx, gen := a.acctAndGen()
+	ctx, gen, owner := a.acctWork()
 	a.done.Add(1)
 	go func() {
 		defer a.done.Done()
@@ -298,7 +298,7 @@ func (a *App) remove(pick func() []string) {
 			a.runActive.Store(true)
 			defer a.runActive.Store(false)
 			ids := pick()
-			if err := a.pending.Add(gen, ids...); err != nil {
+			if err := a.pending.Add(gen, owner, ids...); err != nil {
 				// Still owed for as long as the program runs.
 				a.cfg.Logf("pending deletions: %v", err)
 			}
@@ -310,7 +310,7 @@ func (a *App) remove(pick func() []string) {
 				}
 				return
 			}
-			if err := a.pending.Forget(gen, ids...); err != nil {
+			if err := a.pending.Forget(owner, ids...); err != nil {
 				a.cfg.Logf("pending deletions: %v", err)
 			}
 		})
@@ -333,8 +333,15 @@ func (a *App) remove(pick func() []string) {
 }
 
 // retryLater asks for a sync in a while, which also makes the deletions that
-// are owed.
+// are owed. A program that was not started has nobody to ask; its next start
+// syncs.
 func (a *App) retryLater() {
+	a.mu.Lock()
+	started := a.started
+	a.mu.Unlock()
+	if !started {
+		return
+	}
 	time.AfterFunc(30*time.Second, func() {
 		if c := a.acct(); c.Err() == nil {
 			a.Auto.Trigger(c, "auto", false)
@@ -343,12 +350,12 @@ func (a *App) retryLater() {
 }
 
 // settleDeletions is for the end of a sync that went through, for the account
-// of generation gen: what it brought in has left out the items the user
-// deleted and the server never heard of, but one may still be here (the
-// program stopped between writing the deletion down and making it). They are
-// removed, and the result is uploaded; what other devices added stays.
-func (a *App) settleDeletions(ctx context.Context, gen int64) error {
-	ids := a.pending.IDs(gen)
+// owner: what it brought in has left out the items the user deleted and the
+// server never heard of, but one may still be here (the program stopped
+// between writing the deletion down and making it). They are removed, and the
+// result is uploaded; what other devices added stays.
+func (a *App) settleDeletions(ctx context.Context, owner string) error {
+	ids := a.pending.IDs(owner)
 	if len(ids) == 0 {
 		return nil
 	}
@@ -359,7 +366,7 @@ func (a *App) settleDeletions(ctx context.Context, gen int64) error {
 		}
 		return err
 	}
-	if err := a.pending.Forget(gen, ids...); err != nil {
+	if err := a.pending.Forget(owner, ids...); err != nil {
 		a.cfg.Logf("pending deletions: %v", err)
 	}
 	return nil

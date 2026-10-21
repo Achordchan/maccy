@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -15,18 +16,32 @@ import (
 // it was made. A sync merges what the server has with the local history, which
 // would bring such an item back; so the items here are left out of what a sync
 // brings in, and removed again once it has merged. The list is kept in a file,
-// to survive a restart, and belongs to the account that is signed in.
+// to survive a restart.
 //
-// Each change names the account generation (App.acctGen) it is for, and is
-// compared with the list's under the same lock: a change from the work of an
-// account that is gone is dropped, even when that work ends after Reset.
+// The list is owed by one account (its address, as the checkpoints are), and
+// is read and forgotten only for that one: it is kept through a sign-out and a
+// sign-in to the same account, and is replaced when another account writes
+// down a deletion of its own. The work of an account that is gone (an older
+// generation, App.acctGen) cannot replace it: a late failure of the old
+// account's upload does not take the list from the account signed in now.
 type pendingDeletes struct {
-	path string
-	logf func(string, ...any)
-	mu   sync.Mutex
-	ids  map[string]bool
-	read bool
-	gen  int64
+	path  string
+	logf  func(string, ...any)
+	mu    sync.Mutex
+	owner string
+	ids   map[string]bool
+	read  bool
+	gen   int64
+}
+
+// pendingFile is what the file holds.
+type pendingFile struct {
+	Account string   `json:"account"`
+	IDs     []string `json:"ids"`
+}
+
+func sameOwner(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
 func (p *pendingDeletes) load() {
@@ -42,12 +57,13 @@ func (p *pendingDeletes) load() {
 		}
 		return
 	}
-	var list []string
-	if err := json.Unmarshal(b, &list); err != nil {
+	var f pendingFile
+	if err := json.Unmarshal(b, &f); err != nil {
 		p.log("pending deletions: %v", err)
 		return
 	}
-	for _, id := range list {
+	p.owner = strings.TrimSpace(f.Account)
+	for _, id := range f.IDs {
 		p.ids[id] = true
 	}
 }
@@ -75,7 +91,7 @@ func (p *pendingDeletes) save() error {
 		list = append(list, id)
 	}
 	sort.Strings(list)
-	b, err := json.Marshal(list)
+	b, err := json.Marshal(pendingFile{Account: p.owner, IDs: list})
 	if err != nil {
 		return err
 	}
@@ -87,33 +103,46 @@ func (p *pendingDeletes) save() error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, p.path)
+	if err := os.Rename(tmp, p.path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
-// Add notes items whose deletion is owed to the server by the account of
-// generation gen. When the file cannot be written the items are still noted
-// for as long as the program runs, and the error says so.
-func (p *pendingDeletes) Add(gen int64, ids ...string) error {
+// Add notes items whose deletion is owed to the server by the account owner,
+// for work of the account generation gen. A list of another account is
+// replaced, unless gen is not the latest: then the work is that of an
+// account that is gone, and the items are not noted. When the file cannot be
+// written the items are still noted for as long as the program runs, and the
+// error says so.
+func (p *pendingDeletes) Add(gen int64, owner string, ids ...string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if gen != p.gen || len(ids) == 0 {
+	if len(ids) == 0 {
 		return nil
 	}
 	p.load()
+	if !sameOwner(owner, p.owner) {
+		if gen != p.gen {
+			return nil
+		}
+		p.owner, p.ids = strings.TrimSpace(owner), map[string]bool{}
+	}
 	for _, id := range ids {
 		p.ids[id] = true
 	}
 	return p.save()
 }
 
-// IDs are the items that are owed by the account of generation gen.
-func (p *pendingDeletes) IDs(gen int64) []string {
+// IDs are the items that are owed by the account owner.
+func (p *pendingDeletes) IDs(owner string) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if gen != p.gen {
+	p.load()
+	if !sameOwner(owner, p.owner) {
 		return nil
 	}
-	p.load()
 	out := make([]string, 0, len(p.ids))
 	for id := range p.ids {
 		out = append(out, id)
@@ -121,26 +150,24 @@ func (p *pendingDeletes) IDs(gen int64) []string {
 	return out
 }
 
-// Forget drops items whose deletion the server now has.
-func (p *pendingDeletes) Forget(gen int64, ids ...string) error {
+// Forget drops items whose deletion the server of the account owner now has.
+func (p *pendingDeletes) Forget(owner string, ids ...string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if gen != p.gen || len(ids) == 0 {
+	p.load()
+	if !sameOwner(owner, p.owner) || len(ids) == 0 {
 		return nil
 	}
-	p.load()
 	for _, id := range ids {
 		delete(p.ids, id)
 	}
 	return p.save()
 }
 
-// Reset forgets everything: the account the list was for is gone, and the
-// list is now for the account of generation gen.
-func (p *pendingDeletes) Reset(gen int64) error {
+// NewGeneration is for a change of login: from now on only the work of
+// generation gen may give the list to another account. The list itself stays.
+func (p *pendingDeletes) NewGeneration(gen int64) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.gen = gen
-	p.ids, p.read = map[string]bool{}, true
-	return p.save()
+	p.mu.Unlock()
 }
