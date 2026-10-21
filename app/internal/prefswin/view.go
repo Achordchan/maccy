@@ -341,67 +341,81 @@ func (m *Model) passwordDialog(c *ui.Context, p Palette) {
 		return
 	}
 	label := func(s string) { ui.Text(c, s).FontSize(12).TextColor(p.Muted) }
-	ui.Column(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).Background(ui.RGBA(0, 0, 0, 0.6)).Center().Children(func() {
-		ui.Column(c).Width(392).Padding(18).Gap(12).Background(p.Panel).Border(1, p.Border).Radius(16).Children(func() {
-			ui.Column(c).FillWidth().Gap(4).Children(func() {
-				title := "找回密码"
-				if m.change {
-					title = "修改密码"
-				}
-				ui.Text(c, title).FontSize(18).FontWeight(600).TextColor(p.Text)
-				ui.Text(c, "验证码会发送到你的邮箱，修改成功后需要重新登录。").TextColor(p.Muted).Wrap()
-			})
-			ui.Column(c).FillWidth().Gap(10).Children(func() {
-				if m.forgot {
-					ui.Column(c).FillWidth().Gap(5).Children(func() {
-						label("邮箱")
-						field(c, p, &m.email, "找回邮箱", "请输入邮箱", 0, p.Background, false)
-					})
-				} else {
-					ui.Column(c).FillWidth().Gap(5).Children(func() {
-						label("当前账号")
-						ui.Row(c).FillWidth().Padding(8, 10).Background(p.Background).Border(1, p.Border).Radius(8).Children(func() {
-							ui.Text(c, m.statusText).TextColor(p.Text)
-						})
-					})
-				}
+	// A dialog in its own right: built over the window and Modal, so that the
+	// focus goes into it, Tab goes round inside it, and what is behind it (the
+	// sign-in form, whose Enter signs in) takes no keys while it shows.
+	ui.Overlay(c, func() {
+		back := ui.Column(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).Background(ui.RGBA(0, 0, 0, 0.6)).Center().Modal()
+		if back.OverlayShortcut(0, ui.KeyEscape) {
+			m.closeDialogs()
+		}
+		back.Children(func() {
+			m.passwordForm(c, p, label)
+		})
+	})
+}
+
+// passwordForm is the box of the password dialog.
+func (m *Model) passwordForm(c *ui.Context, p Palette, label func(string)) {
+	ui.Column(c).Width(392).Padding(18).Gap(12).Background(p.Panel).Border(1, p.Border).Radius(16).Children(func() {
+		ui.Column(c).FillWidth().Gap(4).Children(func() {
+			title := "找回密码"
+			if m.change {
+				title = "修改密码"
+			}
+			ui.Text(c, title).FontSize(18).FontWeight(600).TextColor(p.Text)
+			ui.Text(c, "验证码会发送到你的邮箱，修改成功后需要重新登录。").TextColor(p.Muted).Wrap()
+		})
+		ui.Column(c).FillWidth().Gap(10).Children(func() {
+			if m.forgot {
 				ui.Column(c).FillWidth().Gap(5).Children(func() {
-					label("验证码")
-					ui.Row(c).FillWidth().Gap(8).Children(func() {
-						ui.Row(c).Grow(1).Children(func() {
-							field(c, p, &m.code, "验证码输入", "6 位邮箱验证码", 0, p.Background, false)
-						})
-						text := "发送验证码"
-						if m.cooldown > 0 {
-							text = fmt.Sprintf("%ds 后重发", m.cooldown)
-						}
-						if panel.Button(c, p, text, 6, 12, 14).Disabled(m.codeBusy || m.cooldown > 0).Label(text).Clicked() {
-							m.sendCode()
-						}
+					label("邮箱")
+					field(c, p, &m.email, "找回邮箱", "请输入邮箱", 0, p.Background, false)
+				})
+			} else {
+				ui.Column(c).FillWidth().Gap(5).Children(func() {
+					label("当前账号")
+					ui.Row(c).FillWidth().Padding(8, 10).Background(p.Background).Border(1, p.Border).Radius(8).Children(func() {
+						ui.Text(c, m.statusText).TextColor(p.Text)
 					})
 				})
-				ui.Column(c).FillWidth().Gap(5).Children(func() {
-					label("新密码")
-					field(c, p, &m.pw1, "新密码输入", "至少 8 位", 0, p.Background, true)
-				})
-				ui.Column(c).FillWidth().Gap(5).Children(func() {
-					label("确认新密码")
-					field(c, p, &m.pw2, "确认新密码输入", "再次输入新密码", 0, p.Background, true)
+			}
+			ui.Column(c).FillWidth().Gap(5).Children(func() {
+				label("验证码")
+				ui.Row(c).FillWidth().Gap(8).Children(func() {
+					ui.Row(c).Grow(1).Children(func() {
+						field(c, p, &m.code, "验证码输入", "6 位邮箱验证码", 0, p.Background, false)
+					})
+					text := "发送验证码"
+					if m.cooldown > 0 {
+						text = fmt.Sprintf("%ds 后重发", m.cooldown)
+					}
+					if panel.Button(c, p, text, 6, 12, 14).Disabled(m.codeBusy || m.cooldown > 0).Label(text).Clicked() {
+						m.sendCode()
+					}
 				})
 			})
-			ui.Box(c).FillWidth().Height(1).Background(p.Divider).Margin(6, 0, 0)
-			ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Children(func() {
-				if panel.Button(c, p, "取消", 6, 12, 14).Label("取消").Clicked() {
-					m.closeDialogs()
-				}
-				ok := "确认修改"
-				if m.forgot {
-					ok = "重置密码"
-				}
-				if ui.PrimaryButton(c, ok).Disabled(m.codeBusy).Clicked() {
-					m.submitPassword()
-				}
+			ui.Column(c).FillWidth().Gap(5).Children(func() {
+				label("新密码")
+				field(c, p, &m.pw1, "新密码输入", "至少 8 位", 0, p.Background, true)
 			})
+			ui.Column(c).FillWidth().Gap(5).Children(func() {
+				label("确认新密码")
+				field(c, p, &m.pw2, "确认新密码输入", "再次输入新密码", 0, p.Background, true)
+			})
+		})
+		ui.Box(c).FillWidth().Height(1).Background(p.Divider).Margin(6, 0, 0)
+		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Children(func() {
+			if panel.Button(c, p, "取消", 6, 12, 14).Label("取消").Clicked() {
+				m.closeDialogs()
+			}
+			ok := "确认修改"
+			if m.forgot {
+				ok = "重置密码"
+			}
+			if ui.PrimaryButton(c, ok).Disabled(m.codeBusy).Clicked() {
+				m.submitPassword()
+			}
 		})
 	})
 }

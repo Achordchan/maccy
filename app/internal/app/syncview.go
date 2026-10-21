@@ -281,20 +281,27 @@ func (a *App) finishView(reason string, manual bool, err error) {
 // fingerprints with the upload; it belongs to the account that is signed in,
 // and Stop waits for it.
 //
-// The deletion is written down (pendingDeletes) before the items go, and is
-// marked as the server's only once the upload went through: a failed or
-// cancelled upload, a crash or a quit leaves it owed, and every later sync
-// leaves those items out of what it brings in and uploads the result.
+// The deletion is written down (pendingDeletes) for the account signed in as
+// soon as the user asks, before waiting for its turn, and what more the
+// removal takes when it is made is written down before it goes. It is marked
+// as the server's only once the upload went through: a wait that is cut short
+// (a quit, a change of account), a failed or cancelled upload, a crash leave
+// it owed, and every later sync of that account leaves those items out of
+// what it brings in and uploads the result.
 func (a *App) remove(pick func() []model.Item) {
 	// What the user asked for, as it is now: what is removed when the account
 	// changes before this one's turn comes (the history may then hold the
 	// next account's items, which the user did not ask about).
-	asked := idsOf(pick())
+	asked := pick()
 	if !a.Syncer.CanAutoSync() {
-		a.mutateQuietly(func() { a.History.RemoveMany(asked) })
+		a.mutateQuietly(func() { a.History.RemoveMany(idsOf(asked)) })
 		return
 	}
 	ctx, gen, owner := a.acctWork()
+	if err := a.pending.Add(owner, asked...); err != nil {
+		// Still owed for as long as the program runs.
+		a.cfg.Logf("pending deletions: %v", err)
+	}
 	a.done.Add(1)
 	go func() {
 		defer a.done.Done()
@@ -304,10 +311,9 @@ func (a *App) remove(pick func() []model.Item) {
 			defer a.runActive.Store(false)
 			items := pick()
 			if len(items) == 0 {
-				return
+				return // already gone; what is owed goes with the next sync
 			}
-			if err := a.pending.Add(owner, items...); err != nil {
-				// Still owed for as long as the program runs.
+			if err := a.pending.Add(owner, notIn(items, asked)...); err != nil {
 				a.cfg.Logf("pending deletions: %v", err)
 			}
 			a.mutateQuietly(func() { a.History.RemoveMany(idsOf(items)) })
@@ -325,7 +331,7 @@ func (a *App) remove(pick func() []model.Item) {
 		if !ran {
 			// The account changed before its turn came: the change is the user's
 			// all the same, and the cloud copy is not this account's to touch.
-			a.mutateQuietly(func() { a.History.RemoveMany(asked) })
+			a.mutateQuietly(func() { a.History.RemoveMany(idsOf(asked)) })
 			return
 		}
 		if ctx.Err() != nil {
@@ -338,6 +344,21 @@ func (a *App) remove(pick func() []model.Item) {
 		}
 		a.Auto.OnHistoryChanged(a.acct())
 	}()
+}
+
+// notIn is the items of items that are not in other.
+func notIn(items, other []model.Item) []model.Item {
+	seen := map[string]bool{}
+	for _, it := range other {
+		seen[strings.ToLower(it.ID)] = true
+	}
+	var out []model.Item
+	for _, it := range items {
+		if !seen[strings.ToLower(it.ID)] {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func idsOf(items []model.Item) []string {

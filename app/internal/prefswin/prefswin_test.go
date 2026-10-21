@@ -406,3 +406,33 @@ func TestAccountPageFollowsALoginTakenAwayInTheBackground(t *testing.T) {
 		t.Fatalf("the page still shows the account: %q", r.tt.Texts())
 	}
 }
+
+// While a password dialog shows, the keys stay in it: Tab goes round inside
+// it, and the sign-in form behind it (whose Enter signs in) is out of reach;
+// Escape closes it.
+func TestPasswordDialogKeepsTheKeys(t *testing.T) {
+	for tabs := range 16 {
+		r := newRig(t, "http://127.0.0.1:1")
+		r.click("云同步")
+		r.click("忘记密码")
+		r.tt.Frame()
+		for range tabs {
+			r.tt.Key(0, ui.KeyTab)
+			r.tt.Frame()
+		}
+		r.tt.Key(0, ui.KeyEnter)
+		r.settle()
+		if r.has("请输入邮箱和密码") {
+			t.Fatalf("after %d tabs Enter reached the sign-in form behind the dialog", tabs)
+		}
+	}
+	r := newRig(t, "http://127.0.0.1:1")
+	r.click("云同步")
+	r.click("忘记密码")
+	r.tt.Frame()
+	r.tt.Key(0, ui.KeyEscape)
+	r.tt.Frame()
+	if r.has("找回密码") || !r.has("忘记密码") {
+		t.Fatalf("Escape did not close the dialog: %q", r.tt.Texts())
+	}
+}

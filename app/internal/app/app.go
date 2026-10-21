@@ -5,6 +5,8 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -501,13 +503,14 @@ type loginSeen struct {
 }
 
 // ownerLearned watches each change of the settings, as it is made: a login
-// that had no address (one made by an older client) and learns it with a
+// that had no address (one made by an older client, with no token naming it)
+// and learns it with a
 // refresh of its tokens is the same login, and what it noted under no address
 // is that account's. A change of login is not that: it moves the generation
 // (endAccountWork) before it stores the new address, and the login it puts in
 // place is written down only after (beginAccountWork).
 func (a *App) ownerLearned(before, after model.Settings) {
-	was, is := strings.TrimSpace(model.Str(before.AuthUserEmail)), strings.TrimSpace(model.Str(after.AuthUserEmail))
+	was, is := ownerOf(before), ownerOf(after)
 	if was != "" || is == "" {
 		return
 	}
@@ -522,8 +525,50 @@ func (a *App) ownerLearned(before, after model.Settings) {
 }
 
 // owner is the address of the account signed in, whose the pending deletions
-// are ("" for a login without one, from an older client).
-func (a *App) owner() string { return strings.TrimSpace(model.Str(a.Settings.Get().AuthUserEmail)) }
+// are (see ownerOf).
+func (a *App) owner() string { return ownerOf(a.Settings.Get()) }
+
+// ownerOf is the address of the login in st. A login made by an older client
+// may have none stored; its access token, which the server issued to it and
+// which names the account it was issued to, gives it then. "" only when
+// neither does (a login with nothing but a refresh token): such a login's
+// deletions are its own once a refresh tells its address (ownerLearned), and
+// otherwise cannot be tied to an account, as its checkpoints cannot.
+func ownerOf(st model.Settings) string {
+	if e := strings.TrimSpace(model.Str(st.AuthUserEmail)); e != "" {
+		return e
+	}
+	for _, tok := range []string{model.Str(st.AuthAccessToken), model.Str(st.AuthIdToken)} {
+		if e := tokenEmail(tok); e != "" {
+			return e
+		}
+	}
+	return ""
+}
+
+// tokenEmail is the address a JWT names ("" when tok is not one, or names
+// none). The signature is not checked: the token is this login's own, as kept
+// in the settings, and is used to name the account, not to grant anything.
+func tokenEmail(tok string) string {
+	parts := strings.Split(strings.TrimSpace(tok), ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	b, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return ""
+	}
+	var claims map[string]any
+	if json.Unmarshal(b, &claims) != nil {
+		return ""
+	}
+	for _, k := range []string{"email", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"} {
+		if e, ok := claims[k].(string); ok && strings.TrimSpace(e) != "" {
+			return strings.TrimSpace(e)
+		}
+	}
+	return ""
+}
 
 // Apply puts an item on the clipboard and moves it to the top, as the main
 // window does when one is chosen.

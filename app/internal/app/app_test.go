@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -592,7 +593,7 @@ func TestPendingDeletionIsMadeAgainAfterTheNextSync(t *testing.T) {
 	}
 	// The record of an earlier run: an item was deleted, the upload failed.
 	_ = os.MkdirAll(filepath.Join(root, "sync"), 0o700)
-	_ = os.WriteFile(filepath.Join(root, "sync", "pending-delete.json"), []byte(`{"accounts":{"":[{"id":"gone","at":"`+time.Now().UTC().Format(time.RFC3339Nano)+`"}]}}`), 0o600)
+	_ = os.WriteFile(filepath.Join(root, "sync", "pending-delete.json"), []byte(`{"accounts":{"owner@example.com":[{"id":"gone","at":"`+time.Now().UTC().Format(time.RFC3339Nano)+`"}]}}`), 0o600)
 	clip := &fakeClip{}
 	a := newApp(t, root, clip, srv.URL)
 	a.History.Add(model.Item{ID: "gone", Kind: model.KindText, Text: model.Ptr("restored by a merge"), CopyCount: 1, ContentHash: model.Ptr("text:restored by a merge")})
@@ -608,7 +609,7 @@ func TestPendingDeletionIsMadeAgainAfterTheNextSync(t *testing.T) {
 		return len(a.History.Items()) == 1 && !a.pending.Owed(a.owner())
 	})
 	// The server has it now; the mark stays for a while, as the server's.
-	if got := (&pendingDeletes{path: filepath.Join(root, "sync", "pending-delete.json")}); !(len(got.Tombstones("")) == 1 && !got.Owed("")) {
+	if got := (&pendingDeletes{path: filepath.Join(root, "sync", "pending-delete.json")}); !(len(got.Tombstones("owner@example.com")) == 1 && !got.Owed("owner@example.com")) {
 		t.Fatal("the record on disk does not say that the server has the deletion")
 	}
 }
@@ -942,5 +943,81 @@ func TestDeviceThatWasOfflineCannotBringBackADeletion(t *testing.T) {
 	waitFor(t, "C downloaded", func() bool { return len(texts(c)) == 2 })
 	if hasText(c, "deleted on A") || !hasText(c, "from B") {
 		t.Fatalf("the server has %v", texts(c))
+	}
+}
+
+func jwtFor(email string) string {
+	enc := base64.RawURLEncoding.EncodeToString
+	return enc([]byte(`{"alg":"HS256"}`)) + "." + enc([]byte(`{"sub":"u1","email":"`+email+`"}`)) + ".sig"
+}
+
+// A login of an older client has no address stored; its token names the
+// account, and its deletions are that account's, also after signing out and
+// in again.
+func TestLoginWithoutAddressIsNamedByItsToken(t *testing.T) {
+	st := model.DefaultSettings()
+	st.AuthAccessToken = model.Ptr(jwtFor("old@example.com"))
+	if got := ownerOf(st); got != "old@example.com" {
+		t.Fatalf("owner = %q", got)
+	}
+	st.AuthAccessToken = model.Ptr("not a token")
+	if got := ownerOf(st); got != "" {
+		t.Fatalf("owner = %q", got)
+	}
+
+	root := t.TempDir()
+	st = model.DefaultSettings()
+	st.AuthAccessToken, st.AuthRefreshToken = model.Ptr(jwtFor("old@example.com")), model.Ptr("refresh")
+	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp(t, root, &fakeClip{}, "http://127.0.0.1:1")
+	a.History.Add(item("x", "x"))
+	a.Delete("x")
+	a.done.Wait()
+	// Signed out, and in again as the same account (with its address now).
+	a.endAccountWork()
+	_ = a.Settings.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, true) })
+	a.beginAccountWork()
+	a.endAccountWork()
+	_ = a.Settings.Update(func(m *model.Settings) { m.AuthUserEmail = model.Ptr("old@example.com") })
+	a.beginAccountWork()
+	if got := ids(a.pending.Tombstones(a.owner())); len(got) != 1 || !a.pending.Owed(a.owner()) {
+		t.Fatalf("owed after signing in again: %v", got)
+	}
+}
+
+// The deletion is written down as soon as the user asks, while it waits for
+// a sync to end; a wait cut short (a change of account, a quit) removes the
+// item here and leaves the deletion owed by the account it was asked under.
+func TestDeletionIsWrittenDownBeforeItWaits(t *testing.T) {
+	root := t.TempDir()
+	st := model.DefaultSettings()
+	st.AuthRefreshToken, st.AuthUserEmail = model.Ptr("refresh"), model.Ptr("a@example.com")
+	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(Config{Layout: paths.Layout{Root: root}, Clipboard: &fakeClip{}, ChangeSeq: (&fakeClip{}).seq.Load,
+		Interval: 5 * time.Millisecond, BaseURL: "http://127.0.0.1:1", Logf: t.Logf, StartupRetry: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Auto.Run = func(context.Context, string, bool) error { return nil }
+	a.History.Add(item("x", "x"))
+	a.Start()
+	defer a.Stop()
+	held, release := make(chan struct{}), make(chan struct{})
+	go a.Auto.Exclusive(context.Background(), func() { close(held); <-release }) // a sync that runs long
+	<-held
+	defer close(release)
+
+	a.Delete("x")
+	if got := ids(a.pending.Tombstones("a@example.com")); len(got) != 1 {
+		t.Fatalf("not written down while waiting: %v", got)
+	}
+	a.endAccountWork() // the wait is cut short
+	waitFor(t, "removed here", func() bool { return a.History.Len() == 0 })
+	if !a.pending.Owed("a@example.com") {
+		t.Fatal("the deletion was dropped")
 	}
 }
