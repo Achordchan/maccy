@@ -1313,3 +1313,41 @@ func TestDeletingTheNewerDuplicateKeepsTheOlderThroughAMerge(t *testing.T) {
 		t.Fatalf("the server has %v", got)
 	}
 }
+
+// While the deletion waits, a sync replaces the item with a later version of
+// the same id (copied again on another device): the deletion written down at
+// first does not cover that version, so the one removed is written down too.
+func TestDeletionCoversTheVersionItRemoves(t *testing.T) {
+	root := t.TempDir()
+	st := model.DefaultSettings()
+	st.AuthRefreshToken, st.AuthUserEmail = model.Ptr("refresh"), model.Ptr("a@example.com")
+	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(Config{Layout: paths.Layout{Root: root}, Clipboard: &fakeClip{}, ChangeSeq: (&fakeClip{}).seq.Load,
+		Interval: 5 * time.Millisecond, BaseURL: "http://127.0.0.1:1", Logf: t.Logf, StartupRetry: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Auto.Run = func(context.Context, string, bool) error { return nil }
+	old := item("x", "x")
+	old.CapturedAt = model.Time{Time: time.Now().Add(-time.Hour)}
+	a.History.Add(old)
+	a.Start()
+	defer a.Stop()
+	held, release := make(chan struct{}), make(chan struct{})
+	go a.Auto.Exclusive(context.Background(), func() { close(held); <-release }) // a sync
+	<-held
+
+	a.Delete("x")
+	later := old
+	later.CapturedAt = model.Time{Time: time.Now().Add(time.Hour)} // what the sync brings in
+	if err := a.History.ReplaceAll(context.Background(), []model.Item{later}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	waitFor(t, "removed", func() bool { return a.History.Len() == 0 }) // written down before
+	if got := a.Syncer.Deleted([]model.Item{later}); len(got) != 1 {
+		t.Fatal("the version removed is not covered: a merge would bring it back")
+	}
+}

@@ -260,6 +260,7 @@ func (m *Model) current() (model.Item, bool) {
 func (m *Model) enter(s section) {
 	m.sec = s
 	m.chosen = 0
+	m.list.ScrollIntoView(0) // the first row is chosen: it is the one Enter applies, so it shows
 	m.dropHover()
 	m.redraw()
 }

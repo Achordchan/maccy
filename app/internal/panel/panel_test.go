@@ -905,3 +905,32 @@ func TestNoPreviewAfterTheWindowIsHidden(t *testing.T) {
 		t.Fatalf("not shown once open again: %v", r.ho.previewed)
 	}
 }
+
+// Going into a folder chooses its first row, and shows it: the list does not
+// keep the place it was scrolled to in the other folder.
+func TestEnteringAFolderShowsItsFirstRow(t *testing.T) {
+	var texts []string
+	for i := range 120 {
+		texts = append(texts, fmt.Sprintf("entry %03d", i))
+	}
+	r := newRig(t, texts...)
+	for i, it := range r.h.Items() {
+		if i%2 == 0 {
+			r.h.TogglePinned(it.ID)
+		}
+	}
+	r.tt.Frame()
+	for range 30 {
+		r.tt.Scroll(w/2, hgt/2, 0, 400)
+		r.tt.Frame()
+	}
+	if err := r.tt.Click("常用剪贴"); err != nil {
+		t.Fatal(err)
+	}
+	r.tt.Frame()
+	r.tt.Frame()
+	first := RowText(r.m.rows()[0])
+	if b, ok := r.tt.Find(first); !ok || b.H <= 0 || b.Y < 0 || b.Y > hgt {
+		t.Fatalf("the first row %q is not in view: %v %+v", first, ok, b)
+	}
+}

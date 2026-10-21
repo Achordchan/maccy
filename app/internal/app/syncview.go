@@ -314,7 +314,7 @@ func (a *App) remove(pick func() []model.Item) {
 			if len(items) == 0 {
 				return // already gone; what is owed goes with the next sync
 			}
-			if err := a.pending.Add(owner, a.History.Items(), notIn(items, asked)...); err != nil {
+			if err := a.pending.Add(owner, a.History.Items(), notCovered(items, asked)...); err != nil {
 				a.cfg.Logf("pending deletions: %v", err)
 			}
 			a.mutateQuietly(func() { a.History.RemoveMany(idsOf(items)) })
@@ -345,15 +345,18 @@ func (a *App) remove(pick func() []model.Item) {
 	}()
 }
 
-// notIn is the items of items that are not in other.
-func notIn(items, other []model.Item) []model.Item {
-	seen := map[string]bool{}
-	for _, it := range other {
-		seen[strings.ToLower(it.ID)] = true
+// notCovered is the items of items that what was written down for asked does
+// not stand for: those that are not among asked, and those that a sync has
+// since replaced with a later version of the same id (a copy made later on
+// another device), which the deletion written down at first does not cover.
+func notCovered(items, asked []model.Item) []model.Item {
+	was := map[string]model.Item{}
+	for _, it := range asked {
+		was[strings.ToLower(it.ID)] = it
 	}
 	var out []model.Item
 	for _, it := range items {
-		if !seen[strings.ToLower(it.ID)] {
+		if old, ok := was[strings.ToLower(it.ID)]; !ok || it.CapturedAt.After(old.CapturedAt.Time) {
 			out = append(out, it)
 		}
 	}
