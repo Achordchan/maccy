@@ -239,3 +239,23 @@ func TestFilesAreListed(t *testing.T) {
 		t.Fatalf("a long list: height %d", h)
 	}
 }
+
+// A note of many lines scrolls in a few, and leaves the item in view.
+func TestLongNoteScrolls(t *testing.T) {
+	m := &Model{Item: item(model.KindText)}
+	m.Item.Text = model.Ptr("hello preview")
+	m.Item.Note = model.Ptr(strings.Repeat("a line of the note\n", 40) + "the end")
+	m.MetaLine = m.Meta()
+	tt := ui.NewTester(m.View, TextWidth, TextHeight)
+	b, ok := tt.Find("hello preview")
+	if !ok || b.H <= 0 || b.Y < 0 || b.Y+b.H > TextHeight {
+		t.Fatalf("the text is out of view: %+v %v", b, ok)
+	}
+	if !tt.HasText("复制次数：3") {
+		t.Fatalf("texts: %q", tt.Texts())
+	}
+	note, ok := tt.Find(m.NoteLine())
+	if !ok || note.H > noteMaxH+1 || note.Y+note.H > TextHeight {
+		t.Fatalf("the note takes %+v", note)
+	}
+}

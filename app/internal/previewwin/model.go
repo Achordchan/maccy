@@ -57,6 +57,10 @@ const (
 // lines show before it scrolls, fileGap the line under the list.
 const fileRowH, fileRows, fileGap = 18, 6, 17
 
+// noteMaxH is the height a note takes at most (three lines) before it
+// scrolls.
+const noteMaxH = 54
+
 // Size is the size of the window for an item: fixed for text and files, and
 // following the picture for an image, which is shown at least as large as a
 // short side that fits the smallest window, and no larger than the largest.
@@ -280,7 +284,11 @@ func (m *Model) View(c *ui.Context) {
 			}
 			ui.Text(c, m.MetaLine).FontSize(11).TextColor(p.Muted).Wrap()
 			ui.Text(c, m.Times()).FontSize(11).TextColor(p.Muted2).Wrap()
-			ui.Text(c, m.NoteLine()).FontSize(12).TextColor(p.Text).Wrap()
+			// A note may run to many lines: it scrolls past a few, so that the
+			// item stays in view.
+			ui.Scroll(c).FillWidth().MaxHeight(noteMaxH).Children(func() {
+				ui.Text(c, m.NoteLine()).FontSize(12).TextColor(p.Text).Wrap().FillWidth()
+			})
 		})
 	})
 }
