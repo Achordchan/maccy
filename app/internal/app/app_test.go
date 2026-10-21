@@ -809,6 +809,106 @@ func TestPendingDeletesAreWrittenWhole(t *testing.T) {
 	}
 }
 
+// A file that cannot be read is not written over: what is deleted meanwhile
+// is kept in memory, and joins what the file holds once it can be read. A
+// file that is not a list of deletions is kept aside.
+func TestPendingDeletesUnreadableFileIsNotWrittenOver(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pending-delete.json")
+	if err := (&pendingDeletes{path: path}).Add("a@example.com", nil, item("a", "a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	p := &pendingDeletes{path: path}
+	if err := p.Add("a@example.com", nil, item("b", "b")); err == nil {
+		t.Fatal("written over a file that could not be read")
+	}
+	if got := ids(p.Tombstones("a@example.com")); len(got) != 1 || got[0] != "b" {
+		t.Fatalf("in memory: %v", got)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ids((&pendingDeletes{path: path}).Tombstones("a@example.com")); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("the file: %v", got)
+	}
+	if err := p.Add("a@example.com", nil, item("c", "c")); err != nil { // it can be read now
+		t.Fatal(err)
+	}
+	if got := ids((&pendingDeletes{path: path}).Tombstones("a@example.com")); len(got) != 3 {
+		t.Fatalf("the file after: %v", got)
+	}
+
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	q := &pendingDeletes{path: path}
+	if err := q.Add("a@example.com", nil, item("d", "d")); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(path + ".bad"); err != nil || string(b) != "{" {
+		t.Fatalf("the damaged file: %q %v", b, err)
+	}
+	if got := ids((&pendingDeletes{path: path}).Tombstones("a@example.com")); len(got) != 1 || got[0] != "d" {
+		t.Fatalf("after the damaged file: %v", got)
+	}
+}
+
+// A login known by its session learns its address while the deletions' file
+// cannot be written: the settings, which are written, keep the move, and it is
+// made after a restart, also when the file still cannot be written then.
+func TestSessionMoveSurvivesAnUnwritableDeletionsFile(t *testing.T) {
+	root := t.TempDir()
+	st := model.DefaultSettings()
+	st.AuthRefreshToken = model.Ptr("r1")
+	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp(t, root, &fakeClip{}, "http://127.0.0.1:1")
+	session := a.owner()
+	if err := a.pending.Add(session, nil, item("x", "x")); err != nil {
+		t.Fatal(err)
+	}
+	blocked := a.pending.path + ".tmp"
+	if err := os.MkdirAll(filepath.Join(blocked, "x"), 0o700); err != nil { // no write gets through
+		t.Fatal(err)
+	}
+	if err := a.Settings.Update(func(m *model.Settings) { // a refresh
+		m.AuthRefreshToken, m.AuthUserEmail = model.Ptr("r1b"), model.Ptr("a@example.com")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ids(a.pending.Tombstones("a@example.com")); len(got) != 1 {
+		t.Fatalf("this run: %v", got)
+	}
+
+	b := newApp(t, root, &fakeClip{}, "http://127.0.0.1:1") // a restart
+	if got := ids(b.pending.Tombstones("a@example.com")); len(got) != 1 || got[0] != "x" {
+		t.Fatalf("after a restart: %v", got)
+	}
+	if len(ownerMoves(b.Settings.Get())) != 1 {
+		t.Fatalf("the move was forgotten before it was written: %v", ownerMoves(b.Settings.Get()))
+	}
+	if got := ids((&pendingDeletes{path: b.pending.path}).Tombstones("a@example.com")); len(got) != 0 {
+		t.Fatalf("written through the block: %v", got)
+	}
+
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+	b.replayOwnerMoves()
+	if got := ids((&pendingDeletes{path: b.pending.path}).Tombstones("a@example.com")); len(got) != 1 {
+		t.Fatalf("the file: %v", got)
+	}
+	if ms := ownerMoves(b.Settings.Get()); ms != nil {
+		t.Fatalf("kept after it was written: %v", ms)
+	}
+	if again, _ := settings.Load(filepath.Join(root, "settings.json")); ownerMoves(again) != nil {
+		t.Fatal("the saved settings still name the move")
+	}
+}
+
 func signedInRoot(t *testing.T, tok syncclient.TokenSet) string {
 	t.Helper()
 	root := t.TempDir()

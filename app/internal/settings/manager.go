@@ -16,7 +16,7 @@ type Manager struct {
 	mu       sync.Mutex
 	cur      model.Settings
 	handlers []func(model.Settings)
-	watchers []func(before, after model.Settings)
+	watchers []func(before model.Settings, after *model.Settings)
 
 	// Handlers run one after the other on one goroutine (see Update).
 	rev       int64         // number of the newest update, under mu
@@ -60,7 +60,7 @@ func (m *Manager) Update(f func(*model.Settings)) error {
 	before := m.cur
 	f(&m.cur)
 	for _, w := range m.watchers {
-		w(before, m.cur)
+		w(before, &m.cur)
 	}
 	err := Save(m.path, m.cur)
 	m.rev++
@@ -98,9 +98,12 @@ func (m *Manager) deliver() {
 }
 
 // Watch registers a function that sees each Update as it is made, before
-// and after, in the order of the updates. It runs inside Update with the
-// settings locked: it must be quick and must not use the Manager.
-func (m *Manager) Watch(f func(before, after model.Settings)) {
+// and after, in the order of the updates, before they are saved: what it
+// adds to after is saved with the change. It runs inside Update with the
+// settings locked: it must be quick and must not use the Manager. after
+// shares its maps with before and with what Get gave out: a map is replaced,
+// not changed.
+func (m *Manager) Watch(f func(before model.Settings, after *model.Settings)) {
 	m.mu.Lock()
 	m.watchers = append(m.watchers, f)
 	m.mu.Unlock()

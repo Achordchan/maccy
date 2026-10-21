@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -47,7 +48,8 @@ type pendingDeletes struct {
 	lists  map[string][]deletion // by account (lower case)
 	repair map[string]bool       // accounts whose server still has deleted items
 	alias  map[string]string     // an account known by another address since (Adopt)
-	read   bool
+	read   bool                  // the file has been read (or there is none)
+	failed string                // why it could not be read, as last logged
 }
 
 // deletion is one item the user deleted.
@@ -93,32 +95,59 @@ func (p *pendingDeletes) clock() time.Time {
 	return time.Now()
 }
 
-func (p *pendingDeletes) load() {
+// load reads the file once. When it cannot be read (a disk error, a
+// permission) what is noted meanwhile is kept in memory, the file is not
+// written over (save), and the next use reads it again; what it holds then
+// joins what was noted. A file that is read but is not a list of deletions
+// (damaged by something else: this program replaces it whole) is kept beside
+// it as ".bad", for whoever wants to look at it, and the deletions start
+// afresh: what it held is lost either way, and what is deleted from now on is
+// not.
+func (p *pendingDeletes) load() error {
 	if p.read {
-		return
+		return nil
 	}
-	p.read = true
-	p.lists, p.repair = map[string][]deletion{}, map[string]bool{}
+	if p.lists == nil {
+		p.lists, p.repair = map[string][]deletion{}, map[string]bool{}
+	}
 	b, err := os.ReadFile(p.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		p.read, p.failed = true, ""
+		return nil
+	}
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			p.log("pending deletions: %v", err)
-		}
-		return
+		return p.unread(err)
 	}
 	var f pendingFile
 	if err := json.Unmarshal(b, &f); err != nil {
-		p.log("pending deletions: %v", err)
-		return
+		if rerr := os.Rename(p.path, p.path+".bad"); rerr != nil {
+			return p.unread(fmt.Errorf("%v; keeping it aside: %w", err, rerr))
+		}
+		p.log("pending deletions: %v; the file is kept as %s.bad", err, filepath.Base(p.path))
+		p.read, p.failed = true, ""
+		return nil
 	}
 	for k, l := range f.Accounts {
-		p.lists[accountKey(k)] = append(p.lists[accountKey(k)], l...)
+		a := p.account(k) // an account adopted while the file could not be read
+		p.lists[a] = append(p.lists[a], l...)
 	}
 	for k, on := range f.Repair {
 		if on {
-			p.repair[accountKey(k)] = true
+			p.repair[p.account(k)] = true
 		}
 	}
+	p.read, p.failed = true, ""
+	return nil
+}
+
+// unread notes that the file could not be read, logging it once for each
+// reason.
+func (p *pendingDeletes) unread(err error) error {
+	if msg := err.Error(); msg != p.failed {
+		p.failed = msg
+		p.log("pending deletions: %v", err)
+	}
+	return err
 }
 
 func (p *pendingDeletes) log(format string, args ...any) {
@@ -132,6 +161,9 @@ func (p *pendingDeletes) log(format string, args ...any) {
 func (p *pendingDeletes) save() error {
 	if p.path == "" {
 		return nil
+	}
+	if !p.read {
+		return fmt.Errorf("not written: the file could not be read (%s)", p.failed)
 	}
 	for k, l := range p.lists {
 		if len(l) == 0 {
@@ -341,7 +373,7 @@ func (p *pendingDeletes) prune(k string) bool {
 func (p *pendingDeletes) Adopt(from, to string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.load()
+	lerr := p.load()
 	f, t := accountKey(from), accountKey(to)
 	if f == t {
 		return nil
@@ -355,8 +387,20 @@ func (p *pendingDeletes) Adopt(from, to string) error {
 			p.alias[k] = t
 		}
 	}
-	if len(p.lists[f]) == 0 {
+	moved := p.move(f, t)
+	if lerr != nil {
+		return lerr // what the file holds under from is not moved yet
+	}
+	if !moved {
 		return nil
+	}
+	return p.save()
+}
+
+// move puts the list and the repair of the account f under t's.
+func (p *pendingDeletes) move(f, t string) bool {
+	if f == t || len(p.lists[f]) == 0 {
+		return false
 	}
 	p.lists[t] = append(p.lists[t], p.lists[f]...)
 	delete(p.lists, f)
@@ -364,6 +408,20 @@ func (p *pendingDeletes) Adopt(from, to string) error {
 		p.repair[t] = true
 		delete(p.repair, f)
 	}
+	return true
+}
+
+// Move is Adopt made again after it could not be written (see ownerMove):
+// what is under from is to's, and the file is written also when nothing was
+// left to move, as the move Adopt made in memory may be what it lacks. It
+// names no alias: the login it was for may be gone.
+func (p *pendingDeletes) Move(from, to string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.load(); err != nil {
+		return err
+	}
+	p.move(accountKey(from), accountKey(to))
 	return p.save()
 }
 

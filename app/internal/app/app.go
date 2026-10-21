@@ -12,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -141,6 +143,7 @@ func New(cfg Config) (*App, error) {
 	a.pending.logf = cfg.Logf
 	a.login.Store(&loginSeen{owner: a.owner()})
 	a.Settings.Watch(a.ownerLearned)
+	a.replayOwnerMoves()
 	a.Persister = history.NewPersister(a.History, cfg.Layout)
 	if err := a.Persister.Load(context.Background()); err != nil {
 		cfg.Logf("history: %v", err)
@@ -223,6 +226,7 @@ func New(cfg Config) (*App, error) {
 		_, gen, owner := a.acctWork()
 		a.runGen.Store(gen) // which account this sync is for
 		a.runOwner.Store(&owner)
+		a.replayOwnerMoves()
 		err := run(ctx, reason, manual)
 		if err != nil {
 			return err
@@ -526,8 +530,13 @@ type loginSeen struct {
 // under its new name. A change of login is not that: it moves the generation
 // (endAccountWork) before it stores the new login, and the login it puts in
 // place is written down only after (beginAccountWork).
-func (a *App) ownerLearned(before, after model.Settings) {
-	was, is := ownerOf(before), ownerOf(after)
+//
+// When the move cannot be written to the deletions' file, it is written with
+// the settings that name the new address (ownerMove), and made again
+// (replayOwnerMoves) until it is: after a restart nothing else tells whose
+// what was noted under the session is.
+func (a *App) ownerLearned(before model.Settings, after *model.Settings) {
+	was, is := ownerOf(before), ownerOf(*after)
 	if was == is || !sessionOwner(was) || is == "" {
 		return
 	}
@@ -538,6 +547,72 @@ func (a *App) ownerLearned(before, after model.Settings) {
 	a.login.Store(&loginSeen{owner: is, gen: l.gen})
 	if err := a.pending.Adopt(was, is); err != nil {
 		a.cfg.Logf("pending deletions: %v", err)
+		setOwnerMoves(after, append(ownerMoves(*after), ownerMove{From: was, To: is}))
+	}
+}
+
+// ownerMovesKey is where the settings keep the moves of deletions that
+// ownerLearned could not write: a property of this client's that the C# one
+// keeps as it is (Extra).
+const ownerMovesKey = "KlipPendingDeleteMoves"
+
+// ownerMove is that what was noted under the address From is To's.
+type ownerMove struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+func ownerMoves(st model.Settings) []ownerMove {
+	var ms []ownerMove
+	if raw, ok := st.Extra[ownerMovesKey]; ok {
+		_ = json.Unmarshal(raw, &ms)
+	}
+	return ms
+}
+
+// setOwnerMoves replaces the moves st keeps, in a new map: the one st has is
+// shared with the settings given out before.
+func setOwnerMoves(st *model.Settings, ms []ownerMove) {
+	extra := maps.Clone(st.Extra)
+	if extra == nil {
+		extra = map[string]json.RawMessage{}
+	}
+	delete(extra, ownerMovesKey)
+	if len(ms) > 0 {
+		raw, _ := json.Marshal(ms)
+		extra[ownerMovesKey] = raw
+	}
+	if len(extra) == 0 {
+		extra = nil
+	}
+	st.Extra = extra
+}
+
+// replayOwnerMoves makes again the moves the settings keep, in order, and
+// forgets those that are written now.
+func (a *App) replayOwnerMoves() {
+	var made []ownerMove
+	for _, m := range ownerMoves(a.Settings.Get()) {
+		if err := a.pending.Move(m.From, m.To); err != nil {
+			a.cfg.Logf("pending deletions: %v", err)
+			break
+		}
+		made = append(made, m)
+	}
+	if len(made) == 0 {
+		return
+	}
+	err := a.Settings.Update(func(s *model.Settings) {
+		ms := ownerMoves(*s)
+		for _, m := range made {
+			if i := slices.Index(ms, m); i >= 0 {
+				ms = slices.Delete(ms, i, i+1)
+			}
+		}
+		setOwnerMoves(s, ms)
+	})
+	if err != nil {
+		a.cfg.Logf("settings: %v", err)
 	}
 }
 
