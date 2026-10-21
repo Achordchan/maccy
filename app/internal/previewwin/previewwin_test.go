@@ -1,6 +1,7 @@
 package previewwin
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -257,5 +258,22 @@ func TestLongNoteScrolls(t *testing.T) {
 	note, ok := tt.Find(m.NoteLine())
 	if !ok || note.H > noteMaxH+1 || note.Y+note.H > TextHeight {
 		t.Fatalf("the note takes %+v", note)
+	}
+}
+
+// Of thousands of files, only the rows in view are built.
+func TestManyFilesBuildOnlyTheRowsInView(t *testing.T) {
+	m := &Model{Item: item(model.KindFileList)}
+	for i := range 5000 {
+		m.Item.FilePaths = append(m.Item.FilePaths, filepath.Join("/docs", fmt.Sprintf("file%04d.txt", i)))
+	}
+	m.MetaLine = m.Meta()
+	w, h := Size(m.Item, 0, 0)
+	tt := ui.NewTester(m.View, w, h)
+	if !tt.HasText("file0000.txt") {
+		t.Fatalf("texts: %q", tt.Texts())
+	}
+	if tt.HasText("file4999.txt") || tt.HasText("file0100.txt") {
+		t.Fatal("rows out of view were built")
 	}
 }

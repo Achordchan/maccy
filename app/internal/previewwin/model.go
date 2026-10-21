@@ -37,6 +37,10 @@ type Model struct {
 	over, wasOver bool
 	icon          *ui.Bitmap
 	iconPath      string
+	// files is the list of the files, which builds only the rows in view (an
+	// item may hold thousands); filesOf the item it shows.
+	files   ui.ListState
+	filesOf string
 }
 
 // Over says that the pointer is over the window.
@@ -305,18 +309,21 @@ func Files(it model.Item) []string {
 	return out
 }
 
-// fileList is the list of the files: the name, then the folder it is in.
+// fileList is the list of the files: the name, then the folder it is in. It
+// starts at the top for each item.
 func (m *Model) fileList(c *ui.Context, p panel.Palette, files []string) {
-	ui.Scroll(c).Fill().Children(func() {
-		ui.Column(c).FillWidth().Children(func() {
-			for _, f := range files {
-				ui.Row(c).FillWidth().Height(fileRowH).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, filepath.Base(f)).FontSize(12).TextColor(p.Text).SingleLine().Ellipsis("…").MinWidth(0)
-					ui.Text(c, filepath.Dir(f)).FontSize(11).TextColor(p.Muted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
-				})
-			}
+	if m.filesOf != m.Item.ID {
+		m.filesOf = m.Item.ID
+		m.files.ScrollTo(0, ui.Start)
+	}
+	m.files.Label = func(i int) string { return files[i] }
+	ui.List(c, &m.files, len(files), func(i int) {
+		f := files[i]
+		ui.Row(c).FillWidth().Height(fileRowH).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, filepath.Base(f)).FontSize(12).TextColor(p.Text).SingleLine().Ellipsis("…").MinWidth(0)
+			ui.Text(c, filepath.Dir(f)).FontSize(11).TextColor(p.Muted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 		})
-	})
+	}).Fill()
 }
 
 // openable says that the original of the picture is there to open: it was
