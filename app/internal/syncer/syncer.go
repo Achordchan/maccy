@@ -20,16 +20,44 @@ import (
 	"klip/internal/syncclient"
 )
 
-// Syncer runs the sync operations. One operation runs at a time, as with the
-// static gate of SyncService.
+// Syncer runs the sync operations. One operation runs at a time for a data
+// folder, as with the static gate of SyncService: two Syncers of the same
+// folder share their locks (rootLocks).
 type Syncer struct {
 	cfg     Config
 	session *syncclient.Session
-	// gate serializes the operations that talk to the server or change the
-	// data folder; workflow is held for a whole Run, so that two runs cannot
-	// decide on the same manifest and apply it twice.
+	*rootLocks
+}
+
+// rootLocks are the locks of a data folder. gate serializes the operations
+// that talk to the server or change the folder; workflow is held for a whole
+// Run, so that two runs cannot decide on the same manifest and apply it twice
+// (and the pending-merge state of the folder is one run's at a time).
+type rootLocks struct {
 	gate     sync.Mutex
 	workflow sync.Mutex
+}
+
+var (
+	locksMu sync.Mutex
+	locks   = map[string]*rootLocks{}
+)
+
+// locksFor returns the locks of the data folder root, the same for every
+// Syncer of it.
+func locksFor(root string) *rootLocks {
+	key := filepath.Clean(root)
+	if abs, err := filepath.Abs(key); err == nil {
+		key = abs
+	}
+	locksMu.Lock()
+	defer locksMu.Unlock()
+	l, ok := locks[key]
+	if !ok {
+		l = &rootLocks{}
+		locks[key] = l
+	}
+	return l
 }
 
 // New returns a Syncer. cfg.Client, Settings, History, Layout and BaseURL are
@@ -42,7 +70,8 @@ func New(cfg Config) *Syncer {
 		cfg.Flush = func(context.Context) error { return nil }
 	}
 	return &Syncer{
-		cfg: cfg,
+		cfg:       cfg,
+		rootLocks: locksFor(cfg.Layout.Root),
 		session: &syncclient.Session{
 			Client: cfg.Client, Settings: cfg.Settings, Now: cfg.Now, BaseURL: cfg.BaseURL,
 		},

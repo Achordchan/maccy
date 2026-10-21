@@ -294,10 +294,27 @@ func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]B
 		// Export exactly the files the item lists: they must all be in the
 		// cache, but surplus files left by an older import are harmless.
 		byKey := make(map[string]cachedFile, len(files))
-		byIdx := make(map[int]cachedFile, len(files))
+		byIdx := make(map[int][]cachedFile, len(files))
 		for _, f := range files {
 			byKey[cacheKey(f.idx, f.name)] = f
-			byIdx[f.idx] = f
+			byIdx[f.idx] = append(byIdx[f.idx], f)
+		}
+		// at is the cached file of the document at position i called name: the
+		// one of that position and name, else the only one of that position.
+		// Two of that position, neither called name (a stale file beside the
+		// current one), are not guessed between.
+		at := func(i int, name string) (cachedFile, error) {
+			if f, ok := byKey[cacheKey(i, name)]; ok {
+				return f, nil
+			}
+			switch c := byIdx[i]; len(c) {
+			case 1:
+				return c[0], nil
+			case 0:
+				return cachedFile{}, errors.New("snapshot: local file payload missing")
+			default:
+				return cachedFile{}, fmt.Errorf("snapshot: %d cached files at position %d, none called %q", len(c), i, name)
+			}
 		}
 		selected := make([]cachedFile, 0, wantFiles)
 		for i, p := range it.FilePaths {
@@ -308,9 +325,9 @@ func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]B
 			// Only a path inside Klip's files folder names a cached file; an
 			// original document called "2026_report.pdf" is not index 2026.
 			if !within(l.Files(), filepath.Dir(filepath.Clean(p))) {
-				f, ok := byIdx[i]
-				if !ok {
-					return nil, errors.New("snapshot: local file payload missing")
+				f, err := at(i, name)
+				if err != nil {
+					return nil, err
 				}
 				selected = append(selected, f)
 				continue
@@ -323,9 +340,9 @@ func fileStatements(l paths.Layout, it model.Item, id string, blobs map[string]B
 				selected = append(selected, f)
 				continue
 			}
-			f, ok := byIdx[i]
-			if !ok {
-				return nil, errors.New("snapshot: local file payload missing")
+			f, err := at(i, name)
+			if err != nil {
+				return nil, err
 			}
 			selected = append(selected, f)
 		}

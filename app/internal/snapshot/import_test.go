@@ -640,6 +640,52 @@ func TestExportMatchesMigratedDocumentsByPosition(t *testing.T) {
 	}
 }
 
+// A migrated document is the cached file of its position and its name: a
+// stale file of the same position beside it is not exported, and two that
+// are neither called by its name are not guessed between.
+func TestExportMatchesMigratedDocumentsByName(t *testing.T) {
+	const id = "16fd2706-8baf-433b-82eb-8c7fada847da"
+	setup := func(t *testing.T, files map[string]string) (paths.Layout, model.Item) {
+		l := paths.Layout{Root: t.TempDir()}
+		dir := filepath.Join(l.Files(), strings.ReplaceAll(id, "-", ""))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return l, model.Item{
+			ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()},
+			FilePaths: []string{"/docs/report.pdf"}, CopyCount: 1,
+		}
+	}
+
+	l, item := setup(t, map[string]string{"0000_report.pdf": "current", "0000_z-old.pdf": "stale"})
+	snap := filepath.Join(t.TempDir(), "snapshot.sqlite")
+	if _, err := Export(ctx, l, snap, []model.Item{item}, model.DefaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var sum string
+	if err := db.QueryRow(`SELECT blobSha256 FROM item_files`).Scan(&sum); err != nil {
+		t.Fatal(err)
+	}
+	if want := sha256.Sum256([]byte("current")); sum != hex.EncodeToString(want[:]) {
+		t.Errorf("exported %s, not the current report", sum)
+	}
+
+	l, item = setup(t, map[string]string{"0000_x-old.pdf": "one", "0000_y-old.pdf": "two"})
+	if _, err := Export(ctx, l, filepath.Join(t.TempDir(), "snapshot.sqlite"), []model.Item{item}, model.DefaultSettings()); err == nil {
+		t.Error("exported one of two files that are not the report")
+	}
+}
+
 // Read creates the data root when the layout is fresh.
 func TestReadCreatesAMissingRoot(t *testing.T) {
 	src := paths.Layout{Root: t.TempDir()}

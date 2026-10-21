@@ -2878,3 +2878,28 @@ func TestDownloadMergeKeepsADeletionUnderAnotherID(t *testing.T) {
 		t.Fatalf("the kept copy: %v", got)
 	}
 }
+
+// Two Syncers of the same data folder share their locks: a run of one waits
+// for a run of the other. Another folder has its own.
+func TestSyncersOfAFolderShareTheirLocks(t *testing.T) {
+	root := t.TempDir()
+	a := New(Config{Layout: paths.Layout{Root: root}})
+	b := New(Config{Layout: paths.Layout{Root: filepath.Join(root, ".")}})
+	other := New(Config{Layout: paths.Layout{Root: t.TempDir()}})
+	a.workflow.Lock()
+	defer a.workflow.Unlock()
+	if b.workflow.TryLock() {
+		b.workflow.Unlock()
+		t.Fatal("a second Syncer of the folder runs beside the first")
+	}
+	if !other.workflow.TryLock() {
+		t.Fatal("another folder waits for this one")
+	}
+	other.workflow.Unlock()
+	a.gate.Lock()
+	defer a.gate.Unlock()
+	if b.gate.TryLock() {
+		b.gate.Unlock()
+		t.Fatal("the gate is not shared")
+	}
+}
