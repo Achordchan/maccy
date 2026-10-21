@@ -346,14 +346,20 @@ func (s *Syncer) DecideItems(manifest ManifestInfo, items []model.Item) Decision
 //
 // Its error says the state was not saved: a record that waits for it (the
 // pending merge) must then be kept.
+//
+// A state that is not written because another session is signed in by then
+// is ErrSessionChanged, not a success: the record it would have replaced is
+// still needed.
 func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo, account string) error {
-	return s.cfg.Settings.Update(func(st *model.Settings) {
+	skipped := false
+	err := s.cfg.Settings.Update(func(st *model.Settings) {
 		if account != "" {
 			// Check the account inside the same update that writes the state:
 			// a check before the callback cannot stop a sign-in or sign-out
 			// in between.
 			cur := syncclient.AccountID(model.Str(st.AuthAccessToken))
 			if cur == "" || !strings.EqualFold(cur, account) {
+				skipped = true
 				return
 			}
 		}
@@ -366,6 +372,10 @@ func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo, accou
 		}
 		st.SyncLastRemoteSha256 = nonEmpty(m.SnapshotSHA256)
 	})
+	if skipped {
+		return ErrSessionChanged
+	}
+	return err
 }
 
 // persistPendingMerge records the state before a merge, so that the upload
@@ -459,6 +469,11 @@ func (s *Syncer) clearPendingMerge() { _ = os.Remove(s.pendingMergePath()) }
 
 // markPendingMergeCommitted records that Flush returned successfully: from
 // then on the merged history is on disk even if captures change it later.
+//
+// A marker that cannot be written does not stop the workflow: the upload
+// that follows publishes the merged history and retires the record
+// (persistAfterUpload), which is what the marker is for; stopping here would
+// leave the record to a recovery that a later capture can defeat.
 func (s *Syncer) markPendingMergeCommitted() {
 	p, ok := s.readPendingMerge()
 	if !ok {
@@ -491,6 +506,11 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error 
 	p, ok := s.readPendingMerge()
 	if !ok {
 		return nil
+	}
+	if p.Account == "" {
+		// An opaque token did not say whose the record is: it is the
+		// workflow's, not whoever signs in later.
+		p.Account = account
 	}
 	if p.Account != "" && s.accountChanged(p.Account) {
 		s.clearPendingMerge()
@@ -928,7 +948,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		// not let ApplyLimits prune them before the upload.
 		EnsureSettingsCanHoldItems(&settings, applied)
 	}
-	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(settings) })
+	// The limits the history now needs must be saved with it: settings left
+	// with the old ones would prune it at the next start.
+	serr := s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(settings) })
 	_, limitRemoved := s.cfg.History.ApplyLimitsAndSnapshot(s.settings())
 	limitPruned := removedSet(limitRemoved)
 	res := DownloadResult{
@@ -948,15 +970,19 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	if merged {
 		fingerprint = pendingFingerprint(preMerge, after)
 	}
-	if werr := s.writePendingMerge(pendingMergeState{
-		Fingerprint: fingerprint,
-		Version:     sum,
-		SHA256:      sum,
-		Before:      Fingerprint(before),
-		After:       after,
-		Applied:     mutatedFP,
-		Account:     account,
-	}); werr != nil {
+	werr := serr
+	if werr == nil {
+		werr = s.writePendingMerge(pendingMergeState{
+			Fingerprint: fingerprint,
+			Version:     sum,
+			SHA256:      sum,
+			Before:      Fingerprint(before),
+			After:       after,
+			Applied:     mutatedFP,
+			Account:     account,
+		})
+	}
+	if werr != nil {
 		s.clearPendingMerge() // the history goes back to before
 		rctx, rcancel := cleanupContext()
 		rerr := s.rollbackMutation(rctx, before, applied, oldSettings, limitPruned)
@@ -1258,7 +1284,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	}
 	EnsureSettingsCanHoldItems(&mergedSettings, merged)
 
-	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(mergedSettings) })
+	// The limits the merged history needs are saved with it (see the
+	// download).
+	serr := s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(mergedSettings) })
 	_, limitRemoved := s.cfg.History.ApplyLimitsAndSnapshot(s.settings())
 	limitPruned := removedSet(limitRemoved)
 	s.timing("merge", "merge_snapshot", started, fmt.Sprintf("%s;localItems=%d;remoteItems=%d;mergedItems=%d", reason, len(local), len(remote.Items), len(merged)))
@@ -1270,17 +1298,21 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		updatedAt = model.FormatO(*basis.UpdatedAt)
 	}
 	after := s.Fingerprint()
-	if werr := s.writePendingMerge(pendingMergeState{
-		Fingerprint: pendingFingerprint(preMergeFingerprint, after),
-		Version:     basis.Version,
-		UpdatedAt:   updatedAt,
-		SHA256:      basis.SnapshotSHA256,
-		Size:        basis.SnapshotSize,
-		Before:      Fingerprint(before),
-		After:       after,
-		Applied:     appliedFP,
-		Account:     account,
-	}); werr != nil {
+	werr := serr
+	if werr == nil {
+		werr = s.writePendingMerge(pendingMergeState{
+			Fingerprint: pendingFingerprint(preMergeFingerprint, after),
+			Version:     basis.Version,
+			UpdatedAt:   updatedAt,
+			SHA256:      basis.SnapshotSHA256,
+			Size:        basis.SnapshotSize,
+			Before:      Fingerprint(before),
+			After:       after,
+			Applied:     appliedFP,
+			Account:     account,
+		})
+	}
+	if werr != nil {
 		s.clearPendingMerge() // the history goes back to before
 		rctx, rcancel := cleanupContext()
 		rerr := s.rollbackMutation(rctx, before, merged, localSettings, limitPruned)
@@ -1997,8 +2029,11 @@ func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.I
 	}); err != nil {
 		return err
 	}
-	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(oldSettings.Portable()) })
+	serr := s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(oldSettings.Portable()) })
 	s.cfg.History.ApplyLimits(s.settings())
+	if serr != nil {
+		return fmt.Errorf("settings: %w", serr)
+	}
 	return nil
 }
 
@@ -2015,7 +2050,9 @@ func (s *Syncer) discardMutation(ctx context.Context, applied []model.Item, _ *s
 		// The history still refers to the moved payloads: keep them.
 		return err
 	}
-	s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(oldSettings.Portable()) })
+	if err := s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(oldSettings.Portable()) }); err != nil {
+		return fmt.Errorf("settings: %w", err)
+	}
 	return nil
 }
 
@@ -2142,7 +2179,28 @@ func (s *Syncer) bindAccount(account string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(s.accountFile(), []byte(account), 0o600)
+	// Through a file beside it: a crash in the middle must not leave an
+	// empty file (bound to whoever signs in next) or a cut one.
+	f, err := os.CreateTemp(dir, "account.tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	if _, err := f.WriteString(account); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	_ = os.Chmod(tmp, 0o600)
+	if err := os.Rename(tmp, s.accountFile()); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // bindFor records the account when no state has been bound yet: the local

@@ -3,6 +3,7 @@ package syncclient
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -328,5 +329,27 @@ func TestUploadSnapshotRejectsAnEmptyReceipt(t *testing.T) {
 	}
 	if _, err := New(srv.URL).UploadSnapshot(bg, "t", src); err == nil {
 		t.Error("an empty upload receipt was accepted")
+	}
+}
+
+// Renewed tokens that cannot be saved are an error: the server has spent the
+// old refresh token, and a restart would find it refused.
+func TestSessionRefreshReportsUnsavedTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"accessToken":"new","refreshToken":"new-refresh","accessTokenExpiresAt":"2030-01-02T03:04:05+00:00"}`)
+	}))
+	defer srv.Close()
+	s := model.DefaultSettings()
+	s.AuthRefreshToken = model.Ptr("old-refresh")
+	sess := &Session{Client: New(srv.URL), Settings: Settings{
+		Get:    func() model.Settings { return s },
+		Update: func(f func(*model.Settings)) error { f(&s); return errors.New("disk full") },
+	}}
+	ok, err := sess.Refresh(context.Background())
+	if !ok || err == nil {
+		t.Fatalf("refresh: %v %v", ok, err)
+	}
+	if model.Str(s.AuthRefreshToken) != "new-refresh" {
+		t.Fatal("the renewed tokens are not in memory")
 	}
 }

@@ -3060,7 +3060,9 @@ func failingSettings(s *model.Settings, fail *bool) syncclient.Settings {
 		Get: func() model.Settings { return *s },
 		Update: func(f func(*model.Settings)) error {
 			f(s)
-			if *fail {
+			// Only the record of a sync fails to save (the tests start with
+			// none): the rest of the settings went through just before.
+			if *fail && s.SyncLastLocalFingerprint != nil {
 				return errors.New("disk full")
 			}
 			return nil
@@ -3137,5 +3139,44 @@ func TestUploadRetiresAnOlderPendingRecord(t *testing.T) {
 	}
 	if model.Str(s.SyncLastRemoteVersion) != "v2" || model.Str(s.SyncLastLocalFingerprint) != "new" {
 		t.Fatalf("state %q %q", model.Str(s.SyncLastRemoteVersion), model.Str(s.SyncLastLocalFingerprint))
+	}
+}
+
+// A state that is not written because another account is signed in by then
+// is an error, and the record it would have replaced stays.
+func TestSkippedStateKeepsThePendingRecord(t *testing.T) {
+	s := signedIn(model.DefaultSettings())
+	s.AuthAccessToken = model.Ptr(testJWT("account-b"))
+	syn := unitSyncer(t, serveSnapshot(t, nil), s, &unitHistory{})
+	if err := syn.writePendingMerge(pendingMergeState{Fingerprint: "fp", Committed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := syn.persistPendingMerge("pre", ManifestInfo{Version: "v1"}, "account-a"); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("a skipped state was reported as saved: %v", err)
+	}
+	if _, err := os.Stat(syn.pendingMergePath()); err != nil {
+		t.Fatal("the record went with nothing saved in its place")
+	}
+	if s.SyncLastLocalFingerprint != nil {
+		t.Fatal("A's state was written into B's settings")
+	}
+}
+
+// The account file is replaced whole.
+func TestAccountFileIsReplacedWhole(t *testing.T) {
+	syn := unitSyncer(t, serveSnapshot(t, nil), signedIn(model.DefaultSettings()), &unitHistory{})
+	for _, a := range []string{"account-a", "account-b"} {
+		if err := syn.bindAccount(a); err != nil {
+			t.Fatal(err)
+		}
+		if got := syn.boundAccount(); got != a {
+			t.Fatalf("bound %q, want %q", got, a)
+		}
+	}
+	ents, _ := os.ReadDir(filepath.Dir(syn.accountFile()))
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), "account.tmp-") {
+			t.Fatalf("left behind: %s", e.Name())
+		}
 	}
 }

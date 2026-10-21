@@ -3,6 +3,7 @@ package syncclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -111,7 +112,7 @@ func (s *Session) Refresh(ctx context.Context) (bool, error) {
 	}
 
 	applied := false
-	_ = s.Settings.Update(func(m *model.Settings) {
+	serr := s.Settings.Update(func(m *model.Settings) {
 		// The tokens belong to the session that asked for them. If the user
 		// signed out or in while the request was in flight, do not resurrect
 		// the old one (nor overwrite the new one) with this answer.
@@ -134,6 +135,13 @@ func (s *Session) Refresh(ctx context.Context) (bool, error) {
 	})
 	if !applied {
 		return false, nil
+	}
+	if serr != nil {
+		// The server has spent the old refresh token: the new one is in
+		// memory only, and a restart now would find a refused token and sign
+		// the user out. The error says so; the next save of the settings
+		// writes the tokens with it.
+		return true, fmt.Errorf("save the renewed tokens: %w", serr)
 	}
 	return true, nil
 }

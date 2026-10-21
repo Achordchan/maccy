@@ -157,7 +157,15 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 }
 
 // UploadAfterLocalMutation uploads right after the user changed the history
-// (UploadCloudAfterLocalMutationAsync), without looking at the server first.
+// (UploadCloudAfterLocalMutationAsync), without looking at the server first,
+// as the C# client does.
+//
+// That is a limit of this layer: when another device has uploaded since the
+// last sync, this upload replaces what it added. Merging first would be no
+// better here: the change is usually a deletion, and nothing records it, so
+// the merge would bring the deleted items back. The app keeps a record of the
+// deletions and merges before this upload (the pending deletions of the app
+// package).
 func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.UploadResult, error) {
 	s.beginWorkflow()
 	defer s.workflow.Unlock()
