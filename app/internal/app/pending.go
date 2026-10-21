@@ -49,7 +49,9 @@ type pendingDeletes struct {
 	repair map[string]bool       // accounts whose server still has deleted items
 	alias  map[string]string     // an account known by another address since (Adopt)
 	read   bool                  // the file has been read (or there is none)
-	failed string                // why it could not be read, as last logged
+	// readFile reads the file (os.ReadFile when nil).
+	readFile func(string) ([]byte, error)
+	failed   string // why it could not be read, as last logged
 }
 
 // deletion is one item the user deleted.
@@ -72,6 +74,7 @@ func (d deletion) tombstone() syncer.Tombstone {
 type pendingFile struct {
 	Accounts map[string][]deletion `json:"accounts"`
 	Repair   map[string]bool       `json:"repair,omitempty"`
+	Aliases  map[string]string     `json:"aliases,omitempty"` // sessions known by another name since (Adopt)
 }
 
 func accountKey(owner string) string { return strings.ToLower(strings.TrimSpace(owner)) }
@@ -110,7 +113,11 @@ func (p *pendingDeletes) load() error {
 	if p.lists == nil {
 		p.lists, p.repair = map[string][]deletion{}, map[string]bool{}
 	}
-	b, err := os.ReadFile(p.path)
+	readFile := p.readFile
+	if readFile == nil {
+		readFile = os.ReadFile
+	}
+	b, err := readFile(p.path)
 	if errors.Is(err, fs.ErrNotExist) {
 		p.read, p.failed = true, ""
 		return nil
@@ -126,6 +133,14 @@ func (p *pendingDeletes) load() error {
 		p.log("pending deletions: %v; the file is kept as %s.bad", err, filepath.Base(p.path))
 		p.read, p.failed = true, ""
 		return nil
+	}
+	for k, v := range f.Aliases {
+		if p.alias == nil {
+			p.alias = map[string]string{}
+		}
+		if _, ok := p.alias[accountKey(k)]; !ok { // one made since is newer
+			p.alias[accountKey(k)] = accountKey(v)
+		}
 	}
 	for k, l := range f.Accounts {
 		a := p.account(k) // an account adopted while the file could not be read
@@ -184,7 +199,7 @@ func (p *pendingDeletes) save() error {
 	for _, l := range p.lists {
 		sort.SliceStable(l, func(i, j int) bool { return l[i].At.Before(l[j].At) })
 	}
-	b, err := json.Marshal(pendingFile{Accounts: p.lists, Repair: p.repair})
+	b, err := json.Marshal(pendingFile{Accounts: p.lists, Repair: p.repair, Aliases: p.keptAliases()})
 	if err != nil {
 		return err
 	}
@@ -367,34 +382,76 @@ func (p *pendingDeletes) prune(k string) bool {
 	return true
 }
 
-// Adopt is for a login that learned its address: what it noted under the
-// address it had (from) is the account to's. Work of that login that still
-// names from counts as to's until the login changes (ForgetAliases).
+// Adopt is for a login that learned its address, or got a new session (a
+// refresh): what it noted under the name it had (from) is the account to's.
+// Work of that login that still names from counts as to's.
+//
+// The settings that name to are saved after this (ownerLearned runs before),
+// and that may fail: the program then starts again with the name from. So
+// that it still finds what it noted, the file keeps, with the lists, which
+// session is known by which name since (a session's name is its own: no
+// other login has it); an address the login had before it was signed in
+// properly ("") is nobody's in particular, and is forgotten with the login
+// (ForgetAliases).
+//
+// When the file cannot be written the change is made in memory, and the
+// error says so.
 func (p *pendingDeletes) Adopt(from, to string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	lerr := p.load()
-	f, t := accountKey(from), accountKey(to)
-	if f == t {
-		return nil
+	if !p.adopt(from, to) {
+		return lerr
+	}
+	if lerr != nil {
+		return lerr // what the file holds under from is not moved yet
+	}
+	return p.save()
+}
+
+// Move is Adopt made again after the settings were saved but the file was
+// not written (see ownerMove): the file is written also when nothing is left
+// to move, as the move Adopt made in memory may be what it lacks.
+func (p *pendingDeletes) Move(from, to string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.load(); err != nil {
+		return err
+	}
+	p.adopt(from, to)
+	return p.save()
+}
+
+// adopt is Adopt in memory. The chain of names always ends at the account:
+// what from is known by now (a session renamed before, or the address it
+// learned) is followed first; when that is an address and to is a session
+// (a login whose address the settings did not keep gets a new session), the
+// session joins the address, not the other way round.
+func (p *pendingDeletes) adopt(from, to string) bool {
+	f0, t := accountKey(from), accountKey(to)
+	f := p.account(f0)
+	if f0 == t || f == t {
+		return false
 	}
 	if p.alias == nil {
 		p.alias = map[string]string{}
 	}
-	p.alias[f] = t
+	if !sessionOwner(f) { // known by its address already
+		if sessionOwner(t) {
+			p.alias[t] = f
+		} else {
+			p.alias[f0] = t // another address: what it noted under its own stays
+		}
+		return true
+	}
+	p.alias[f0], p.alias[f] = t, t
 	for k, v := range p.alias { // what named from names to now
-		if v == f {
+		if v == f0 || v == f {
 			p.alias[k] = t
 		}
 	}
-	moved := p.move(f, t)
-	if lerr != nil {
-		return lerr // what the file holds under from is not moved yet
-	}
-	if !moved {
-		return nil
-	}
-	return p.save()
+	p.move(f, t)
+	return true
 }
 
 // move puts the list and the repair of the account f under t's.
@@ -411,24 +468,30 @@ func (p *pendingDeletes) move(f, t string) bool {
 	return true
 }
 
-// Move is Adopt made again after it could not be written (see ownerMove):
-// what is under from is to's, and the file is written also when nothing was
-// left to move, as the move Adopt made in memory may be what it lacks. It
-// names no alias: the login it was for may be gone.
-func (p *pendingDeletes) Move(from, to string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if err := p.load(); err != nil {
-		return err
-	}
-	p.move(accountKey(from), accountKey(to))
-	return p.save()
-}
-
 // ForgetAliases is for a change of login: the address a login had before it
-// learned its own is nobody's in particular any more.
+// was signed in properly is nobody's in particular any more. The names of
+// sessions are kept: they are that login's alone.
 func (p *pendingDeletes) ForgetAliases() {
 	p.mu.Lock()
-	p.alias = nil
+	for k := range p.alias {
+		if !strings.HasPrefix(k, sessionPrefix) {
+			delete(p.alias, k)
+		}
+	}
 	p.mu.Unlock()
+}
+
+// keptAliases are the names of sessions to write down: those that lead to a
+// list.
+func (p *pendingDeletes) keptAliases() map[string]string {
+	var out map[string]string
+	for k, v := range p.alias {
+		if strings.HasPrefix(k, sessionPrefix) && len(p.lists[p.account(k)]) > 0 {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[k] = v
+		}
+	}
+	return out
 }

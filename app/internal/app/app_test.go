@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -817,23 +818,19 @@ func TestPendingDeletesUnreadableFileIsNotWrittenOver(t *testing.T) {
 	if err := (&pendingDeletes{path: path}).Add("a@example.com", nil, item("a", "a")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(path, 0); err != nil {
-		t.Fatal(err)
-	}
-	p := &pendingDeletes{path: path}
+	broken := func(string) ([]byte, error) { return nil, fs.ErrPermission }
+	p := &pendingDeletes{path: path, readFile: broken}
 	if err := p.Add("a@example.com", nil, item("b", "b")); err == nil {
 		t.Fatal("written over a file that could not be read")
 	}
 	if got := ids(p.Tombstones("a@example.com")); len(got) != 1 || got[0] != "b" {
 		t.Fatalf("in memory: %v", got)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	if got := ids((&pendingDeletes{path: path}).Tombstones("a@example.com")); len(got) != 1 || got[0] != "a" {
 		t.Fatalf("the file: %v", got)
 	}
-	if err := p.Add("a@example.com", nil, item("c", "c")); err != nil { // it can be read now
+	p.readFile = nil // it can be read again
+	if err := p.Add("a@example.com", nil, item("c", "c")); err != nil {
 		t.Fatal(err)
 	}
 	if got := ids((&pendingDeletes{path: path}).Tombstones("a@example.com")); len(got) != 3 {
@@ -906,6 +903,59 @@ func TestSessionMoveSurvivesAnUnwritableDeletionsFile(t *testing.T) {
 	}
 	if again, _ := settings.Load(filepath.Join(root, "settings.json")); ownerMoves(again) != nil {
 		t.Fatal("the saved settings still name the move")
+	}
+}
+
+// A refresh whose settings cannot be saved: the program starts again with
+// the session it had, and still finds what it noted, which the file already
+// keeps under the address. A new session of that login, whose address the
+// settings did not keep, finds it too, also after another restart.
+func TestSessionRenameSurvivesSettingsThatCannotBeSaved(t *testing.T) {
+	root := t.TempDir()
+	st := model.DefaultSettings()
+	st.AuthRefreshToken = model.Ptr("r1")
+	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp(t, root, &fakeClip{}, "http://127.0.0.1:1")
+	session := a.owner()
+	if err := a.pending.Add(session, nil, item("x", "x")); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(root, "settings.json.tmp")
+	if err := os.MkdirAll(filepath.Join(blocked, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Settings.Update(func(m *model.Settings) { // a refresh
+		m.AuthRefreshToken, m.AuthUserEmail = model.Ptr("r1b"), model.Ptr("a@example.com")
+	}); err == nil {
+		t.Fatal("the settings were saved")
+	}
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+
+	b := newApp(t, root, &fakeClip{}, "http://127.0.0.1:1") // a restart
+	if b.owner() != session {
+		t.Fatalf("the settings name %q", b.owner())
+	}
+	if got := ids(b.pending.Tombstones(session)); len(got) != 1 || got[0] != "x" {
+		t.Fatalf("after a restart: %v", got)
+	}
+	if err := b.Settings.Update(func(m *model.Settings) { // a refresh with no address
+		m.AuthRefreshToken = model.Ptr("r3")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ids(b.pending.Tombstones(b.owner())); len(got) != 1 {
+		t.Fatalf("the new session: %v", got)
+	}
+	c := newApp(t, root, &fakeClip{}, "http://127.0.0.1:1") // another
+	if got := ids(c.pending.Tombstones(c.owner())); len(got) != 1 || c.owner() == session {
+		t.Fatalf("after another restart (%s): %v", c.owner(), got)
+	}
+	if got := ids(c.pending.Tombstones("a@example.com")); len(got) != 1 {
+		t.Fatalf("the account: %v", got)
 	}
 }
 
