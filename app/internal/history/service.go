@@ -284,6 +284,26 @@ func (s *Service) Remove(id string) {
 	s.fire()
 }
 
+// RemoveMany removes the items ids, at once: one change. An id that is not
+// there is passed over; an item added meanwhile stays.
+func (s *Service) RemoveMany(ids []string) {
+	var t trash
+	removed := false
+	s.mu.Lock()
+	for _, id := range ids {
+		if s.removeLocked(id, &t) {
+			removed = true
+		}
+	}
+	if !removed {
+		s.mu.Unlock()
+		return
+	}
+	s.empty(context.Background(), t)
+	s.mu.Unlock()
+	s.fire()
+}
+
 func (s *Service) removeLocked(id string, t *trash) bool {
 	idx := indexOf(s.items, id)
 	if idx < 0 {

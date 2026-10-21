@@ -131,6 +131,7 @@ func New(cfg Config) (*App, error) {
 	}
 	a.History = history.NewService(cfg.Layout)
 	a.pending.path = filepath.Join(cfg.Layout.Root, "sync", "pending-delete.json")
+	a.pending.logf = cfg.Logf
 	a.Persister = history.NewPersister(a.History, cfg.Layout)
 	if err := a.Persister.Load(context.Background()); err != nil {
 		cfg.Logf("history: %v", err)
@@ -182,6 +183,7 @@ func New(cfg Config) (*App, error) {
 		Client:           syncclient.New(cfg.BaseURL),
 		BaseURL:          cfg.BaseURL,
 		SuppressAutoSync: func(on bool) { a.Auto.Suppress(on) },
+		Deleted:          func() []string { return a.pending.IDs(a.acctGen.Load()) },
 	})
 	a.Auto = syncer.NewAuto(a.Syncer, a.syncDone)
 	// Every sync is counted while it runs, so that Stop can wait for them (they
@@ -196,12 +198,13 @@ func New(cfg Config) (*App, error) {
 		a.syncMu.Unlock()
 		a.runActive.Store(true)
 		a.runEntered.Store(true)
-		a.runGen.Store(a.acctGen.Load()) // which account this sync is for
+		gen := a.acctGen.Load()
+		a.runGen.Store(gen) // which account this sync is for
 		err := run(ctx, reason, manual)
 		if err != nil {
 			return err
 		}
-		return a.settleDeletions(ctx)
+		return a.settleDeletions(ctx, gen)
 	}
 
 	a.Account = &account.Service{Client: syncclient.New(cfg.BaseURL), Store: a.Settings, AccountFile: filepath.Join(cfg.Layout.Root, "sync", "account.txt"), BeforeLoginChange: a.endAccountWork, AfterLoginChange: a.beginAccountWork}
@@ -459,12 +462,19 @@ func (a *App) Stop() {
 // ends when the account changes, which stops a sync of the old account before
 // it can put its history into the new one's place.
 func (a *App) acct() context.Context {
+	ctx, _ := a.acctAndGen()
+	return ctx
+}
+
+// acctAndGen is acct with the account generation it belongs to, read
+// together: endAccountWork moves the one and ends the other under the lock.
+func (a *App) acctAndGen() (context.Context, int64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.acctCtx != nil {
-		return a.acctCtx
+		return a.acctCtx, a.acctGen.Load()
 	}
-	return context.Background()
+	return context.Background(), a.acctGen.Load()
 }
 
 // Apply puts an item on the clipboard and moves it to the top, as the main
@@ -488,10 +498,15 @@ func (a *App) SyncNow() {
 // ends the login: what the old account was doing (a sync, the event stream's
 // callbacks) is stopped before the new tokens are in place, and a sync that
 // still manages to finish is known to be of the old account.
+//
+// The deletions owed to the server were the old account's: the list is
+// emptied after the old work is cancelled, and is from then on the new
+// generation's, so that an upload of the old account that fails later cannot
+// add to it (pendingDeletes compares the generation under its lock). The old
+// work is not waited for here: the account service is holding the login.
 func (a *App) endAccountWork() {
-	a.acctGen.Add(1)
-	a.pending.Reset() // they were the old account's
 	a.mu.Lock()
+	gen := a.acctGen.Add(1)
 	if a.started {
 		a.acctCancel()
 		// Until the new login is in place the account context is a dead one: a
@@ -502,6 +517,9 @@ func (a *App) endAccountWork() {
 		a.acctCtx, a.acctCancel = dead, func() {}
 	}
 	a.mu.Unlock()
+	if err := a.pending.Reset(gen); err != nil {
+		a.cfg.Logf("pending deletions: %v", err)
+	}
 }
 
 // beginAccountWork is called by the account service once the new login (or

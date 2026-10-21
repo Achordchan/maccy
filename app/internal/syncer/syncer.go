@@ -383,7 +383,7 @@ func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), 
 		s.cfg.Settings.Update(func(m *model.Settings) { m.CopyPortable(*data.Settings) })
 		s.cfg.History.ApplyLimits(s.settings())
 	}
-	if err := s.cfg.History.ReplaceAll(ctx, data.Items); err != nil {
+	if err := s.cfg.History.ReplaceAll(ctx, s.withoutDeleted(data.Items)); err != nil {
 		return err
 	}
 	s.timing("download", "import_snapshot", started, reason)
@@ -481,7 +481,7 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	s.timing("merge", "read_snapshot", started, fmt.Sprintf("%s;remoteItems=%d;images=%d;files=%d", reason, len(remote.Items), remote.ImageCount, remote.FileCount))
 
 	report(progress, "merge_snapshot", "merge snapshots", 78)
-	merged := MergeItems(remote.Items, local)
+	merged := s.withoutDeleted(MergeItems(remote.Items, local))
 	mergedSettings := localSettings.Portable()
 	if remote.Settings != nil {
 		mergedSettings = remote.Settings.Portable()
@@ -504,6 +504,27 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	s.persistPendingMerge(preMergeFingerprint, basis)
 	s.timing("merge", "persist_local", started, reason)
 	return nil
+}
+
+// withoutDeleted leaves out of items the ones the user deleted (Config.Deleted).
+func (s *Syncer) withoutDeleted(items []model.Item) []model.Item {
+	if s.cfg.Deleted == nil {
+		return items
+	}
+	gone := map[string]bool{}
+	for _, id := range s.cfg.Deleted() {
+		gone[strings.ToLower(id)] = true
+	}
+	if len(gone) == 0 {
+		return items
+	}
+	out := make([]model.Item, 0, len(items))
+	for _, it := range items {
+		if !gone[strings.ToLower(it.ID)] {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // ensureLocalBackupBlobs copies the files the backup refers to into the blob

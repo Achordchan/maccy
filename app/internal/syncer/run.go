@@ -70,14 +70,35 @@ func (s *Syncer) Run(ctx context.Context, progress func(Progress), reason string
 }
 
 // UploadAfterLocalMutation uploads right after the user changed the history
-// (UploadCloudAfterLocalMutationAsync), without looking at the server first.
+// (UploadCloudAfterLocalMutationAsync). The C# client sends the history as it
+// is; here the server is looked at first, and when another device has
+// uploaded since the last sync, its snapshot is merged in before: what it
+// added would otherwise be dropped from the server. The merge leaves out what
+// the user deleted (Config.Deleted).
 func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.UploadResult, error) {
+	manifest, err := s.remoteManifest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if manifest.UpdatedAt != nil && !s.remoteUnchanged(manifest) {
+		if err := s.MergeAndApply(ctx, manifest, s.Fingerprint(), nil, "local_mutation"); err != nil {
+			return nil, err
+		}
+	}
 	up, err := s.Upload(ctx, nil, "local_mutation")
 	if err != nil {
 		return nil, err
 	}
-	s.persistAfterUpload(ctx, up, nil)
+	s.persistAfterUpload(ctx, up, &manifest)
 	return up, nil
+}
+
+// remoteUnchanged says that the server's snapshot is the one the last sync
+// left there.
+func (s *Syncer) remoteUnchanged(m ManifestInfo) bool {
+	st := s.settings()
+	last := strings.TrimSpace(model.Str(st.SyncLastRemoteVersion))
+	return last != "" && sameRemoteSnapshot(last, strings.TrimSpace(m.Version), strings.TrimSpace(model.Str(st.SyncLastRemoteSha256)), strings.TrimSpace(m.SnapshotSHA256))
 }
 
 // persistAfterUpload is PersistSyncStateAfterUploadAsync: the state to

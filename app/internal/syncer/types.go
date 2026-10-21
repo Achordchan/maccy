@@ -92,6 +92,10 @@ type Config struct {
 	// SuppressAutoSync is called with true before the sync changes the
 	// history and with false after, so that the change does not start a sync.
 	SuppressAutoSync func(on bool)
+	// Deleted gives the items the user deleted whose removal the server may
+	// not have yet: a merge or a download leaves them out, instead of bringing
+	// them back. It may be nil.
+	Deleted func() []string
 	// Now is time.Now unless a test sets it.
 	Now func() time.Time
 }

@@ -105,6 +105,9 @@ func (a *Auto) Exclusive(ctx context.Context, f func()) bool {
 		}
 	}
 	defer a.busy.Store(false)
+	if ctx.Err() != nil {
+		return false
+	}
 	f()
 	return true
 }

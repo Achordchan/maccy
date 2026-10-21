@@ -272,43 +272,52 @@ func (a *App) finishView(reason string, manual bool, err error) {
 	}
 }
 
-// afterMutation applies what the user changed in the history (removing the
-// items ids) and, when there is an account, uploads it at once
-// (UploadCloudAfterLocalMutationAsync): a sync that looked at the server first
-// could bring back what was just deleted. The change and its upload are one
+// remove deletes items from the history (pick says which, at the moment they
+// are removed) and, when there is an account, uploads the result at once
+// (UploadCloudAfterLocalMutationAsync). The removal and its upload are one
 // piece of work that waits for the sync that may be running and keeps the
 // others out, so that no sync can put the deleted items back or share its
 // fingerprints with the upload; it belongs to the account that is signed in,
-// and Stop waits for it. A removal the server did not get is kept (see
-// pendingDeletes) and made again after the next sync.
-func (a *App) afterMutation(ids []string, mutate func()) {
+// and Stop waits for it.
+//
+// The deletion is written down (pendingDeletes) before the items go, and is
+// forgotten only once the server has it: a failed or cancelled upload, a crash
+// or a quit leaves it written down, and every later sync leaves those items
+// out of what it brings in and makes the deletion again.
+func (a *App) remove(pick func() []string) {
 	if !a.Syncer.CanAutoSync() {
-		a.mutateQuietly(mutate)
+		a.mutateQuietly(func() { a.History.RemoveMany(pick()) })
 		return
 	}
-	ctx := a.acct()
+	ctx, gen := a.acctAndGen()
 	a.done.Add(1)
 	go func() {
 		defer a.done.Done()
 		ran := a.Auto.Exclusive(ctx, func() {
-			a.runGen.Store(a.acctGen.Load()) // the account this upload is for
+			a.runGen.Store(gen) // the account this upload is for
 			a.runActive.Store(true)
 			defer a.runActive.Store(false)
-			a.mutateQuietly(mutate)
+			ids := pick()
+			if err := a.pending.Add(gen, ids...); err != nil {
+				// Still owed for as long as the program runs.
+				a.cfg.Logf("pending deletions: %v", err)
+			}
+			a.mutateQuietly(func() { a.History.RemoveMany(ids) })
 			if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil {
 				if ctx.Err() == nil {
 					a.cfg.Logf("upload after change: %v", err)
-					a.pending.Add(ids...)
 					a.retryLater()
 				}
 				return
 			}
-			a.pending.Forget(ids...)
+			if err := a.pending.Forget(gen, ids...); err != nil {
+				a.cfg.Logf("pending deletions: %v", err)
+			}
 		})
 		if !ran {
 			// The account changed before its turn came: the change is the user's
 			// all the same, and the cloud copy is not this account's to touch.
-			a.mutateQuietly(mutate)
+			a.mutateQuietly(func() { a.History.RemoveMany(pick()) })
 			return
 		}
 		if ctx.Err() != nil {
@@ -333,26 +342,26 @@ func (a *App) retryLater() {
 	})
 }
 
-// settleDeletions is for the end of a sync that went through: what it merged in
-// may include items the user deleted and the server never heard of. They are
-// removed again, and the result is uploaded; what other devices added stays.
-func (a *App) settleDeletions(ctx context.Context) error {
-	ids := a.pending.IDs()
+// settleDeletions is for the end of a sync that went through, for the account
+// of generation gen: what it brought in has left out the items the user
+// deleted and the server never heard of, but one may still be here (the
+// program stopped between writing the deletion down and making it). They are
+// removed, and the result is uploaded; what other devices added stays.
+func (a *App) settleDeletions(ctx context.Context, gen int64) error {
+	ids := a.pending.IDs(gen)
 	if len(ids) == 0 {
 		return nil
 	}
-	a.mutateQuietly(func() {
-		for _, id := range ids {
-			a.History.Remove(id)
-		}
-	})
+	a.mutateQuietly(func() { a.History.RemoveMany(ids) })
 	if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil {
 		if ctx.Err() == nil {
 			a.retryLater()
 		}
 		return err
 	}
-	a.pending.Forget(ids...)
+	if err := a.pending.Forget(gen, ids...); err != nil {
+		a.cfg.Logf("pending deletions: %v", err)
+	}
 	return nil
 }
 
@@ -363,15 +372,19 @@ func (a *App) mutateQuietly(mutate func()) {
 }
 
 // Delete removes an item; with an account the cloud copy follows.
-func (a *App) Delete(id string) { a.afterMutation([]string{id}, func() { a.History.Remove(id) }) }
+func (a *App) Delete(id string) { a.remove(func() []string { return []string{id} }) }
 
-// ClearAll empties the history; with an account the cloud copy follows.
+// ClearAll empties the history; with an account the cloud copy follows. What
+// is cleared is what is there when the clearing is made, after a sync that
+// was running has ended; an item copied after that stays.
 func (a *App) ClearAll() {
-	var ids []string
-	for _, it := range a.History.Items() {
-		ids = append(ids, it.ID)
-	}
-	a.afterMutation(ids, a.History.ClearAll)
+	a.remove(func() []string {
+		var ids []string
+		for _, it := range a.History.Items() {
+			ids = append(ids, it.ID)
+		}
+		return ids
+	})
 }
 
 // Reorder moves an item before another one (or to the end).

@@ -604,7 +604,7 @@ func TestPendingDeletionIsMadeAgainAfterTheNextSync(t *testing.T) {
 				return false
 			}
 		}
-		return len(a.History.Items()) == 1 && len(a.pending.IDs()) == 0
+		return len(a.History.Items()) == 1 && len(a.pending.IDs(a.acctGen.Load())) == 0
 	})
 	if _, err := os.Stat(filepath.Join(root, "sync", "pending-delete.json")); err == nil {
 		t.Fatal("the record is kept after the server has the deletion")
@@ -614,17 +614,176 @@ func TestPendingDeletionIsMadeAgainAfterTheNextSync(t *testing.T) {
 func TestPendingDeletesKeepAcrossRunsAndResetWithTheAccount(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sync", "pending-delete.json")
 	p := &pendingDeletes{path: path}
-	p.Add("a", "b")
+	if err := p.Add(0, "a", "b"); err != nil {
+		t.Fatal(err)
+	}
 	again := &pendingDeletes{path: path} // a later run
-	if got := again.IDs(); len(got) != 2 {
+	if got := again.IDs(0); len(got) != 2 {
 		t.Fatalf("%v", got)
 	}
-	again.Forget("a")
-	if got := (&pendingDeletes{path: path}).IDs(); len(got) != 1 || got[0] != "b" {
+	again.Forget(0, "a")
+	if got := (&pendingDeletes{path: path}).IDs(0); len(got) != 1 || got[0] != "b" {
 		t.Fatalf("%v", got)
 	}
-	again.Reset()
-	if got := (&pendingDeletes{path: path}).IDs(); len(got) != 0 {
+	again.Reset(1)
+	if got := (&pendingDeletes{path: path}).IDs(0); len(got) != 0 {
 		t.Fatalf("%v", got)
+	}
+}
+
+// The upload of the old account fails after the account changed: what it
+// would note down is not the new account's to owe.
+func TestOldAccountCannotAddToTheNewAccountsDeletions(t *testing.T) {
+	p := &pendingDeletes{path: filepath.Join(t.TempDir(), "pending-delete.json")}
+	p.Add(0, "old-before")
+	p.Reset(1)
+	p.Add(0, "old-after") // late, from the old account's work
+	p.Add(1, "new")
+	p.Forget(0, "new")
+	if got := p.IDs(1); len(got) != 1 || got[0] != "new" {
+		t.Fatalf("%v", got)
+	}
+	if got := p.IDs(0); got != nil {
+		t.Fatalf("the old generation reads the new list: %v", got)
+	}
+}
+
+// The list is replaced whole: a write that fails leaves the one before.
+func TestPendingDeletesAreWrittenWhole(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pending-delete.json")
+	p := &pendingDeletes{path: path}
+	if err := p.Add(0, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".tmp"); err == nil {
+		t.Fatal("the temporary file was left")
+	}
+	_ = os.Mkdir(path+".tmp", 0o700) // the next write cannot be made
+	if err := p.Add(0, "b"); err == nil {
+		t.Fatal("a failed write must be reported")
+	}
+	if got := (&pendingDeletes{path: path}).IDs(0); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("the list on disk: %v", got)
+	}
+	if got := p.IDs(0); len(got) != 2 {
+		t.Fatalf("still owed in this run: %v", got)
+	}
+}
+
+func signedInRoot(t *testing.T, tok syncclient.TokenSet) string {
+	t.Helper()
+	root := t.TempDir()
+	st := model.DefaultSettings()
+	st.AuthAccessToken, st.AuthRefreshToken = &tok.AccessToken, &tok.RefreshToken
+	st.AuthExpiresAtUnixMs = tok.ExpiresAt.UnixMilli()
+	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func hasText(a *App, s string) bool {
+	for _, g := range texts(a) {
+		if g == s {
+			return true
+		}
+	}
+	return false
+}
+
+// A deletes an item while another device has added one that A has not seen:
+// the upload of the deletion keeps what the other device added.
+func TestDeletionKeepsWhatAnotherDeviceAdded(t *testing.T) {
+	srv := nastest.Start(t)
+	ctx := context.Background()
+	tokA := srv.Subscribe(ctx, "owner@example.com", "password1")
+	tokB, err := syncclient.New(srv.URL).Login(ctx, "owner@example.com", "password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootA, rootB := signedInRoot(t, tokA), signedInRoot(t, tokB)
+	remote := syncclient.New(srv.URL)
+	manifest := func() string { m, _ := remote.GetManifestJSON(ctx, tokA.AccessToken); return m }
+
+	clipA := &fakeClip{}
+	a := newApp(t, rootA, clipA, srv.URL)
+	a.Start()
+	waitFor(t, "A's first sync", func() bool { return strings.HasPrefix(a.SyncStatus(), "已同步") })
+	m0 := manifest()
+	time.Sleep(40 * time.Millisecond)
+	clipA.copy("one")
+	waitFor(t, "A captured", func() bool { return len(texts(a)) == 1 })
+	time.Sleep(40 * time.Millisecond)
+	clipA.copy("two")
+	waitFor(t, "A uploaded", func() bool { m := manifest(); return len(texts(a)) == 2 && m != m0 && a.Syncer.Fingerprint() != "" })
+	waitFor(t, "A synced both", func() bool { return model.Str(a.Settings.Get().SyncLastLocalFingerprint) == a.Syncer.Fingerprint() })
+	a.Stop() // A goes offline
+	var one string
+	for _, it := range a.History.Items() {
+		if model.Str(it.Text) == "one" {
+			one = it.ID
+		}
+	}
+
+	clipB := &fakeClip{}
+	b := newApp(t, rootB, clipB, srv.URL)
+	b.Start()
+	waitFor(t, "B downloaded", func() bool { return len(texts(b)) == 2 })
+	m1 := manifest()
+	time.Sleep(40 * time.Millisecond)
+	clipB.copy("from B")
+	waitFor(t, "B uploaded", func() bool { return len(texts(b)) == 3 && manifest() != m1 })
+	b.Stop()
+
+	// A, back, deletes "one" before any sync of its own has run.
+	a2 := newApp(t, rootA, &fakeClip{}, srv.URL)
+	a2.Delete(one)
+	waitFor(t, "the deletion went up", func() bool {
+		return !hasText(a2, "one") && len(a2.pending.IDs(a2.acctGen.Load())) == 0
+	})
+	if !hasText(a2, "from B") || !hasText(a2, "two") {
+		t.Fatalf("A after the deletion: %v", texts(a2))
+	}
+
+	// What the server has now: a new device sees it.
+	tokC, err := syncclient.New(srv.URL).Login(ctx, "owner@example.com", "password1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newApp(t, signedInRoot(t, tokC), &fakeClip{}, srv.URL)
+	c.Start()
+	defer c.Stop()
+	waitFor(t, "C downloaded", func() bool { return len(texts(c)) == 2 })
+	if !hasText(c, "from B") || !hasText(c, "two") {
+		t.Fatalf("the server has %v", texts(c))
+	}
+}
+
+// The deletion is written down before the items go, and stays written down
+// when the upload fails; a clearing writes down every item it removes.
+func TestDeletionIsWrittenDownBeforeAndKeptWhenTheUploadFails(t *testing.T) {
+	root := t.TempDir()
+	st := model.DefaultSettings()
+	st.AuthRefreshToken = model.Ptr("refresh") // signed in, the server cannot be reached
+	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp(t, root, &fakeClip{}, "http://127.0.0.1:1")
+	for _, id := range []string{"x", "y", "z"} {
+		a.History.Add(model.Item{ID: id, Kind: model.KindText, Text: model.Ptr(id), CopyCount: 1, ContentHash: model.Ptr("text:" + id)})
+	}
+	var owedWhenRemoved atomic.Int32
+	a.History.OnChanged(func() { owedWhenRemoved.Store(int32(len(a.pending.IDs(0)))) })
+
+	a.Delete("x")
+	a.done.Wait()
+	if a.History.Len() != 2 || owedWhenRemoved.Load() != 1 {
+		t.Fatalf("len %d, owed when removed %d", a.History.Len(), owedWhenRemoved.Load())
+	}
+	a.ClearAll()
+	a.done.Wait()
+	got := (&pendingDeletes{path: a.pending.path}).IDs(0)
+	if a.History.Len() != 0 || len(got) != 3 {
+		t.Fatalf("len %d, owed on disk %v", a.History.Len(), got)
 	}
 }
