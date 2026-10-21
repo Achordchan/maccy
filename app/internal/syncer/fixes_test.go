@@ -3233,3 +3233,79 @@ func TestDownloadSettingsAreNotWrittenIntoAnotherSession(t *testing.T) {
 		t.Fatalf("A's download was left in B's history: %v", h.items)
 	}
 }
+
+// A merge whose save failed keeps its record until the undo is saved: an
+// autosave may have saved the merged history, and a failed undo leaves it
+// there.
+func TestFailedSaveKeepsTheRecordUntilTheUndoIsSaved(t *testing.T) {
+	remote := []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")}
+	for _, undoSaved := range []bool{false, true} {
+		srv := serveSnapshot(t, snapshotFile(t, remote))
+		h := &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}}
+		syn := unitSyncer(t, srv, signedIn(model.DefaultSettings()), h)
+		flushes := 0
+		syn.cfg.Flush = func(context.Context) error {
+			flushes++
+			if flushes == 1 || !undoSaved {
+				return errors.New("disk full")
+			}
+			return nil
+		}
+		err := syn.MergeAndApply(context.Background(), ManifestInfo{}, "", nil, "test")
+		srv.Close()
+		if err == nil {
+			t.Fatal("a merge that was not saved went on")
+		}
+		_, serr := os.Stat(syn.pendingMergePath())
+		if !undoSaved && serr != nil {
+			t.Fatal("the record went while the undo was not saved")
+		}
+		if undoSaved && !os.IsNotExist(serr) {
+			t.Fatalf("the record outlived a saved undo: %v", serr)
+		}
+	}
+}
+
+// A merge saved together with a capture (by an autosave, before the commit
+// marker) is still recognised after a restart by the items it brought, and
+// its pending upload is recorded instead of merging again. A history without
+// them was not saved with the merge.
+func TestRecoveryRecognisesAMergeSavedWithACapture(t *testing.T) {
+	brought := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")
+	local := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")
+	capture := textItemAt("16fd2706-8baf-433b-82eb-8c7fada847da", "captured")
+	added, raised := markOf([]model.Item{local}, []model.Item{brought, local})
+	record := pendingMergeState{
+		Fingerprint: "pending-upload", Version: "v1",
+		After: Fingerprint([]model.Item{brought, local}), Applied: Fingerprint([]model.Item{brought, local}),
+		Added: added, Raised: raised,
+	}
+	for _, saved := range []bool{true, false} {
+		items := []model.Item{capture, local}
+		if saved {
+			items = []model.Item{capture, brought, local}
+		}
+		s := signedIn(model.DefaultSettings())
+		syn := unitSyncer(t, serveSnapshot(t, nil), s, &unitHistory{items: items})
+		if err := syn.writePendingMerge(record); err != nil {
+			t.Fatal(err)
+		}
+		if err := syn.recoverPendingMerge(context.Background(), ""); err != nil {
+			t.Fatal(err)
+		}
+		if got := model.Str(s.SyncLastLocalFingerprint) == "pending-upload"; got != saved {
+			t.Fatalf("saved=%v: recovered=%v", saved, got)
+		}
+	}
+	// A merge that brought nothing new is told by the counts it raised.
+	before := []model.Item{local}
+	raisedLocal := local
+	raisedLocal.CopyCount = 5
+	added, raised = markOf(before, []model.Item{raisedLocal})
+	p := pendingMergeState{Added: added, Raised: raised}
+	again := raisedLocal
+	again.CopyCount = 6 // copied once more since
+	if !p.markSeen([]model.Item{capture, again}) || p.markSeen([]model.Item{capture, local}) {
+		t.Fatal("raised counts are not told apart")
+	}
+}

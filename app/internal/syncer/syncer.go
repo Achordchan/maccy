@@ -428,6 +428,72 @@ type pendingMergeState struct {
 	Applied   string `json:"applied,omitempty"`
 	Account   string `json:"account,omitempty"`
 	Committed bool   `json:"committed,omitempty"`
+	// Added and Raised tell a saved mutation apart when a capture was saved
+	// with it (so the history is neither After nor Applied): the ids it
+	// brought, which no capture makes, and, when it brought none, the copy
+	// counts it raised (markOf).
+	Added  []string    `json:"added,omitempty"`
+	Raised []countMark `json:"raised,omitempty"`
+}
+
+// countMark is an item whose copy count a mutation raised, and to what.
+type countMark struct {
+	ID    string `json:"id"`
+	Count int32  `json:"count"`
+}
+
+// maxMarks bounds the marks a record keeps: a few are proof enough.
+const maxMarks = 32
+
+// markOf is the mark a mutation from before to applied leaves (Added,
+// Raised).
+func markOf(before, applied []model.Item) ([]string, []countMark) {
+	was := make(map[string]model.Item, len(before))
+	for _, it := range before {
+		was[strings.ToLower(it.ID)] = it
+	}
+	var added []string
+	var raised []countMark
+	for _, it := range applied {
+		old, ok := was[strings.ToLower(it.ID)]
+		switch {
+		case !ok && len(added) < maxMarks:
+			added = append(added, it.ID)
+		case ok && it.CopyCount > old.CopyCount && len(raised) < maxMarks:
+			raised = append(raised, countMark{it.ID, it.CopyCount})
+		}
+	}
+	if len(added) > 0 {
+		raised = nil
+	}
+	return added, raised
+}
+
+// markSeen says that items hold the mark of p: an item it added, or, when
+// it added none, every count it raised (a later copy only raises one more).
+func (p pendingMergeState) markSeen(items []model.Item) bool {
+	if len(p.Added) == 0 && len(p.Raised) == 0 {
+		return false
+	}
+	have := make(map[string]model.Item, len(items))
+	for _, it := range items {
+		have[strings.ToLower(it.ID)] = it
+	}
+	for _, id := range p.Added {
+		if _, ok := have[strings.ToLower(id)]; ok {
+			return true
+		}
+	}
+	if len(p.Added) > 0 {
+		return false
+	}
+	for _, m := range p.Raised {
+		it, ok := have[strings.ToLower(m.ID)]
+		if !ok || it.CopyCount < m.Count {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Syncer) pendingMergePath() string {
@@ -518,10 +584,11 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error 
 	}
 	items := s.cfg.History.Items()
 	current := Fingerprint(items)
-	if !p.Committed && (p.After == "" || current != p.After) && (p.Applied == "" || current != p.Applied) {
-		// Only the marker written after a successful Flush, or the exact
-		// merged history, proves the merge reached the disk. A different
-		// fingerprint can be an unflushed capture.
+	if !p.Committed && (p.After == "" || current != p.After) && (p.Applied == "" || current != p.Applied) && !p.markSeen(items) {
+		// Only the marker written after a successful Flush, the exact
+		// merged history, or the mark of the merge in the history proves the
+		// merge reached the disk. A different fingerprint alone can be an
+		// unflushed capture.
 		s.clearPendingMerge()
 		return nil
 	}
@@ -870,6 +937,8 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	var moves *snapshot.AppliedPayloads
 	merged := false
 	preMerge, appliedFP := "", ""
+	var added []string
+	var raised []countMark
 	err = s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
 		if s.accountChanged(account) {
 			return nil, ErrSessionChanged
@@ -898,6 +967,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		// history is locked: a later deletion is a local change, not part of
 		// the downloaded baseline.
 		appliedFP = Fingerprint(out)
+		added, raised = markOf(before, out)
 		fingerprint := appliedFP
 		if merged {
 			fingerprint = pendingFingerprint(preMerge, appliedFP)
@@ -910,6 +980,8 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			After:       appliedFP,
 			Applied:     appliedFP,
 			Account:     account,
+			Added:       added,
+			Raised:      raised,
 		}); err != nil {
 			ap.Rollback()
 			return nil, err
@@ -973,10 +1045,11 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			After:       after,
 			Applied:     mutatedFP,
 			Account:     account,
+			Added:       added,
+			Raised:      raised,
 		})
 	}
 	if werr != nil {
-		s.clearPendingMerge() // the history goes back to before
 		rctx, rcancel := cleanupContext()
 		rerr := s.rollbackMutation(rctx, before, applied, undo, limitPruned)
 		if rerr == nil {
@@ -987,8 +1060,11 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			moves.RollbackKeeping(s.payloadKeeper())
 		}
 		if rerr != nil {
+			// The record stays: the applied history may be on disk (an
+			// autosave), and it is what a restart recovers from.
 			return DownloadResult{}, fmt.Errorf("%w (history rollback failed: %v)", werr, rerr)
 		}
+		s.clearPendingMerge() // the history is back as it was, and saved
 		return DownloadResult{}, werr
 	}
 	// What the limits pruned is unreferenced too, including payloads this
@@ -999,7 +1075,8 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 
 	report(progress, "persist_local", "保存本地状态", 90)
 	if err := s.cfg.Flush(ctx); err != nil {
-		s.clearPendingMerge()
+		// The record is kept until the undo is saved: an autosave may have
+		// saved the applied history already.
 		// The history was not saved: put the old one, its settings and its
 		// files back. Captures made meanwhile are kept.
 		if s.accountChanged(account) {
@@ -1009,6 +1086,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			if derr := s.persistCleanup(); derr != nil {
 				return DownloadResult{}, fmt.Errorf("%w (session cleanup not saved: %v)", err, derr)
 			}
+			s.clearPendingMerge()
 			if moves != nil {
 				moves.Rollback()
 			}
@@ -1028,6 +1106,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		if rerr != nil {
 			return DownloadResult{}, fmt.Errorf("%w (history rollback failed: %v)", err, rerr)
 		}
+		s.clearPendingMerge() // the history is back as it was, and saved
 		return DownloadResult{}, err
 	}
 	s.markPendingMergeCommitted()
@@ -1035,20 +1114,10 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		moves.MarkCommitted()
 	}
 	if s.accountChanged(account) {
-		s.clearPendingMerge()
 		// The session changed while the new history was being saved: take
 		// this account's items out again and save that, so the new session
 		// cannot publish them later.
-		if err := s.discardMutation(ctx, applied, moves, undo); err != nil {
-			return DownloadResult{}, fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
-		}
-		if err := s.persistCleanup(); err != nil {
-			return DownloadResult{}, fmt.Errorf("%w (session cleanup not saved: %v)", ErrSessionChanged, err)
-		}
-		if moves != nil {
-			moves.Rollback()
-		}
-		return DownloadResult{}, ErrSessionChanged
+		return DownloadResult{}, s.abandonForSession(ctx, applied, moves, undo)
 	}
 	if moves != nil {
 		moves.Commit()
@@ -1213,6 +1282,8 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	}
 	var before, merged []model.Item
 	var moves *snapshot.AppliedPayloads
+	var added []string
+	var raised []countMark
 	// The merge runs on the history as it is now, and the payloads it keeps
 	// are moved into place under the same lock: a capture made while the
 	// download ran is merged, not overwritten.
@@ -1235,6 +1306,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			return nil, ErrSessionChanged
 		}
 		fp := Fingerprint(applied)
+		added, raised = markOf(before, applied)
 		if err := s.writePendingMerge(pendingMergeState{
 			Fingerprint: pendingFingerprint(preMergeFingerprint, fp),
 			Version:     basis.Version,
@@ -1245,6 +1317,8 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			After:       fp,
 			Applied:     fp,
 			Account:     account,
+			Added:       added,
+			Raised:      raised,
 		}); err != nil {
 			ap.Rollback()
 			return nil, err
@@ -1296,10 +1370,11 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			After:       after,
 			Applied:     appliedFP,
 			Account:     account,
+			Added:       added,
+			Raised:      raised,
 		})
 	}
 	if werr != nil {
-		s.clearPendingMerge() // the history goes back to before
 		rctx, rcancel := cleanupContext()
 		rerr := s.rollbackMutation(rctx, before, merged, undo, limitPruned)
 		if rerr == nil {
@@ -1310,13 +1385,17 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			moves.RollbackKeeping(s.payloadKeeper())
 		}
 		if rerr != nil {
+			// The record stays: the merged history may be on disk (an
+			// autosave), and it is what a restart recovers from.
 			return fmt.Errorf("%w (history rollback failed: %v)", werr, rerr)
 		}
+		s.clearPendingMerge() // the history is back as it was, and saved
 		return werr
 	}
 	report(progress, "persist_local", "persist local", 90)
 	if err := s.cfg.Flush(ctx); err != nil {
-		s.clearPendingMerge()
+		// The record is kept until the undo is saved: an autosave may have
+		// saved the applied history already.
 		// The history was not saved: put the old one, its settings and its
 		// files back. Captures made meanwhile are kept.
 		if s.accountChanged(account) {
@@ -1326,6 +1405,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			if derr := s.persistCleanup(); derr != nil {
 				return fmt.Errorf("%w (session cleanup not saved: %v)", err, derr)
 			}
+			s.clearPendingMerge()
 			if moves != nil {
 				moves.Rollback()
 			}
@@ -1343,6 +1423,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		if rerr != nil {
 			return fmt.Errorf("%w (history rollback failed: %v)", err, rerr)
 		}
+		s.clearPendingMerge() // the history is back as it was, and saved
 		return err
 	}
 	s.markPendingMergeCommitted()
@@ -1350,19 +1431,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		moves.MarkCommitted()
 	}
 	if s.accountChanged(account) {
-		s.clearPendingMerge()
 		// The session changed while the merged history was being saved: take
-		// this account's items out again and save that.
-		if err := s.discardMutation(ctx, merged, moves, undo); err != nil {
-			return fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
-		}
-		if err := s.persistCleanup(); err != nil {
-			return fmt.Errorf("%w (session cleanup not saved: %v)", ErrSessionChanged, err)
-		}
-		if moves != nil {
-			moves.Rollback()
-		}
-		return ErrSessionChanged
+		// this account's items out again (see the download).
+		return s.abandonForSession(ctx, merged, moves, undo)
 	}
 	// The merged history is on disk: record the pending upload before the
 	// payload cleanup and the upload that follows. A state that cannot be
