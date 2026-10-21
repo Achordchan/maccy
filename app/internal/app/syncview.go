@@ -307,6 +307,7 @@ func (a *App) remove(pick func() []model.Item) {
 		defer a.done.Done()
 		ran := a.Auto.Exclusive(ctx, func() {
 			a.runGen.Store(gen) // the account this upload is for
+			a.runOwner.Store(&owner)
 			a.runActive.Store(true)
 			defer a.runActive.Store(false)
 			items := pick()

@@ -873,3 +873,35 @@ func TestNoteDialogKeepsTheKeys(t *testing.T) {
 		t.Fatal("Escape did not close the dialog")
 	}
 }
+
+// Escape over a row with its preview open hides the window; the rest of that
+// frame, with the pointer still on the row, does not open the preview again.
+func TestNoPreviewAfterTheWindowIsHidden(t *testing.T) {
+	r := newRig(t, "one", "two")
+	now := time.Date(2026, 5, 30, 18, 0, 0, 0, time.UTC)
+	r.m.Now = func() time.Time { return now }
+	rect := ui.Rect{X: 0, Y: 100, W: 360, H: 30}
+	it := r.h.Items()[0]
+	r.m.hovering(&it, rect)
+	now = now.Add(time.Second)
+	r.m.hovering(&it, rect)
+	if len(r.ho.previewed) != 1 {
+		t.Fatalf("not shown: %v", r.ho.previewed)
+	}
+	r.m.Closed() // what hiding the window does
+	r.ho.shownID = ""
+	for range 3 {
+		now = now.Add(time.Second)
+		r.m.hovering(&it, rect)
+	}
+	if len(r.ho.previewed) != 1 {
+		t.Fatalf("shown again while hidden: %v", r.ho.previewed)
+	}
+	r.m.Opened()
+	r.m.hovering(&it, rect)
+	now = now.Add(time.Second)
+	r.m.hovering(&it, rect)
+	if len(r.ho.previewed) != 2 {
+		t.Fatalf("not shown once open again: %v", r.ho.previewed)
+	}
+}

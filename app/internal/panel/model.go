@@ -122,6 +122,7 @@ type Model struct {
 
 	// hover preview
 	hoverID    string
+	closed     bool // the window is hidden (Closed), until Opened
 	hoverSince time.Time
 	hoverLeft  time.Time
 
@@ -163,6 +164,15 @@ func (m *Model) PreviewLeft() {
 	}
 }
 
+// Closed is for each time the window is hidden: the row the pointer was on is
+// forgotten, and no preview opens until the window is shown again (the frame
+// that hid it, as Escape does, goes on with the pointer where it was). Call it
+// on the UI thread.
+func (m *Model) Closed() {
+	m.closed = true
+	m.dropHover()
+}
+
 // ShowToast shows a short message at the bottom of the window.
 func (m *Model) ShowToast(msg string) {
 	m.toast = msg
@@ -175,7 +185,7 @@ func (m *Model) ShowToast(msg string) {
 // items, the first row chosen, the search box focused. Call it on the UI
 // thread.
 func (m *Model) Reset() {
-	m.query, m.dlg, m.sec = "", nil, sectionAll
+	m.query, m.dlg, m.sec, m.closed = "", nil, sectionAll, false
 	m.dirty.Store(true)
 	m.all, m.fav, m.chosen = nil, nil, 0
 	m.dropHover()
@@ -188,7 +198,7 @@ func (m *Model) Reset() {
 // folder stay as they were left, as in the .NET client. Call it on the UI
 // thread.
 func (m *Model) Opened() {
-	m.dlg = nil
+	m.dlg, m.closed = nil, false
 	// The rows may be those of before the window was hidden; an item copied
 	// since is the first one now, and the one chosen must be that.
 	m.refresh()
@@ -337,7 +347,7 @@ func (m *Model) dropHover() {
 // to it.
 func (m *Model) hovering(it *model.Item, rect ui.Rect) {
 	now := m.Now()
-	if m.dlg != nil {
+	if m.dlg != nil || m.closed {
 		it = nil
 	}
 	shown, over := m.Host.Preview()

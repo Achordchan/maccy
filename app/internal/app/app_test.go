@@ -1072,3 +1072,30 @@ func TestDeletionIsWrittenDownBeforeItWaits(t *testing.T) {
 		t.Fatal("the deletion was dropped")
 	}
 }
+
+// What the syncer asks of the deletions while a piece of work runs is about
+// the account the work began for, also after the login changed under it.
+func TestDeletionsFollowTheAccountTheWorkBeganFor(t *testing.T) {
+	root := t.TempDir()
+	st := model.DefaultSettings()
+	st.AuthUserEmail = model.Ptr("a@example.com")
+	if err := settings.Save(filepath.Join(root, "settings.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp(t, root, &fakeClip{}, "http://127.0.0.1:1")
+	gone := item("x", "x")
+	a.pending.Add("a@example.com", gone)
+	_, _, owner := a.acctWork()
+	a.runOwner.Store(&owner) // a sync for A starts
+	a.endAccountWork()
+	_ = a.Settings.Update(func(m *model.Settings) { m.AuthUserEmail = model.Ptr("b@example.com") })
+	a.beginAccountWork()
+	if got := a.Syncer.Deleted([]model.Item{gone}); len(got) != 1 {
+		t.Fatal("A's sync lost A's deletions when B signed in")
+	}
+	b := "b@example.com"
+	a.runOwner.Store(&b) // the next sync is B's
+	if got := a.Syncer.Deleted([]model.Item{gone}); len(got) != 0 {
+		t.Fatal("B's sync got A's deletions")
+	}
+}

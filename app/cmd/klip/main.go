@@ -325,7 +325,7 @@ func (p *program) gateMandatory() {
 // hide hides the main window, and the windows that belong to it.
 func (p *program) hide() {
 	p.win.Hide()
-	p.model.PreviewLeft()
+	p.model.Closed() // and no preview comes back for the row the pointer is on
 	p.preview.Hide()
 	p.about.Close()
 }

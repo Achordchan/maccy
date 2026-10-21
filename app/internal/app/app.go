@@ -102,6 +102,7 @@ type App struct {
 	changedDuringSync atomic.Bool               // the history changed while a sync ran
 	acctGen           atomic.Int64              // moves when the account changes
 	runGen            atomic.Int64              // the account generation the running sync started under
+	runOwner          atomic.Pointer[string]    // the account the running sync started for
 	retrying          atomic.Bool               // the loop that tries the first sync again is running
 	loginWanted       atomic.Bool               // a sync for a new sign-in is owed (one was running when it was asked for)
 	initialOK         atomic.Bool               // a background sync has gone through
@@ -189,20 +190,17 @@ func New(cfg Config) (*App, error) {
 		Client:           syncclient.New(cfg.BaseURL),
 		BaseURL:          cfg.BaseURL,
 		SuppressAutoSync: func(on bool) { a.Auto.Suppress(on) },
-		Deleted:          func() []syncer.Tombstone { return a.pending.Tombstones(a.owner()) },
+		// What the syncer asks and tells of the deletions is about the account
+		// the work running was started for (runOwner), whatever is signed in by
+		// the time it asks: an upload made for A tells of A's server.
+		Deleted: func() []syncer.Tombstone { return a.pending.Tombstones(a.workOwner()) },
 		Dropped: func() {
-			if a.stale() {
-				return
-			}
-			if err := a.pending.MarkRepair(a.owner()); err != nil {
+			if err := a.pending.MarkRepair(a.workOwner()); err != nil {
 				a.cfg.Logf("pending deletions: %v", err)
 			}
 		},
 		Uploaded: func(items []model.Item) {
-			if a.stale() {
-				return
-			}
-			if err := a.pending.Delivered(a.owner(), items); err != nil {
+			if err := a.pending.Delivered(a.workOwner(), items); err != nil {
 				a.cfg.Logf("pending deletions: %v", err)
 			}
 		},
@@ -220,8 +218,9 @@ func New(cfg Config) (*App, error) {
 		a.syncMu.Unlock()
 		a.runActive.Store(true)
 		a.runEntered.Store(true)
-		a.runGen.Store(a.acctGen.Load()) // which account this sync is for
-		owner := a.owner()
+		_, gen, owner := a.acctWork()
+		a.runGen.Store(gen) // which account this sync is for
+		a.runOwner.Store(&owner)
 		err := run(ctx, reason, manual)
 		if err != nil {
 			return err
@@ -540,9 +539,14 @@ func (a *App) ownerLearned(before, after model.Settings) {
 	}
 }
 
-// stale says that the sync running is of an account that is gone: what it
-// reports is not the account's signed in now.
-func (a *App) stale() bool { return a.runActive.Load() && a.runGen.Load() != a.acctGen.Load() }
+// workOwner is the account the sync or the upload running was started for
+// (one runs at a time: Auto), read once at its start with its generation.
+func (a *App) workOwner() string {
+	if o := a.runOwner.Load(); o != nil {
+		return *o
+	}
+	return a.owner()
+}
 
 // owner is the address of the account signed in, whose the pending deletions
 // are (see ownerOf).
