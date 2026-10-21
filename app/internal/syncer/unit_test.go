@@ -345,6 +345,31 @@ func TestExplain(t *testing.T) {
 	}
 }
 
+// When the server still has a deleted item and that cannot be written down,
+// no sync is written down as done until an upload went through.
+func TestUnwrittenRepairHoldsTheSyncState(t *testing.T) {
+	var st model.Settings
+	fail := errors.New("disk full")
+	deleted := model.Item{ID: "a", Kind: model.KindText, ContentHash: model.Ptr("text:a")}
+	s := &Syncer{cfg: Config{
+		Settings: syncclient.Settings{Get: func() model.Settings { return st }, Update: func(f func(*model.Settings)) { f(&st) }},
+		Deleted:  func() []Tombstone { return []Tombstone{{ID: "a", At: time.Now()}} },
+		Dropped:  func() error { return fail },
+	}}
+	s.withoutDeleted([]model.Item{deleted})
+	s.PersistSyncState("after-download", ManifestInfo{Version: "v2"})
+	if st.SyncLastLocalFingerprint != nil {
+		t.Fatalf("written down as synced: %v", *st.SyncLastLocalFingerprint)
+	}
+	fail = nil // written down now
+	s.cfg.Dropped = func() error { return fail }
+	s.withoutDeleted([]model.Item{deleted})
+	s.PersistSyncState("after-download", ManifestInfo{Version: "v2"})
+	if model.Str(st.SyncLastLocalFingerprint) != "after-download" {
+		t.Fatal("held after the repair was written down")
+	}
+}
+
 // A tombstone stands for its id and for an item merged with it by content,
 // captured no later than the deletion.
 func TestDeletedMatchesByIDOrMergeKeyUpToTheDeletion(t *testing.T) {
@@ -356,7 +381,7 @@ func TestDeletedMatchesByIDOrMergeKeyUpToTheDeletion(t *testing.T) {
 	dropped := 0
 	s := &Syncer{cfg: Config{Deleted: func() []Tombstone {
 		return []Tombstone{{ID: deleted.ID, Key: MergeKey(deleted), At: at}}
-	}, Dropped: func() { dropped++ }}}
+	}, Dropped: func() error { dropped++; return nil }}}
 	items := []model.Item{
 		text("a", "hello", at.Add(-time.Hour)),     // the item itself
 		text("b", "hello", at.Add(-2*time.Hour)),   // the same text, copied on another device

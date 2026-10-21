@@ -132,8 +132,11 @@ type Config struct {
 	Deleted func() []Tombstone
 	// Dropped is called when a merge or a download left out such items, which
 	// the server still has, before the result is written down as synced: the
-	// server needs an upload. It may be nil.
-	Dropped func()
+	// server needs an upload. When it cannot write that down (an error), no
+	// sync is written down as done until an upload went through: the history,
+	// which lacks the items, then differs from the last state written, and the
+	// next sync uploads it, also after a restart. It may be nil.
+	Dropped func() error
 	// Uploaded is called after an upload went through (or was found not to be
 	// needed), with the items the server now has. It may be nil.
 	Uploaded func(items []model.Item)

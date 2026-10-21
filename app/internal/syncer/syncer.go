@@ -32,6 +32,9 @@ type Syncer struct {
 	// uploaded are the items the last upload took its snapshot from (under
 	// gate).
 	uploaded []model.Item
+	// unrepaired says that the server still has items the user deleted, and
+	// that Dropped could not write it down (see Config.Dropped).
+	unrepaired atomic.Bool
 }
 
 // New returns a Syncer. cfg.Client, Settings, History, Layout and BaseURL are
@@ -184,7 +187,14 @@ func (s *Syncer) Decide(manifest ManifestInfo) Decision {
 
 // PersistSyncState remembers that this history and that snapshot were the
 // same at this moment.
+//
+// Nothing is remembered while the server still has items the user deleted
+// that only memory knows of (unrepaired): the state from before stays, so
+// that the history looks changed to the next sync.
 func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo) {
+	if s.unrepaired.Load() {
+		return
+	}
 	s.cfg.Settings.Update(func(st *model.Settings) {
 		st.SyncLastLocalFingerprint = nonEmpty(localFingerprint)
 		st.SyncLastRemoteVersion = nonEmpty(m.Version)
@@ -222,8 +232,11 @@ func (s *Syncer) Upload(ctx context.Context, progress func(Progress), reason str
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	up, err := s.upload(ctx, progress, reason)
-	if err == nil && s.cfg.Uploaded != nil {
-		s.cfg.Uploaded(s.uploaded)
+	if err == nil {
+		s.unrepaired.Store(false) // the server has the history without them
+		if s.cfg.Uploaded != nil {
+			s.cfg.Uploaded(s.uploaded)
+		}
 	}
 	return up, err
 }
@@ -530,7 +543,7 @@ func (s *Syncer) withoutDeleted(items []model.Item) []model.Item {
 		return items
 	}
 	if s.cfg.Dropped != nil {
-		s.cfg.Dropped()
+		s.unrepaired.Store(s.cfg.Dropped() != nil)
 	}
 	skip := map[string]bool{}
 	for _, it := range gone {
