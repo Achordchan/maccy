@@ -167,6 +167,12 @@ func primary(c *ui.Context, label string) bool { return ui.PrimaryButton(c, labe
 
 func footer(c *ui.Context, p panel.Palette, buttons func()) {
 	ui.Row(c).Grow(1)
+	buttonRow(c, p, buttons)
+}
+
+// buttonRow is the line and the buttons at the foot of a window, under what
+// grows to fill the rest of it.
+func buttonRow(c *ui.Context, p panel.Palette, buttons func()) {
 	ui.Box(c).FillWidth().Height(1).Background(p.Divider).Margin(10, 0, 0)
 	ui.Row(c).FillWidth().Gap(10).Justify(ui.End).Children(buttons)
 }
@@ -196,20 +202,22 @@ func (m *Model) ViewPrompt(c *ui.Context) {
 	}
 	frame(c, p, func() {
 		ui.Text(c, m.Title(Prompt)).FontSize(16).FontWeight(600).TextColor(p.Text)
-		ui.Column(c).FillWidth().Padding(12).Gap(8).Background(p.Panel).Border(1, p.Border).Radius(10).Children(func() {
+		// The notes take what the window has left above the buttons: the window
+		// is of a fixed size, and the buttons must stay inside it.
+		ui.Column(c).FillWidth().Grow(1).MinHeight(0).Padding(12).Gap(8).Background(p.Panel).Border(1, p.Border).Radius(10).Children(func() {
 			ui.Text(c, "版本："+info.Version).TextColor(p.Text)
 			ui.Text(c, "更新内容：").TextColor(p.Muted)
-			ui.Column(c).FillWidth().Padding(10).Background(p.Control).Border(1, p.Border).Radius(10).Children(func() {
+			ui.Column(c).FillWidth().Grow(1).MinHeight(0).Padding(10).Background(p.Control).Border(1, p.Border).Radius(10).Children(func() {
 				notes := strings.TrimSpace(info.Notes)
 				if notes == "" {
 					notes = "（无）"
 				}
-				ui.Scroll(c).FillWidth().Height(170).Children(func() {
+				ui.Scroll(c).FillWidth().Grow(1).MinHeight(0).Children(func() {
 					ui.Text(c, notes).TextColor(p.Text).Wrap().FillWidth().Selectable()
 				})
 			})
 		})
-		footer(c, p, func() {
+		buttonRow(c, p, func() {
 			mandatory := m.mandatory()
 			if !mandatory && button(c, p, "稍后") {
 				m.Finish()

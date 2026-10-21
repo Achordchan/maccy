@@ -298,7 +298,7 @@ func (a *App) remove(pick func() []model.Item) {
 		return
 	}
 	ctx, gen, owner := a.acctWork()
-	if err := a.pending.Add(owner, asked...); err != nil {
+	if err := a.pending.Add(owner, a.History.Items(), asked...); err != nil {
 		// Still owed for as long as the program runs.
 		a.cfg.Logf("pending deletions: %v", err)
 	}
@@ -314,7 +314,7 @@ func (a *App) remove(pick func() []model.Item) {
 			if len(items) == 0 {
 				return // already gone; what is owed goes with the next sync
 			}
-			if err := a.pending.Add(owner, notIn(items, asked)...); err != nil {
+			if err := a.pending.Add(owner, a.History.Items(), notIn(items, asked)...); err != nil {
 				a.cfg.Logf("pending deletions: %v", err)
 			}
 			a.mutateQuietly(func() { a.History.RemoveMany(idsOf(items)) })

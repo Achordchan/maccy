@@ -53,13 +53,18 @@ type pendingDeletes struct {
 // deletion is one item the user deleted.
 type deletion struct {
 	ID      string     `json:"id"`
-	Key     string     `json:"key,omitempty"` // syncer.MergeKey
+	Key     string     `json:"key,omitempty"`   // syncer.MergeKey
+	Spare   []string   `json:"spare,omitempty"` // kept items of the same content
 	At      time.Time  `json:"at"`
 	AckedAt *time.Time `json:"acked_at,omitempty"` // when the server had it
 }
 
 // expired says that d has been enforced long enough after the server had it.
 func (d deletion) expired(cut time.Time) bool { return d.AckedAt != nil && d.AckedAt.Before(cut) }
+
+func (d deletion) tombstone() syncer.Tombstone {
+	return syncer.Tombstone{ID: d.ID, Key: d.Key, At: d.At, Spare: d.Spare}
+}
 
 // pendingFile is what the file holds.
 type pendingFile struct {
@@ -71,8 +76,12 @@ func accountKey(owner string) string { return strings.ToLower(strings.TrimSpace(
 
 func (p *pendingDeletes) account(owner string) string {
 	k := accountKey(owner)
-	if to, ok := p.alias[k]; ok {
-		return to
+	for range len(p.alias) + 1 { // a chain: a session, another, an address
+		to, ok := p.alias[k]
+		if !ok || to == k {
+			break
+		}
+		k = to
 	}
 	return k
 }
@@ -163,12 +172,24 @@ func (p *pendingDeletes) save() error {
 }
 
 // Add notes that the user of the account owner deleted items, now (or at the
-// time an item says it was captured, when that is later). When the
-// file cannot be written the items are still noted for as long as the program
+// time an item says it was captured, when that is later). history is the
+// history as it is when they are deleted: the items in it of the same content
+// that stay are not deleted with them (see syncer.Tombstone). When the file
+// cannot be written the items are still noted for as long as the program
 // runs, and the error says so.
-func (p *pendingDeletes) Add(owner string, items ...model.Item) error {
+func (p *pendingDeletes) Add(owner string, history []model.Item, items ...model.Item) error {
 	if len(items) == 0 {
 		return nil
+	}
+	gone := map[string]bool{}
+	for _, it := range items {
+		gone[strings.ToLower(it.ID)] = true
+	}
+	kept := map[string][]string{} // merge key: the ids that stay
+	for _, it := range history {
+		if k := syncer.MergeKey(it); k != "" && !gone[strings.ToLower(it.ID)] {
+			kept[k] = append(kept[k], it.ID)
+		}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -179,7 +200,8 @@ func (p *pendingDeletes) Add(owner string, items ...model.Item) error {
 		// The deletion covers the item as it was, also when it says it was
 		// captured later than now (a device whose clock is ahead, or a clock
 		// set back here): the time is not what the deletion is about.
-		d := deletion{ID: it.ID, Key: syncer.MergeKey(it), At: at}
+		key := syncer.MergeKey(it)
+		d := deletion{ID: it.ID, Key: key, Spare: kept[key], At: at}
 		if it.CapturedAt.After(d.At) {
 			d.At = it.CapturedAt.Time
 		}
@@ -202,7 +224,7 @@ func (p *pendingDeletes) Tombstones(owner string) []syncer.Tombstone {
 		if d.expired(cut) {
 			continue // enforced long enough; Prune drops it
 		}
-		out = append(out, syncer.Tombstone{ID: d.ID, Key: d.Key, At: d.At})
+		out = append(out, d.tombstone())
 	}
 	return out
 }
@@ -252,29 +274,28 @@ func (p *pendingDeletes) Delivered(owner string, items []model.Item) error {
 	defer p.mu.Unlock()
 	p.load()
 	k := p.account(owner)
-	// The earliest capture of each id and each merge key the server has.
-	byID, byKey := map[string]time.Time{}, map[string]time.Time{}
-	earliest := func(m map[string]time.Time, key string, t time.Time) {
-		if key == "" {
-			return
-		}
-		if old, ok := m[key]; !ok || t.Before(old) {
-			m[key] = t
-		}
-	}
+	// The items the server has, by id and by merge key.
+	byID, byKey := map[string][]model.Item{}, map[string][]model.Item{}
 	for _, it := range items {
-		earliest(byID, strings.ToLower(it.ID), it.CapturedAt.Time)
-		earliest(byKey, syncer.MergeKey(it), it.CapturedAt.Time)
+		byID[strings.ToLower(it.ID)] = append(byID[strings.ToLower(it.ID)], it)
+		if mk := syncer.MergeKey(it); mk != "" {
+			byKey[mk] = append(byKey[mk], it)
+		}
 	}
-	has := func(m map[string]time.Time, key string, at time.Time) bool {
-		t, ok := m[key]
-		return ok && key != "" && !t.After(at)
+	has := func(d deletion) bool {
+		t := d.tombstone()
+		for _, it := range append(byID[strings.ToLower(d.ID)], byKey[strings.ToLower(d.Key)]...) {
+			if t.Covers(it) {
+				return true
+			}
+		}
+		return false
 	}
 	now := p.clock()
 	changed := p.repair[k]
 	delete(p.repair, k)
 	for i, d := range p.lists[k] {
-		if d.AckedAt != nil || has(byID, strings.ToLower(d.ID), d.At) || has(byKey, strings.ToLower(d.Key), d.At) {
+		if d.AckedAt != nil || has(d) {
 			continue
 		}
 		at := now
@@ -329,6 +350,11 @@ func (p *pendingDeletes) Adopt(from, to string) error {
 		p.alias = map[string]string{}
 	}
 	p.alias[f] = t
+	for k, v := range p.alias { // what named from names to now
+		if v == f {
+			p.alias[k] = t
+		}
+	}
 	if len(p.lists[f]) == 0 {
 		return nil
 	}

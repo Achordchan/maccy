@@ -232,3 +232,30 @@ func TestSize(t *testing.T) {
 		}
 	}
 }
+
+// At the size of its window the prompt keeps its buttons inside it and under
+// the notes, whatever the notes are.
+func TestPromptFitsItsWindow(t *testing.T) {
+	for _, notes := range []string{"", "- 全新的内核", strings.Repeat("- 一行更新说明\n", 60)} {
+		r := newRig(t, "1.0.10", update.Release{Version: "1.0.11", Notes: notes})
+		r.m.CheckNow()
+		r.wait()
+		w, h := Sizes[Prompt][0], Sizes[Prompt][1]
+		tt := ui.NewTester(r.m.ViewPrompt, w, h)
+		tt.Frame()
+		label, ok1 := tt.Find("更新内容：")
+		// A button the window cuts off shows only part of its height.
+		whole := ui.NewTester(r.m.ViewPrompt, w, h+400)
+		whole.Frame()
+		for _, b := range []string{"稍后", "取消", "立即更新"} {
+			r, ok := tt.Find(b)
+			full, _ := whole.Find(b)
+			if !ok || !ok1 {
+				t.Fatalf("missing %q: %q", b, tt.Texts())
+			}
+			if r.H < full.H || r.Y+r.H > float32(h) || r.X+r.W > float32(w) || r.Y < label.Y+label.H {
+				t.Fatalf("notes %d bytes: %q at %+v does not fit a %dx%d window under the notes (%+v)", len(notes), b, r, w, h, label)
+			}
+		}
+	}
+}

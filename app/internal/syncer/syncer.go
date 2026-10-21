@@ -536,8 +536,8 @@ func (s *Syncer) withoutDeleted(items []model.Item) []model.Item {
 	return out
 }
 
-// Deleted says which of items the user deleted (Config.Deleted): an item of a
-// tombstone's id or merge key, captured no later than the deletion.
+// Deleted says which of items the user deleted (Config.Deleted; see
+// Tombstone for which items a deletion stands for).
 func (s *Syncer) Deleted(items []model.Item) []model.Item {
 	if s.cfg.Deleted == nil {
 		return nil
@@ -546,25 +546,24 @@ func (s *Syncer) Deleted(items []model.Item) []model.Item {
 	if len(stones) == 0 {
 		return nil
 	}
-	byID, byKey := map[string]time.Time{}, map[string]time.Time{}
-	later := func(m map[string]time.Time, k string, at time.Time) {
-		if k != "" && at.After(m[k]) {
-			m[k] = at
+	byID, byKey := map[string][]Tombstone{}, map[string][]Tombstone{}
+	for _, t := range stones {
+		byID[strings.ToLower(t.ID)] = append(byID[strings.ToLower(t.ID)], t)
+		if k := strings.ToLower(t.Key); k != "" {
+			byKey[k] = append(byKey[k], t)
 		}
 	}
-	for _, t := range stones {
-		later(byID, strings.ToLower(t.ID), t.At)
-		later(byKey, strings.ToLower(t.Key), t.At)
+	covered := func(it model.Item, ts []Tombstone) bool {
+		for _, t := range ts {
+			if t.Covers(it) {
+				return true
+			}
+		}
+		return false
 	}
 	var out []model.Item
 	for _, it := range items {
-		at, ok := byID[strings.ToLower(it.ID)]
-		if k := MergeKey(it); k != "" {
-			if kat, kok := byKey[k]; kok && (!ok || kat.After(at)) {
-				at, ok = kat, true
-			}
-		}
-		if ok && !it.CapturedAt.After(at) {
+		if covered(it, byID[strings.ToLower(it.ID)]) || covered(it, byKey[MergeKey(it)]) {
 			out = append(out, it)
 		}
 	}
