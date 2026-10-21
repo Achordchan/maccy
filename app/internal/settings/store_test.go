@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -113,5 +114,25 @@ func TestMarshalOfDefaults(t *testing.T) {
 	got, _ := model.DefaultSettings().Marshal()
 	if string(got) != want {
 		t.Errorf("\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestSettingsFileIsOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix modes")
+	}
+	p := filepath.Join(t.TempDir(), "klip", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil { // as an earlier version left it
+		t.Fatal(err)
+	}
+	if err := Save(p, model.DefaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := os.Stat(p)
+	if st.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("the file with the tokens is %v: other users can read it", st.Mode().Perm())
 	}
 }

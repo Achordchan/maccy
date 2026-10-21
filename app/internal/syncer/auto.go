@@ -22,6 +22,11 @@ type Auto struct {
 	Run func(ctx context.Context, reason string, manual bool) error
 	// Done is called after each sync, with its error (nil on success).
 	Done func(reason string, manual bool, err error)
+	// Begin is called when a sync starts, Progress as it goes (both may be
+	// nil). They are how the main window shows the cloud icon at work and,
+	// for a sync the user asked for, the progress bar.
+	Begin    func(reason string, manual bool)
+	Progress func(p Progress, reason string, manual bool)
 
 	busy        atomic.Bool
 	suppressed  atomic.Bool
@@ -33,14 +38,16 @@ type Auto struct {
 
 // NewAuto returns an Auto that runs s.
 func NewAuto(s *Syncer, done func(reason string, manual bool, err error)) *Auto {
-	return &Auto{
-		CanSync: s.CanAutoSync,
-		Run: func(ctx context.Context, reason string, manual bool) error {
-			_, err := s.Run(ctx, nil, reason)
-			return err
-		},
-		Done: done,
+	a := &Auto{CanSync: s.CanAutoSync, Done: done}
+	a.Run = func(ctx context.Context, reason string, manual bool) error {
+		var progress func(Progress)
+		if a.Progress != nil {
+			progress = func(p Progress) { a.Progress(p, reason, manual) }
+		}
+		_, err := s.Run(ctx, progress, reason)
+		return err
 	}
+	return a
 }
 
 func (a *Auto) debounce() time.Duration {
@@ -54,11 +61,15 @@ func (a *Auto) debounce() time.Duration {
 // the history itself.
 func (a *Auto) Suppress(on bool) { a.suppressed.Store(on) }
 
+// Suppressed says whether history changes are being ignored because the sync
+// itself is making them.
+func (a *Auto) Suppressed() bool { return a.suppressed.Load() }
+
 // Trigger runs a sync now, unless one is running. A manual one that cannot
 // start because there is no sign-in reports ErrNotLoggedIn.
-func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {
+func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) bool {
 	if !a.busy.CompareAndSwap(false, true) {
-		return
+		return false
 	}
 	go func() {
 		defer a.busy.Store(false)
@@ -68,6 +79,9 @@ func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {
 			}
 			return
 		}
+		if a.Begin != nil {
+			a.Begin(reason, manual)
+		}
 		err := a.Run(ctx, reason, manual)
 		if err == nil && !manual {
 			a.initialDone.Store(true)
@@ -76,6 +90,26 @@ func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) {
 			a.Done(reason, manual, err)
 		}
 	}()
+	return true
+}
+
+// Exclusive runs f once nothing else is running (a sync, another exclusive
+// piece of work) and keeps everything else out until it returns. It waits for
+// its turn, as long as ctx lives, and says whether f ran.
+func (a *Auto) Exclusive(ctx context.Context, f func()) bool {
+	for !a.busy.CompareAndSwap(false, true) {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	defer a.busy.Store(false)
+	if ctx.Err() != nil {
+		return false
+	}
+	f()
+	return true
 }
 
 // Startup is the first background sync.

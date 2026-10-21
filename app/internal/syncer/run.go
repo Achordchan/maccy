@@ -70,21 +70,55 @@ func (s *Syncer) Run(ctx context.Context, progress func(Progress), reason string
 }
 
 // UploadAfterLocalMutation uploads right after the user changed the history
-// (UploadCloudAfterLocalMutationAsync), without looking at the server first.
+// (UploadCloudAfterLocalMutationAsync). The C# client sends the history as it
+// is; here the server is looked at first, and when another device has
+// uploaded since the last sync, its snapshot is merged in before: what it
+// added would otherwise be dropped from the server. The merge leaves out what
+// the user deleted (Config.Deleted).
 func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.UploadResult, error) {
+	manifest, err := s.remoteManifest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if remoteExists(manifest) && !s.remoteUnchanged(manifest) {
+		if err := s.MergeAndApply(ctx, manifest, s.Fingerprint(), nil, "local_mutation"); err != nil {
+			return nil, err
+		}
+	}
 	up, err := s.Upload(ctx, nil, "local_mutation")
 	if err != nil {
 		return nil, err
 	}
-	s.persistAfterUpload(ctx, up, nil)
+	s.persistAfterUpload(ctx, up, &manifest)
 	return up, nil
+}
+
+// remoteExists says that the server has a snapshot: the manifest names one,
+// by its time, its version or its hash. Decide goes by the time alone, as the
+// C# client does; a snapshot whose time cannot be read is still one that an
+// upload would replace.
+func remoteExists(m ManifestInfo) bool {
+	return m.UpdatedAt != nil || strings.TrimSpace(m.Version) != "" || strings.TrimSpace(m.SnapshotSHA256) != ""
+}
+
+// remoteUnchanged says that the server's snapshot is the one the last sync
+// left there.
+func (s *Syncer) remoteUnchanged(m ManifestInfo) bool {
+	st := s.settings()
+	last := strings.TrimSpace(model.Str(st.SyncLastRemoteVersion))
+	return last != "" && sameRemoteSnapshot(last, strings.TrimSpace(m.Version), strings.TrimSpace(model.Str(st.SyncLastRemoteSha256)), strings.TrimSpace(m.SnapshotSHA256))
 }
 
 // persistAfterUpload is PersistSyncStateAfterUploadAsync: the state to
 // remember is the server's manifest as it is now; when it cannot be fetched,
 // what the upload answered, or the manifest the decision was made on.
 func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadResult, fallback *ManifestInfo) {
-	fp := s.Fingerprint()
+	// The history as it was uploaded, not as it is: an item copied since is
+	// not on the server, and must still count as a change to send.
+	fp, _ := s.uploadFP.Load().(string)
+	if fp == "" {
+		fp = s.Fingerprint()
+	}
 	if m, err := s.ManifestInfo(ctx); err == nil && (m.UpdatedAt != nil || m.Version != "") {
 		s.PersistSyncState(fp, m)
 		return

@@ -447,3 +447,39 @@ func TestGetRetriesOnceThenReportsTimeout(t *testing.T) {
 		t.Errorf("hits %d, err %v: one retry after a connection error", hits.Load(), err)
 	}
 }
+
+func TestWatchAsksForChangesEachTimeTheStreamOpens(t *testing.T) {
+	var connects atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := connects.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: connected\ndata: {}\n\n")
+		w.(http.Flusher).Flush()
+		if n == 1 {
+			time.Sleep(100 * time.Millisecond)
+			return // the connection drops; nothing is announced for what happens next
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	ts := &fakeTokens{token: "t"}
+	c := New(srv.URL)
+	ctx, cancel := context.WithCancel(bg)
+	var updates atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		c.Watch(ctx, ts, WatchOptions{InitialDelay: 150 * time.Millisecond, MaxDelay: 300 * time.Millisecond, Debounce: 20 * time.Millisecond},
+			func() { updates.Add(1) })
+		close(done)
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for updates.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+	if connects.Load() != 2 || updates.Load() != 2 {
+		t.Fatalf("%d connections, %d reconciliations: every opening of the stream asks once", connects.Load(), updates.Load())
+	}
+}
