@@ -25,7 +25,8 @@ type Manager struct {
 	model *Model
 	win   *mygo.Window
 	id    string
-	seq   int // moves with each Show and each Hide
+	seq   int  // moves with each Show and each Hide
+	shut  bool // Close was called: nothing is shown any more
 }
 
 // Preview says which item the window shows ("" when hidden) and whether the
@@ -48,6 +49,12 @@ const maxPicture = 1960
 // the background; the window opens when that is done, unless the pointer has
 // moved on by then. Any goroutine.
 func (mg *Manager) Show(it model.Item, anchor Rect) {
+	mg.mu.Lock()
+	shut := mg.shut
+	mg.mu.Unlock()
+	if shut {
+		return
+	}
 	if it.Kind != model.KindImage && it.Kind != model.KindFileList {
 		mg.mu.Lock()
 		mg.seq++ // a picture that is still being made is not wanted
@@ -68,7 +75,7 @@ func (mg *Manager) Show(it model.Item, anchor Rect) {
 			bm, pw, ph = panel.ScaledBitmap(model.Str(it.ImageFilePath), maxPicture)
 		}
 		mg.mu.Lock()
-		current := mg.seq == seq
+		current := mg.wanted(seq)
 		mg.mu.Unlock()
 		if !current {
 			return // another item, or none, since
@@ -89,7 +96,7 @@ func (mg *Manager) present(it model.Item, bm *ui.Bitmap, pw, ph int, meta string
 	mygo.RunOnMain(func() {
 		mg.mu.Lock()
 		defer mg.mu.Unlock()
-		if mg.seq != seq {
+		if !mg.wanted(seq) {
 			return
 		}
 		if mg.model == nil {
@@ -131,6 +138,10 @@ func (mg *Manager) present(it model.Item, bm *ui.Bitmap, pw, ph int, meta string
 	})
 }
 
+// wanted says that the request seq is still the latest, and that the manager
+// is not closed (under mu).
+func (mg *Manager) wanted(seq int) bool { return !mg.shut && mg.seq == seq }
+
 // Hide closes the window.
 func (mg *Manager) Hide() { mg.hide(-1) }
 
@@ -155,11 +166,13 @@ func (mg *Manager) hide(seq int) {
 	})
 }
 
-// Close destroys the window (when the program quits).
+// Close destroys the window (when the program quits). A picture or the files
+// still being read for a Show are not shown then, nor is anything after.
 func (mg *Manager) Close() {
 	mg.mu.Lock()
 	win := mg.win
-	mg.win = nil
+	mg.win, mg.shut, mg.id = nil, true, ""
+	mg.seq++
 	mg.mu.Unlock()
 	if win != nil {
 		win.Close()

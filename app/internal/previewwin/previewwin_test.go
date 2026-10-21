@@ -277,3 +277,30 @@ func TestManyFilesBuildOnlyTheRowsInView(t *testing.T) {
 		t.Fatal("rows out of view were built")
 	}
 }
+
+// A Show still reading its files when the program quits is not shown, nor is
+// a Show after.
+func TestClosedManagerShowsNothing(t *testing.T) {
+	mg := &Manager{}
+	mg.mu.Lock()
+	mg.seq++ // a Show whose files are being read
+	pending := mg.seq
+	mg.mu.Unlock()
+	mg.Close()
+	mg.mu.Lock()
+	ok := mg.wanted(pending)
+	mg.mu.Unlock()
+	if ok {
+		t.Fatal("the pending Show is still wanted")
+	}
+	mg.Show(item(model.KindFileList), Rect{})
+	if id, _ := mg.Preview(); id != "" {
+		t.Fatalf("shown after Close: %q", id)
+	}
+	mg.mu.Lock()
+	ok = mg.wanted(mg.seq)
+	mg.mu.Unlock()
+	if ok {
+		t.Fatal("a request is wanted after Close")
+	}
+}
