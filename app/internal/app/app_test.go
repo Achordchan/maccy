@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1229,5 +1230,86 @@ func TestRenamedTwiceStillReachesTheList(t *testing.T) {
 	p.Add("session:1", nil, item("y", "y")) // late work under the first name
 	if got := ids(p.Tombstones("a@example.com")); len(got) != 2 {
 		t.Fatalf("the account: %v", got)
+	}
+}
+
+// With duplicates not merged, A holds two entries of the same text, both on
+// the server; the server has also changed since. Deleting the newer one
+// merges the server's history in before the upload: the older one, which the
+// user kept, stays, here and on the server.
+func TestDeletingTheNewerDuplicateKeepsTheOlderThroughAMerge(t *testing.T) {
+	srv := nastest.Start(t)
+	ctx := context.Background()
+	tokA := srv.Subscribe(ctx, "owner@example.com", "password1")
+	login := func() syncclient.TokenSet {
+		tok, err := syncclient.New(srv.URL).Login(ctx, "owner@example.com", "password1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	noMerge := func(root string) {
+		path := filepath.Join(root, "settings.json")
+		st, _ := settings.Load(path)
+		st.MergeDuplicates = false
+		if err := settings.Save(path, st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rootA, rootB := signedInRoot(t, tokA), signedInRoot(t, login())
+	noMerge(rootA)
+	noMerge(rootB)
+	remote := syncclient.New(srv.URL)
+	manifest := func() string { m, _ := remote.GetManifestJSON(ctx, tokA.AccessToken); return m }
+
+	a := newApp(t, rootA, &fakeClip{}, srv.URL)
+	a.Start()
+	waitFor(t, "A's first sync", func() bool { return strings.HasPrefix(a.SyncStatus(), "已同步") })
+	older, newer := item("b", "same"), item("a", "same")
+	older.Note, newer.Note = model.Ptr("kept"), model.Ptr("deleted")
+	older.CapturedAt = model.Time{Time: time.Now().Add(-time.Minute)}
+	newer.CapturedAt = model.Time{Time: time.Now()}
+	a.History.Add(older)
+	a.History.Add(newer)
+	if a.History.Len() != 2 {
+		t.Fatalf("duplicates were merged: %d", a.History.Len())
+	}
+	waitFor(t, "A synced both", func() bool {
+		return model.Str(a.Settings.Get().SyncLastLocalFingerprint) == a.Syncer.Fingerprint() && manifest() != ""
+	})
+	a.Stop()
+
+	clipB := &fakeClip{}
+	b := newApp(t, rootB, clipB, srv.URL)
+	b.Start()
+	waitFor(t, "B downloaded", func() bool { return b.History.Len() == 2 })
+	m1 := manifest()
+	time.Sleep(40 * time.Millisecond)
+	clipB.copy("from B")
+	waitFor(t, "B uploaded", func() bool { return b.History.Len() == 3 && manifest() != m1 })
+	b.Stop()
+
+	a2 := newApp(t, rootA, &fakeClip{}, srv.URL)
+	a2.Delete("a")
+	waitFor(t, "the deletion went up", func() bool { return !a2.pending.Owed(a2.owner()) && hasText(a2, "from B") })
+	notes := func(x *App) []string {
+		var out []string
+		for _, it := range x.History.Items() {
+			out = append(out, it.ID+":"+model.Str(it.Note))
+		}
+		return out
+	}
+	kept := func(got []string) bool { // "from B" and the older duplicate
+		return len(got) == 2 && slices.Contains(got, "b:kept") && !slices.Contains(got, "a:deleted")
+	}
+	if got := notes(a2); !kept(got) {
+		t.Fatalf("A after the deletion: %v", got)
+	}
+	c := newApp(t, signedInRoot(t, login()), &fakeClip{}, srv.URL)
+	c.Start()
+	defer c.Stop()
+	waitFor(t, "C downloaded", func() bool { return c.History.Len() >= 2 })
+	if got := notes(c); !kept(got) {
+		t.Fatalf("the server has %v", got)
 	}
 }

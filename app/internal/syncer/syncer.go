@@ -489,7 +489,10 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	s.timing("merge", "read_snapshot", started, fmt.Sprintf("%s;remoteItems=%d;images=%d;files=%d", reason, len(remote.Items), remote.ImageCount, remote.FileCount))
 
 	report(progress, "merge_snapshot", "merge snapshots", 78)
-	merged := s.withoutDeleted(MergeItems(remote.Items, local))
+	// What the user deleted goes from each side before the two are merged by
+	// content: merged first, a deleted item could take a kept duplicate with
+	// it (duplicates not merged here may still be one item to MergeItems).
+	merged := MergeItems(s.withoutDeleted(remote.Items), s.withoutDeleted(local))
 	mergedSettings := localSettings.Portable()
 	if remote.Settings != nil {
 		mergedSettings = remote.Settings.Portable()
