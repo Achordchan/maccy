@@ -1464,6 +1464,88 @@ func TestDeletingTheNewerDuplicateKeepsTheOlderThroughAMerge(t *testing.T) {
 	}
 }
 
+// With duplicates not merged, A holds two entries of the same text and
+// another item; the server has changed since. Deleting the other item merges
+// the server's history in before the upload: the two entries stay two, with
+// their notes, here and on the server.
+func TestDeletingAnotherItemKeepsBothDuplicatesThroughAMerge(t *testing.T) {
+	srv := nastest.Start(t)
+	ctx := context.Background()
+	tokA := srv.Subscribe(ctx, "owner@example.com", "password1")
+	login := func() syncclient.TokenSet {
+		tok, err := syncclient.New(srv.URL).Login(ctx, "owner@example.com", "password1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	noMerge := func(root string) {
+		path := filepath.Join(root, "settings.json")
+		st, _ := settings.Load(path)
+		st.MergeDuplicates = false
+		if err := settings.Save(path, st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rootA, rootB := signedInRoot(t, tokA), signedInRoot(t, login())
+	noMerge(rootA)
+	noMerge(rootB)
+	remote := syncclient.New(srv.URL)
+	manifest := func() string { m, _ := remote.GetManifestJSON(ctx, tokA.AccessToken); return m }
+
+	a := newApp(t, rootA, &fakeClip{}, srv.URL)
+	a.Start()
+	waitFor(t, "A's first sync", func() bool { return strings.HasPrefix(a.SyncStatus(), "已同步") })
+	older, newer, other := item("b", "same"), item("a", "same"), item("o", "other")
+	older.Note, newer.Note = model.Ptr("first"), model.Ptr("second")
+	older.CapturedAt = model.Time{Time: time.Now().Add(-time.Minute)}
+	newer.CapturedAt = model.Time{Time: time.Now()}
+	a.History.Add(other)
+	a.History.Add(older)
+	a.History.Add(newer)
+	if a.History.Len() != 3 {
+		t.Fatalf("duplicates were merged: %d", a.History.Len())
+	}
+	waitFor(t, "A synced them", func() bool {
+		return model.Str(a.Settings.Get().SyncLastLocalFingerprint) == a.Syncer.Fingerprint() && manifest() != ""
+	})
+	a.Stop()
+
+	clipB := &fakeClip{}
+	b := newApp(t, rootB, clipB, srv.URL)
+	b.Start()
+	waitFor(t, "B downloaded", func() bool { return b.History.Len() == 3 })
+	m1 := manifest()
+	time.Sleep(40 * time.Millisecond)
+	clipB.copy("from B")
+	waitFor(t, "B uploaded", func() bool { return b.History.Len() == 4 && manifest() != m1 })
+	b.Stop()
+
+	a2 := newApp(t, rootA, &fakeClip{}, srv.URL)
+	a2.Delete("o")
+	waitFor(t, "the deletion went up", func() bool { return !a2.pending.Owed(a2.owner()) && hasText(a2, "from B") })
+	notes := func(x *App) []string {
+		var out []string
+		for _, it := range x.History.Items() {
+			out = append(out, it.ID+":"+model.Str(it.Note))
+		}
+		return out
+	}
+	kept := func(got []string) bool { // "from B" and both duplicates, with their notes
+		return len(got) == 3 && slices.Contains(got, "a:second") && slices.Contains(got, "b:first")
+	}
+	if got := notes(a2); !kept(got) {
+		t.Fatalf("A after the deletion: %v", got)
+	}
+	c := newApp(t, signedInRoot(t, login()), &fakeClip{}, srv.URL)
+	c.Start()
+	defer c.Stop()
+	waitFor(t, "C downloaded", func() bool { return c.History.Len() >= 3 })
+	if got := notes(c); !kept(got) {
+		t.Fatalf("the server has %v", got)
+	}
+}
+
 // While the deletion waits, a sync replaces the item with a later version of
 // the same id (copied again on another device): the deletion written down at
 // first does not cover that version, so the one removed is written down too.

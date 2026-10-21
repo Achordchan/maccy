@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,34 @@ func TestDecide(t *testing.T) {
 		if d.Direction != c.dir || d.Reason != c.reason {
 			t.Errorf("%s: %v/%s, want %v/%s", c.name, d.Direction, d.Reason, c.dir, c.reason)
 		}
+	}
+}
+
+// With duplicates not merged, two entries of the same content stay two, each
+// with its note; the same entry on both sides is still one.
+func TestMergeItemsKeepingDuplicates(t *testing.T) {
+	entry := func(id, hash, note, captured string) model.Item {
+		return model.Item{ID: id, Kind: model.KindText, ContentHash: model.Ptr(hash), Note: model.Ptr(note), CapturedAt: mt(t, captured), CopyCount: 1}
+	}
+	remote := []model.Item{
+		entry("a", "H1", "one", "2026-05-30T10:00:00Z"),
+		entry("b", "H1", "two", "2026-05-30T09:00:00Z"),
+	}
+	local := []model.Item{
+		entry("a", "H1", "one", "2026-05-30T10:00:00Z"),
+		entry("b", "H1", "two", "2026-05-30T09:00:00Z"),
+		entry("c", "H2", "", "2026-05-30T11:00:00Z"),
+	}
+	got := MergeItemsKeepingDuplicates(remote, local)
+	var notes []string
+	for _, it := range got {
+		notes = append(notes, it.ID+":"+model.Str(it.Note))
+	}
+	if !slices.Equal(notes, []string{"c:", "a:one", "b:two"}) {
+		t.Fatalf("merged %v", notes)
+	}
+	if n := len(MergeItems(remote, local)); n != 2 {
+		t.Fatalf("merged by content: %d", n)
 	}
 }
 

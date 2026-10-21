@@ -13,6 +13,19 @@ const emptyGUID = "00000000-0000-0000-0000-000000000000"
 // ones that are the same item (same content hash and kind, else same id)
 // made one, newest first.
 func MergeItems(remote, local []model.Item) []model.Item {
+	return mergeItems(remote, local, mergeKey)
+}
+
+// MergeItemsKeepingDuplicates is MergeItems for a history whose duplicates
+// are not merged (MergeDuplicates off), which the C# client does not tell
+// apart: an item on both sides (the same id) is made one, but entries of the
+// same content stay what they are, each with its own note and pin, as they
+// do here between syncs.
+func MergeItemsKeepingDuplicates(remote, local []model.Item) []model.Item {
+	return mergeItems(remote, local, idKey)
+}
+
+func mergeItems(remote, local []model.Item, mergeKey func(model.Item) string) []model.Item {
 	merged := map[string]model.Item{}
 	var order []string // keys in insertion order: the dictionary's
 	var passthrough []model.Item
@@ -63,6 +76,10 @@ func mergeKey(it model.Item) string {
 	if h := strings.TrimSpace(model.Str(it.ContentHash)); h != "" {
 		return "hash:" + itoa(int(it.Kind)) + ":" + h
 	}
+	return idKey(it)
+}
+
+func idKey(it model.Item) string {
 	if strings.ToLower(it.ID) == emptyGUID || it.ID == "" {
 		return ""
 	}

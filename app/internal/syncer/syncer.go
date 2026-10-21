@@ -489,14 +489,20 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	s.timing("merge", "read_snapshot", started, fmt.Sprintf("%s;remoteItems=%d;images=%d;files=%d", reason, len(remote.Items), remote.ImageCount, remote.FileCount))
 
 	report(progress, "merge_snapshot", "merge snapshots", 78)
-	// What the user deleted goes from each side before the two are merged by
-	// content: merged first, a deleted item could take a kept duplicate with
-	// it (duplicates not merged here may still be one item to MergeItems).
-	merged := MergeItems(s.withoutDeleted(remote.Items), s.withoutDeleted(local))
 	mergedSettings := localSettings.Portable()
 	if remote.Settings != nil {
 		mergedSettings = remote.Settings.Portable()
 	}
+	// What the user deleted goes from each side before the two are merged by
+	// content: merged first, a deleted item could take a kept duplicate with
+	// it. When the history here keeps its duplicates, or will after the merge,
+	// the merge keeps them too: merged, two entries cannot be told apart
+	// again, and their notes are one.
+	merge := MergeItems
+	if !localSettings.MergeDuplicates || !mergedSettings.MergeDuplicates {
+		merge = MergeItemsKeepingDuplicates
+	}
+	merged := merge(s.withoutDeleted(remote.Items), s.withoutDeleted(local))
 	EnsureSettingsCanHoldItems(&mergedSettings, merged)
 
 	s.suppress(true)
