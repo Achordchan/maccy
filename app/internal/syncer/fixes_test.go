@@ -142,6 +142,7 @@ func unitSyncer(t *testing.T, srv *httptest.Server, s *model.Settings, h History
 		Client:  syncclient.New(srv.URL),
 		BaseURL: srv.URL,
 		Now:     time.Now,
+		Flush:   func(context.Context) error { return nil },
 	})
 }
 
@@ -277,6 +278,7 @@ func TestMergeStopsWhenTheBackupBlobCannotBeStored(t *testing.T) {
 	}}}
 	s := signedIn(model.DefaultSettings())
 	syn := New(Config{
+		Flush:  func(context.Context) error { return nil },
 		Layout: l,
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { return *s },
@@ -301,7 +303,7 @@ func TestMergeStopsWhenTheBackupBlobCannotBeStored(t *testing.T) {
 // needs ".000" for the milliseconds, not "-000".
 func TestPreMergeBackupNamesAreUnique(t *testing.T) {
 	now := time.Date(2026, 5, 30, 12, 0, 0, 500_000_000, time.UTC)
-	syn := New(Config{Layout: paths.Layout{Root: t.TempDir()}, Now: func() time.Time { return now }})
+	syn := New(Config{Flush: func(context.Context) error { return nil }, Layout: paths.Layout{Root: t.TempDir()}, Now: func() time.Time { return now }})
 
 	first, err := syn.preMergeBackupPath()
 	if err != nil {
@@ -610,7 +612,7 @@ func TestMergeBackupRepairsACorruptBlob(t *testing.T) {
 	if err := os.WriteFile(target, []byte("corrupt"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := New(Config{Layout: l})
+	s := New(Config{Flush: func(context.Context) error { return nil }, Layout: l})
 	if err := s.ensureLocalBackupBlobs(context.Background(), snapshot.ExportResult{
 		Blobs: []snapshot.Blob{{SHA256: sum, SourcePath: src, Size: 10}},
 	}); err != nil {
@@ -826,6 +828,7 @@ func TestUploadStopsWhenTheSessionChanges(t *testing.T) {
 	s.AuthRefreshToken = model.Ptr("ra")
 	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
 	syn := New(Config{
+		Flush:  func(context.Context) error { return nil },
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
@@ -885,6 +888,7 @@ func TestDownloadStopsWhenTheSessionChanges(t *testing.T) {
 	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
 	h := &unitHistory{}
 	syn := New(Config{
+		Flush:  func(context.Context) error { return nil },
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
@@ -922,6 +926,7 @@ func TestTokenForRejectsAnotherAccountsToken(t *testing.T) {
 	s := model.DefaultSettings()
 	s.AuthAccessToken = model.Ptr(testJWT("account-b"))
 	syn := New(Config{
+		Flush: func(context.Context) error { return nil },
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { return s },
 			Update: func(f func(*model.Settings)) error { f(&s); return nil },
@@ -965,6 +970,7 @@ func TestDownloadStopsWhenSignedOut(t *testing.T) {
 	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
 	h := &unitHistory{}
 	syn := New(Config{
+		Flush:  func(context.Context) error { return nil },
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
@@ -1083,7 +1089,7 @@ func TestDownloadRollsBackWhenFlushFails(t *testing.T) {
 
 func TestMergeBackupFailsWhenTheSourceIsGone(t *testing.T) {
 	l := paths.Layout{Root: t.TempDir()}
-	s := New(Config{Layout: l})
+	s := New(Config{Flush: func(context.Context) error { return nil }, Layout: l})
 	err := s.ensureLocalBackupBlobs(context.Background(), snapshot.ExportResult{
 		Blobs: []snapshot.Blob{{
 			SHA256:     strings.Repeat("a", 64),
@@ -1129,6 +1135,7 @@ func TestDownloadKeepsPayloadsUntilFlushed(t *testing.T) {
 	h := &cleaningHistory{unitHistory: unitHistory{items: []model.Item{local}}}
 	s := signedIn(model.DefaultSettings())
 	syn := New(Config{
+		Flush:    func(context.Context) error { return nil },
 		Layout:   l,
 		Settings: syncclient.Settings{Get: func() model.Settings { return *s }, Update: func(f func(*model.Settings)) error { f(s); return nil }},
 		History:  h,
@@ -1288,6 +1295,7 @@ func TestRemoveFilesOnlyGetsKlipPayloads(t *testing.T) {
 	h := &cleaningHistory{unitHistory: unitHistory{items: []model.Item{local}}}
 	s := signedIn(model.DefaultSettings())
 	syn := New(Config{
+		Flush:    func(context.Context) error { return nil },
 		Layout:   l,
 		Settings: syncclient.Settings{Get: func() model.Settings { return *s }, Update: func(f func(*model.Settings)) error { f(s); return nil }},
 		History:  h,
@@ -1355,6 +1363,7 @@ func TestDownloadDiscardsItemsWhenTheSessionChangesAtCommit(t *testing.T) {
 		mu.Unlock()
 	}
 	syn := New(Config{
+		Flush:  func(context.Context) error { return nil },
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
@@ -1400,6 +1409,7 @@ func TestSyncRefusesAnotherAccountsState(t *testing.T) {
 	s.AuthRefreshToken = model.Ptr("ra")
 	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
 	syn := New(Config{
+		Flush:    func(context.Context) error { return nil },
 		Layout:   l,
 		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 		History:  &unitHistory{items: []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "account a")}},
@@ -1450,6 +1460,7 @@ func TestDownloadDiscardsItemsWhenTheSessionChangesDuringFlush(t *testing.T) {
 	h := &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}}
 	l := paths.Layout{Root: t.TempDir()}
 	syn := New(Config{
+		Flush:  func(context.Context) error { return nil },
 		Layout: l,
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
@@ -1518,6 +1529,7 @@ func TestUploadStopsWhenTheSessionChangesWhileReadingHistory(t *testing.T) {
 		mu.Unlock()
 	}
 	syn := New(Config{
+		Flush:  func(context.Context) error { return nil },
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
@@ -1574,6 +1586,7 @@ func TestFailedFirstSyncStillBindsTheAccount(t *testing.T) {
 	s.AuthRefreshToken = model.Ptr("ra")
 	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
 	syn := New(Config{
+		Flush:    func(context.Context) error { return nil },
 		Layout:   paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 		History:  &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}},
@@ -1620,6 +1633,7 @@ func TestRefreshOnlySessionBindsTheAccount(t *testing.T) {
 	s.AuthRefreshToken = model.Ptr("ra")
 	s.AuthExpiresAtUnixMs = 0
 	syn := New(Config{
+		Flush:    func(context.Context) error { return nil },
 		Layout:   paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 		History:  &unitHistory{},
@@ -1779,6 +1793,7 @@ func TestSessionCleanupSurvivesCancelledFlush(t *testing.T) {
 	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
 	h := &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}}
 	syn := New(Config{
+		Flush:  func(context.Context) error { return nil },
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
@@ -1844,6 +1859,7 @@ func TestSessionCleanupIsSavedAfterACancelledFlush(t *testing.T) {
 	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
 	h := &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}}
 	syn := New(Config{
+		Flush:  func(context.Context) error { return nil },
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
@@ -2254,7 +2270,7 @@ func TestFileCacheCleanupUsesTheActiveDir(t *testing.T) {
 	if err := os.WriteFile(newFile, []byte("new"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	syn := New(Config{Layout: l})
+	syn := New(Config{Flush: func(context.Context) error { return nil }, Layout: l})
 	old := model.Item{ID: id, Kind: model.KindFileList, FilePaths: []string{oldFile}}
 	next := model.Item{ID: id, Kind: model.KindFileList, FilePaths: []string{newFile}}
 	removed := syn.unreferencedFiles([]model.Item{old}, []model.Item{next})
@@ -2374,6 +2390,7 @@ func TestPersistSyncStateChecksTheAccountInsideTheUpdate(t *testing.T) {
 	s := model.DefaultSettings()
 	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
 	syn := New(Config{
+		Flush:    func(context.Context) error { return nil },
 		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 	})
 	syn.PersistSyncState("fp", ManifestInfo{Version: "v1"}, "account-b")
@@ -2535,6 +2552,7 @@ func TestRunRecoversAPendingMergeBeforeDeciding(t *testing.T) {
 func TestPersistSyncStateRejectsASignedOutSession(t *testing.T) {
 	s := model.DefaultSettings()
 	syn := New(Config{
+		Flush:    func(context.Context) error { return nil },
 		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 	})
 	syn.PersistSyncState("fp", ManifestInfo{Version: "v1"}, "account-a")
@@ -2766,6 +2784,7 @@ func TestDownloadFailsWhenThePendingRecordCannotBeWritten(t *testing.T) {
 	}
 	h := &unitHistory{}
 	syn := New(Config{
+		Flush:    func(context.Context) error { return nil },
 		Layout:   l,
 		Settings: syncclient.Settings{Get: func() model.Settings { return *signedIn(model.DefaultSettings()) }, Update: func(f func(*model.Settings)) error { ; return nil }},
 		History:  h,
@@ -2787,6 +2806,7 @@ func TestRollbackSuppressesTheHistoryNotification(t *testing.T) {
 	s := model.DefaultSettings()
 	h := &unitHistory{}
 	syn := New(Config{
+		Flush:            func(context.Context) error { return nil },
 		Layout:           paths.Layout{Root: t.TempDir()},
 		Settings:         syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 		History:          h,
@@ -2884,9 +2904,9 @@ func TestDownloadMergeKeepsADeletionUnderAnotherID(t *testing.T) {
 // for a run of the other. Another folder has its own.
 func TestSyncersOfAFolderShareTheirLocks(t *testing.T) {
 	root := t.TempDir()
-	a := New(Config{Layout: paths.Layout{Root: root}})
-	b := New(Config{Layout: paths.Layout{Root: filepath.Join(root, ".")}})
-	other := New(Config{Layout: paths.Layout{Root: t.TempDir()}})
+	a := New(Config{Flush: func(context.Context) error { return nil }, Layout: paths.Layout{Root: root}})
+	b := New(Config{Flush: func(context.Context) error { return nil }, Layout: paths.Layout{Root: filepath.Join(root, ".")}})
+	other := New(Config{Flush: func(context.Context) error { return nil }, Layout: paths.Layout{Root: t.TempDir()}})
 	a.workflow.Lock()
 	defer a.workflow.Unlock()
 	if b.workflow.TryLock() {
@@ -2972,8 +2992,8 @@ func TestCaptureHiddenBySuppressionIsTold(t *testing.T) {
 			t.Fatalf("capture=%v: told %d times, want %d", capture, told, want)
 		}
 	}
-	a := NewAuto(New(Config{Layout: paths.Layout{Root: t.TempDir()}}), nil)
-	if a == nil || New(Config{Layout: paths.Layout{Root: t.TempDir()}}).changed != nil {
+	a := NewAuto(New(Config{Flush: func(context.Context) error { return nil }, Layout: paths.Layout{Root: t.TempDir()}}), nil)
+	if a == nil || New(Config{Flush: func(context.Context) error { return nil }, Layout: paths.Layout{Root: t.TempDir()}}).changed != nil {
 		t.Fatal("only NewAuto tells the changes")
 	}
 }
@@ -3036,6 +3056,7 @@ func TestRunKeepsTheAccountOfItsManifest(t *testing.T) {
 	defer srv.Close()
 	h := &unitHistory{items: []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "local")}}
 	syn := New(Config{
+		Flush:  func(context.Context) error { return nil },
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return st },
@@ -3274,11 +3295,10 @@ func TestRecoveryRecognisesAMergeSavedWithACapture(t *testing.T) {
 	brought := textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")
 	local := textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")
 	capture := textItemAt("16fd2706-8baf-433b-82eb-8c7fada847da", "captured")
-	added, raised := markOf([]model.Item{local}, []model.Item{brought, local})
 	record := pendingMergeState{
 		Fingerprint: "pending-upload", Version: "v1",
 		After: Fingerprint([]model.Item{brought, local}), Applied: Fingerprint([]model.Item{brought, local}),
-		Added: added, Raised: raised,
+		Added: markOf([]model.Item{local}, []model.Item{brought, local}),
 	}
 	for _, saved := range []bool{true, false} {
 		items := []model.Item{capture, local}
@@ -3297,15 +3317,33 @@ func TestRecoveryRecognisesAMergeSavedWithACapture(t *testing.T) {
 			t.Fatalf("saved=%v: recovered=%v", saved, got)
 		}
 	}
-	// A merge that brought nothing new is told by the counts it raised.
-	before := []model.Item{local}
-	raisedLocal := local
-	raisedLocal.CopyCount = 5
-	added, raised = markOf(before, []model.Item{raisedLocal})
-	p := pendingMergeState{Added: added, Raised: raised}
-	again := raisedLocal
-	again.CopyCount = 6 // copied once more since
-	if !p.markSeen([]model.Item{capture, again}) || p.markSeen([]model.Item{capture, local}) {
-		t.Fatal("raised counts are not told apart")
+	// A mutation that brought nothing leaves no mark: a count or a field it
+	// changed is no proof, as the user can make the same change.
+	raised := local
+	raised.CopyCount = 2
+	if p := (pendingMergeState{Added: markOf([]model.Item{local}, []model.Item{raised})}); p.markSeen([]model.Item{raised}) {
+		t.Fatal("a raised count was taken as proof")
+	}
+}
+
+// A Syncer that cannot save the history does not apply a download or a
+// merge: it would record as saved, and clean the files of, a history that is
+// not on disk.
+func TestApplyingNeedsAWayToSaveTheHistory(t *testing.T) {
+	remote := []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")}
+	srv := serveSnapshot(t, snapshotFile(t, remote))
+	defer srv.Close()
+	local := []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}
+	h := &unitHistory{items: local}
+	syn := unitSyncer(t, srv, signedIn(model.DefaultSettings()), h)
+	syn.cfg.Flush = nil
+	if _, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil); !errors.Is(err, ErrNoFlush) {
+		t.Fatalf("download: %v", err)
+	}
+	if err := syn.MergeAndApply(context.Background(), ManifestInfo{}, "", nil, "test"); !errors.Is(err, ErrNoFlush) {
+		t.Fatalf("merge: %v", err)
+	}
+	if h.replaced != 0 || Fingerprint(h.items) != Fingerprint(local) {
+		t.Fatal("the history was changed")
 	}
 }

@@ -28,6 +28,10 @@ var (
 	// ErrRestoreSuperseded says another sync ran between a restore and the
 	// recording of its state: that sync's state is newer, and is kept.
 	ErrRestoreSuperseded = errors.New("sync ran after the restore")
+	// ErrNoFlush says a download or a merge was asked of a Syncer that
+	// cannot save the history: it would record as saved a history that is
+	// not, and delete the files the saved one still names.
+	ErrNoFlush = errors.New("syncer: Config.Flush is required to apply a download or a merge")
 )
 
 // Direction is what a sync has to do.
@@ -105,6 +109,7 @@ type Config struct {
 	Settings syncclient.Settings
 	History  History
 	// Flush writes the history to disk (ClipboardPersistenceService.FlushAsync).
+	// A download or a merge needs it (ErrNoFlush).
 	Flush func(ctx context.Context) error
 	// Client talks to the server at BaseURL, which is the official one in the
 	// app; tests point both at a server of their own.

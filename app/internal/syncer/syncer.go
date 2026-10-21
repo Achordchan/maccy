@@ -73,13 +73,10 @@ func locksFor(root string) *rootLocks {
 }
 
 // New returns a Syncer. cfg.Client, Settings, History, Layout and BaseURL are
-// required.
+// required; Flush too, for a download or a merge (ErrNoFlush).
 func New(cfg Config) *Syncer {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
-	}
-	if cfg.Flush == nil {
-		cfg.Flush = func(context.Context) error { return nil }
 	}
 	return &Syncer{
 		cfg:       cfg,
@@ -91,6 +88,14 @@ func New(cfg Config) *Syncer {
 }
 
 func (s *Syncer) settings() model.Settings { return s.cfg.Settings.Get() }
+
+// flush saves the history (Config.Flush).
+func (s *Syncer) flush(ctx context.Context) error {
+	if s.cfg.Flush == nil {
+		return ErrNoFlush
+	}
+	return s.cfg.Flush(ctx)
+}
 
 // ---- connection and tokens
 
@@ -428,72 +433,48 @@ type pendingMergeState struct {
 	Applied   string `json:"applied,omitempty"`
 	Account   string `json:"account,omitempty"`
 	Committed bool   `json:"committed,omitempty"`
-	// Added and Raised tell a saved mutation apart when a capture was saved
-	// with it (so the history is neither After nor Applied): the ids it
-	// brought, which no capture makes, and, when it brought none, the copy
-	// counts it raised (markOf).
-	Added  []string    `json:"added,omitempty"`
-	Raised []countMark `json:"raised,omitempty"`
+	// Added tells a saved mutation apart when a capture was saved with it
+	// (so the history is neither After nor Applied): the ids it brought from
+	// the server, which nothing here makes (markOf). A mutation that brought
+	// none leaves no such proof: only the exact fingerprints, or Committed,
+	// tell it then. A count or a field it changed is no proof, as the user
+	// can make the same change.
+	Added []string `json:"added,omitempty"`
 }
 
-// countMark is an item whose copy count a mutation raised, and to what.
-type countMark struct {
-	ID    string `json:"id"`
-	Count int32  `json:"count"`
-}
-
-// maxMarks bounds the marks a record keeps: a few are proof enough.
+// maxMarks bounds the ids a record keeps: a few are proof enough.
 const maxMarks = 32
 
-// markOf is the mark a mutation from before to applied leaves (Added,
-// Raised).
-func markOf(before, applied []model.Item) ([]string, []countMark) {
-	was := make(map[string]model.Item, len(before))
+// markOf is the ids a mutation from before to applied brought (Added).
+func markOf(before, applied []model.Item) []string {
+	was := make(map[string]bool, len(before))
 	for _, it := range before {
-		was[strings.ToLower(it.ID)] = it
+		was[strings.ToLower(it.ID)] = true
 	}
 	var added []string
-	var raised []countMark
 	for _, it := range applied {
-		old, ok := was[strings.ToLower(it.ID)]
-		switch {
-		case !ok && len(added) < maxMarks:
+		if !was[strings.ToLower(it.ID)] && len(added) < maxMarks {
 			added = append(added, it.ID)
-		case ok && it.CopyCount > old.CopyCount && len(raised) < maxMarks:
-			raised = append(raised, countMark{it.ID, it.CopyCount})
 		}
 	}
-	if len(added) > 0 {
-		raised = nil
-	}
-	return added, raised
+	return added
 }
 
-// markSeen says that items hold the mark of p: an item it added, or, when
-// it added none, every count it raised (a later copy only raises one more).
+// markSeen says that items hold an item p brought.
 func (p pendingMergeState) markSeen(items []model.Item) bool {
-	if len(p.Added) == 0 && len(p.Raised) == 0 {
+	if len(p.Added) == 0 {
 		return false
 	}
-	have := make(map[string]model.Item, len(items))
+	have := make(map[string]bool, len(items))
 	for _, it := range items {
-		have[strings.ToLower(it.ID)] = it
+		have[strings.ToLower(it.ID)] = true
 	}
 	for _, id := range p.Added {
-		if _, ok := have[strings.ToLower(id)]; ok {
+		if have[strings.ToLower(id)] {
 			return true
 		}
 	}
-	if len(p.Added) > 0 {
-		return false
-	}
-	for _, m := range p.Raised {
-		it, ok := have[strings.ToLower(m.ID)]
-		if !ok || it.CopyCount < m.Count {
-			return false
-		}
-	}
-	return true
+	return false
 }
 
 func (s *Syncer) pendingMergePath() string {
@@ -874,6 +855,9 @@ func (s *Syncer) downloadAndApplyWorkflow(ctx context.Context, progress func(Pro
 }
 
 func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint string, baseline []model.Item, account string) (DownloadResult, error) {
+	if s.cfg.Flush == nil {
+		return DownloadResult{}, ErrNoFlush
+	}
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	started := s.cfg.Now()
@@ -938,7 +922,6 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	merged := false
 	preMerge, appliedFP := "", ""
 	var added []string
-	var raised []countMark
 	err = s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
 		if s.accountChanged(account) {
 			return nil, ErrSessionChanged
@@ -967,7 +950,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		// history is locked: a later deletion is a local change, not part of
 		// the downloaded baseline.
 		appliedFP = Fingerprint(out)
-		added, raised = markOf(before, out)
+		added = markOf(before, out)
 		fingerprint := appliedFP
 		if merged {
 			fingerprint = pendingFingerprint(preMerge, appliedFP)
@@ -981,7 +964,6 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			Applied:     appliedFP,
 			Account:     account,
 			Added:       added,
-			Raised:      raised,
 		}); err != nil {
 			ap.Rollback()
 			return nil, err
@@ -1046,14 +1028,13 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			Applied:     mutatedFP,
 			Account:     account,
 			Added:       added,
-			Raised:      raised,
 		})
 	}
 	if werr != nil {
 		rctx, rcancel := cleanupContext()
 		rerr := s.rollbackMutation(rctx, before, applied, undo, limitPruned)
 		if rerr == nil {
-			rerr = s.cfg.Flush(rctx)
+			rerr = s.flush(rctx)
 		}
 		rcancel()
 		if rerr == nil && moves != nil {
@@ -1074,7 +1055,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	s.timing("download", "import_snapshot", started, reason)
 
 	report(progress, "persist_local", "保存本地状态", 90)
-	if err := s.cfg.Flush(ctx); err != nil {
+	if err := s.flush(ctx); err != nil {
 		// The record is kept until the undo is saved: an autosave may have
 		// saved the applied history already.
 		// The history was not saved: put the old one, its settings and its
@@ -1097,7 +1078,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		if rerr == nil {
 			// Save the restored history before deleting the payloads it may
 			// still be referenced by (an autosave might have saved it).
-			rerr = s.cfg.Flush(rctx)
+			rerr = s.flush(rctx)
 		}
 		rcancel()
 		if rerr == nil && moves != nil {
@@ -1197,6 +1178,9 @@ func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 }
 
 func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMergeFingerprint string, progress func(Progress), reason, account string) error {
+	if s.cfg.Flush == nil {
+		return ErrNoFlush
+	}
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	started := s.cfg.Now()
@@ -1283,7 +1267,6 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	var before, merged []model.Item
 	var moves *snapshot.AppliedPayloads
 	var added []string
-	var raised []countMark
 	// The merge runs on the history as it is now, and the payloads it keeps
 	// are moved into place under the same lock: a capture made while the
 	// download ran is merged, not overwritten.
@@ -1306,7 +1289,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			return nil, ErrSessionChanged
 		}
 		fp := Fingerprint(applied)
-		added, raised = markOf(before, applied)
+		added = markOf(before, applied)
 		if err := s.writePendingMerge(pendingMergeState{
 			Fingerprint: pendingFingerprint(preMergeFingerprint, fp),
 			Version:     basis.Version,
@@ -1318,7 +1301,6 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			Applied:     fp,
 			Account:     account,
 			Added:       added,
-			Raised:      raised,
 		}); err != nil {
 			ap.Rollback()
 			return nil, err
@@ -1371,14 +1353,13 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			Applied:     appliedFP,
 			Account:     account,
 			Added:       added,
-			Raised:      raised,
 		})
 	}
 	if werr != nil {
 		rctx, rcancel := cleanupContext()
 		rerr := s.rollbackMutation(rctx, before, merged, undo, limitPruned)
 		if rerr == nil {
-			rerr = s.cfg.Flush(rctx)
+			rerr = s.flush(rctx)
 		}
 		rcancel()
 		if rerr == nil && moves != nil {
@@ -1393,7 +1374,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		return werr
 	}
 	report(progress, "persist_local", "persist local", 90)
-	if err := s.cfg.Flush(ctx); err != nil {
+	if err := s.flush(ctx); err != nil {
 		// The record is kept until the undo is saved: an autosave may have
 		// saved the applied history already.
 		// The history was not saved: put the old one, its settings and its
@@ -1414,7 +1395,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		rctx, rcancel := cleanupContext()
 		rerr := s.rollbackMutation(rctx, before, merged, undo, limitPruned)
 		if rerr == nil {
-			rerr = s.cfg.Flush(rctx)
+			rerr = s.flush(rctx)
 		}
 		rcancel()
 		if rerr == nil && moves != nil {
@@ -2099,7 +2080,7 @@ func (s *Syncer) persistCleanup() error {
 	var err error
 	for i := 0; i < 3; i++ {
 		ctx, cancel := cleanupContext()
-		err = s.cfg.Flush(ctx)
+		err = s.flush(ctx)
 		cancel()
 		if err == nil {
 			return nil
