@@ -49,6 +49,8 @@ type pendingDeletes struct {
 	repair map[string]bool       // accounts whose server still has deleted items
 	alias  map[string]string     // an account known by another address since (Adopt)
 	read   bool                  // the file has been read (or there is none)
+	// unsaved says that the last save failed: the file lacks what memory has.
+	unsaved bool
 	// readFile reads the file (os.ReadFile when nil).
 	readFile func(string) ([]byte, error)
 	failed   string // why it could not be read, as last logged
@@ -172,8 +174,16 @@ func (p *pendingDeletes) log(format string, args ...any) {
 }
 
 // save writes the lists to a file beside it and puts that in its place, so
-// that a crash or a full disk leaves the old lists, not a broken file.
+// that a crash or a full disk leaves the old lists, not a broken file. When it
+// fails, what is in memory is ahead of the file (unsaved) until a save goes
+// through.
 func (p *pendingDeletes) save() error {
+	err := p.write()
+	p.unsaved = err != nil
+	return err
+}
+
+func (p *pendingDeletes) write() error {
 	if p.path == "" {
 		return nil
 	}
@@ -305,8 +315,8 @@ func (p *pendingDeletes) MarkRepair(owner string) error {
 	defer p.mu.Unlock()
 	p.load()
 	k := p.account(owner)
-	if p.repair[k] {
-		return nil
+	if p.repair[k] && !p.unsaved {
+		return nil // written down already
 	}
 	p.repair[k] = true
 	return p.save()
@@ -348,7 +358,7 @@ func (p *pendingDeletes) Delivered(owner string, items []model.Item) error {
 		at := now
 		p.lists[k][i].AckedAt, changed = &at, true
 	}
-	if p.prune(k) || changed {
+	if p.prune(k) || changed || p.unsaved {
 		return p.save()
 	}
 	return nil

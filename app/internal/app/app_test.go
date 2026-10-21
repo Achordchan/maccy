@@ -959,6 +959,35 @@ func TestSessionRenameSurvivesSettingsThatCannotBeSaved(t *testing.T) {
 	}
 }
 
+// A repair that could not be written down is written when it is asked for
+// again, and is not reported as written before that.
+func TestRepairThatCouldNotBeWrittenIsWrittenAgain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pending-delete.json")
+	p := &pendingDeletes{path: path}
+	if err := p.Add("a@example.com", nil, item("x", "x")); err != nil {
+		t.Fatal(err)
+	}
+	blocked := path + ".tmp"
+	if err := os.MkdirAll(filepath.Join(blocked, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.MarkRepair("a@example.com"); err == nil {
+		t.Fatal("a failed write must be reported")
+	}
+	if err := p.MarkRepair("a@example.com"); err == nil {
+		t.Fatal("reported as written while the file still lacks it")
+	}
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.MarkRepair("a@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if !(&pendingDeletes{path: path}).NeedsRepair("a@example.com") {
+		t.Fatal("the file lacks the repair")
+	}
+}
+
 func signedInRoot(t *testing.T, tok syncclient.TokenSet) string {
 	t.Helper()
 	root := t.TempDir()
