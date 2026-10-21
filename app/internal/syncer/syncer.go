@@ -27,6 +27,9 @@ type Syncer struct {
 	cfg     Config
 	session *syncclient.Session
 	*rootLocks
+	// changed is told of a change of the history that the sync's own
+	// suppression may have hidden (mutateHistory); NewAuto sets it.
+	changed func()
 }
 
 // rootLocks are the locks of a data folder. gate serializes the operations
@@ -36,6 +39,15 @@ type Syncer struct {
 type rootLocks struct {
 	gate     sync.Mutex
 	workflow sync.Mutex
+	// gen counts the workflows begun (under workflow): a restore's state is
+	// recorded only if no other one began since (PersistAfterDownload).
+	gen uint64
+}
+
+// beginWorkflow takes the workflow lock for a whole operation and counts it.
+func (s *Syncer) beginWorkflow() {
+	s.workflow.Lock()
+	s.gen++
 }
 
 var (
@@ -343,6 +355,13 @@ func (s *Syncer) persistPendingMerge(preMergeFingerprint string, basis ManifestI
 	s.clearPendingMerge()
 }
 
+func basisUpdatedAt(m ManifestInfo) string {
+	if m.UpdatedAt != nil {
+		return model.FormatO(*m.UpdatedAt)
+	}
+	return ""
+}
+
 // pendingFingerprint must differ from the history that is about to be
 // uploaded: an empty remote snapshot plus a capture can make the two equal,
 // and then a failed upload would look synchronized.
@@ -355,8 +374,10 @@ func pendingFingerprint(preMergeFingerprint, current string) string {
 }
 
 // pendingMergeState is a merge that was applied but whose pending upload state
-// was not recorded yet. It is written before the history is flushed, so a
-// crash can resume the upload instead of merging the same items again.
+// was not recorded yet. It is written before the mutation is seen (under the
+// history's lock), so that no save of the history, however it is triggered,
+// can come before it: a crash can resume the upload instead of merging the
+// same items again.
 type pendingMergeState struct {
 	Fingerprint string `json:"fingerprint"`
 	Version     string `json:"version,omitempty"`
@@ -365,8 +386,12 @@ type pendingMergeState struct {
 	Size        *int64 `json:"size,omitempty"`
 	Before      string `json:"before"`
 	After       string `json:"after,omitempty"`
-	Account     string `json:"account,omitempty"`
-	Committed   bool   `json:"committed,omitempty"`
+	// Applied is the history as the mutation made it, before the limits
+	// (After is after them): the record is written before the mutation is
+	// seen, and a save of the history can come between the two.
+	Applied   string `json:"applied,omitempty"`
+	Account   string `json:"account,omitempty"`
+	Committed bool   `json:"committed,omitempty"`
 }
 
 func (s *Syncer) pendingMergePath() string {
@@ -443,7 +468,7 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) {
 	}
 	items := s.cfg.History.Items()
 	current := Fingerprint(items)
-	if !p.Committed && (p.After == "" || current != p.After) {
+	if !p.Committed && (p.After == "" || current != p.After) && (p.Applied == "" || current != p.Applied) {
 		// Only the marker written after a successful Flush, or the exact
 		// merged history, proves the merge reached the disk. A different
 		// fingerprint can be an unflushed capture.
@@ -471,7 +496,7 @@ func nonEmpty(v string) *string {
 // Upload exports the history and sends it, with the blobs the server lacks.
 // It sends nothing when the snapshot is the one the server already has.
 func (s *Syncer) Upload(ctx context.Context, progress func(Progress), reason string) (*syncclient.UploadResult, error) {
-	s.workflow.Lock()
+	s.beginWorkflow()
 	defer s.workflow.Unlock()
 	account := s.currentAccount()
 	if err := s.checkBound(account); err != nil {
@@ -692,14 +717,24 @@ type DownloadResult struct {
 	// PreMergeFingerprint is the history before a download that had to merge
 	// a concurrent capture: it is the baseline of the pending upload.
 	PreMergeFingerprint string
+	// gen is the workflow the download ran in (rootLocks.gen).
+	gen uint64
 }
 
 // DownloadAndApply replaces the history and the portable settings with the
 // server's snapshot, unless the history changed since expectFingerprint, in
 // which case the new captures are merged instead of being lost.
+//
+// Its state is recorded by PersistAfterDownload, which refuses when another
+// sync ran in between; Restore does both in one workflow.
 func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint string, baseline []model.Item) (DownloadResult, error) {
-	s.workflow.Lock()
+	s.beginWorkflow()
 	defer s.workflow.Unlock()
+	return s.downloadAndApplyWorkflow(ctx, progress, reason, expectFingerprint, baseline)
+}
+
+// downloadAndApplyWorkflow is DownloadAndApply in a workflow already begun.
+func (s *Syncer) downloadAndApplyWorkflow(ctx context.Context, progress func(Progress), reason, expectFingerprint string, baseline []model.Item) (DownloadResult, error) {
 	account := s.currentAccount()
 	if err := s.checkBound(account); err != nil {
 		return DownloadResult{}, err
@@ -712,6 +747,7 @@ func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), 
 		return DownloadResult{}, err
 	}
 	_ = s.bindAccount(account)
+	res.gen = s.gen
 	return res, nil
 }
 
@@ -806,15 +842,33 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		// history is locked: a later deletion is a local change, not part of
 		// the downloaded baseline.
 		appliedFP = Fingerprint(out)
+		fingerprint := appliedFP
+		if merged {
+			fingerprint = pendingFingerprint(preMerge, appliedFP)
+		}
+		if err := s.writePendingMerge(pendingMergeState{
+			Fingerprint: fingerprint,
+			Version:     sum,
+			SHA256:      sum,
+			Before:      Fingerprint(before),
+			After:       appliedFP,
+			Applied:     appliedFP,
+			Account:     account,
+		}); err != nil {
+			ap.Rollback()
+			return nil, err
+		}
 		moves, applied = ap, cloneItems(out)
 		return out, nil
 	})
 	if err != nil {
+		s.clearPendingMerge() // nothing was applied
 		if moves != nil {
 			moves.Rollback()
 		}
 		return DownloadResult{}, err
 	}
+	mutatedFP := appliedFP
 	if s.accountChanged(account) {
 		if err := s.discardMutation(ctx, applied, moves, oldSettings); err != nil {
 			return DownloadResult{}, fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
@@ -865,8 +919,10 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		SHA256:      sum,
 		Before:      Fingerprint(before),
 		After:       after,
+		Applied:     mutatedFP,
 		Account:     account,
 	}); werr != nil {
+		s.clearPendingMerge() // the history goes back to before
 		rctx, rcancel := cleanupContext()
 		rerr := s.rollbackMutation(rctx, before, applied, oldSettings, limitPruned)
 		if rerr == nil {
@@ -1001,7 +1057,7 @@ func (s *Syncer) ensureBlob(ctx context.Context, token *string, account string) 
 // fingerprint of the history before the merge; they are remembered so that
 // the upload that follows counts as a local change.
 func (s *Syncer) MergeAndApply(ctx context.Context, basis ManifestInfo, preMergeFingerprint string, progress func(Progress), reason string) error {
-	s.workflow.Lock()
+	s.beginWorkflow()
 	defer s.workflow.Unlock()
 	account := s.currentAccount()
 	if err := s.checkBound(account); err != nil {
@@ -1123,15 +1179,32 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			ap.Rollback()
 			return nil, ErrSessionChanged
 		}
+		fp := Fingerprint(applied)
+		if err := s.writePendingMerge(pendingMergeState{
+			Fingerprint: pendingFingerprint(preMergeFingerprint, fp),
+			Version:     basis.Version,
+			UpdatedAt:   basisUpdatedAt(basis),
+			SHA256:      basis.SnapshotSHA256,
+			Size:        basis.SnapshotSize,
+			Before:      Fingerprint(before),
+			After:       fp,
+			Applied:     fp,
+			Account:     account,
+		}); err != nil {
+			ap.Rollback()
+			return nil, err
+		}
 		moves, merged = ap, cloneItems(applied)
 		return merged, nil
 	})
 	if err != nil {
+		s.clearPendingMerge() // nothing was applied
 		if moves != nil {
 			moves.Rollback()
 		}
 		return err
 	}
+	appliedFP := Fingerprint(merged)
 	if s.accountChanged(account) {
 		if err := s.discardMutation(ctx, merged, moves, localSettings); err != nil {
 			return fmt.Errorf("%w (session cleanup failed: %v)", ErrSessionChanged, err)
@@ -1170,8 +1243,10 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		Size:        basis.SnapshotSize,
 		Before:      Fingerprint(before),
 		After:       after,
+		Applied:     appliedFP,
 		Account:     account,
 	}); werr != nil {
+		s.clearPendingMerge() // the history goes back to before
 		rctx, rcancel := cleanupContext()
 		rerr := s.rollbackMutation(rctx, before, merged, localSettings, limitPruned)
 		if rerr == nil {
@@ -1327,10 +1402,26 @@ func (s *Syncer) suppress(on bool) {
 // mutateHistory applies f to the history with the sync's own change
 // suppressed. Suppression covers only the mutation: a capture made while the
 // result is being saved is the user's, not the sync's, and schedules a sync.
+//
+// A capture can take the history right after the mutation, while the
+// suppression is still on, and its notice is then dropped. So once the
+// suppression is off, a history that is not what the mutation made is told
+// as a change (changed): the capture is not left unsynced.
 func (s *Syncer) mutateHistory(ctx context.Context, f func([]model.Item) ([]model.Item, error)) error {
 	s.suppress(true)
-	defer s.suppress(false)
-	return s.cfg.History.Mutate(ctx, f)
+	applied := ""
+	err := s.cfg.History.Mutate(ctx, func(items []model.Item) ([]model.Item, error) {
+		out, err := f(items)
+		if err == nil {
+			applied = Fingerprint(out)
+		}
+		return out, err
+	})
+	s.suppress(false)
+	if err == nil && s.changed != nil && Fingerprint(s.cfg.History.Items()) != applied {
+		s.changed()
+	}
+	return err
 }
 
 // recoverPayloadDirs finishes or undoes a cache-folder replacement that a

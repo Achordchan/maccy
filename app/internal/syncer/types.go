@@ -25,6 +25,9 @@ var (
 	// running: its requests and its state belong to the old session, so the
 	// workflow stops instead of using the new account's credentials.
 	ErrSessionChanged = errors.New("sync session changed")
+	// ErrRestoreSuperseded says another sync ran between a restore and the
+	// recording of its state: that sync's state is newer, and is kept.
+	ErrRestoreSuperseded = errors.New("sync ran after the restore")
 )
 
 // Direction is what a sync has to do.

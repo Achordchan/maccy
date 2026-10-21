@@ -2903,3 +2903,105 @@ func TestSyncersOfAFolderShareTheirLocks(t *testing.T) {
 		t.Fatal("the gate is not shared")
 	}
 }
+
+// journalCheckingHistory notes whether the pending-merge record was on disk
+// when a mutation was about to be published.
+type journalCheckingHistory struct {
+	unitHistory
+	journal     func() string
+	beforeShown []bool
+}
+
+func (h *journalCheckingHistory) Mutate(ctx context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	next, err := f(append([]model.Item(nil), h.items...))
+	if err != nil {
+		return err
+	}
+	_, serr := os.Stat(h.journal())
+	h.beforeShown = append(h.beforeShown, serr == nil)
+	h.items = append([]model.Item(nil), next...)
+	return nil
+}
+
+// The pending-merge record is on disk before the downloaded or merged history
+// can be seen (and saved by anyone): a crash after such a save resumes the
+// upload instead of merging the same items again.
+func TestPendingRecordIsWrittenBeforeTheHistoryIsSeen(t *testing.T) {
+	remote := []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")}
+	for _, merge := range []bool{false, true} {
+		srv := serveSnapshot(t, snapshotFile(t, remote))
+		h := &journalCheckingHistory{unitHistory: unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}}}
+		syn := unitSyncer(t, srv, signedIn(model.DefaultSettings()), h)
+		h.journal = syn.pendingMergePath
+		var err error
+		if merge {
+			err = syn.MergeAndApply(context.Background(), ManifestInfo{}, "", nil, "test")
+		} else {
+			_, err = syn.DownloadAndApply(context.Background(), nil, "test", "", nil)
+		}
+		srv.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h.beforeShown) != 1 || !h.beforeShown[0] {
+			t.Fatalf("merge=%v: the record was written after the history was seen", merge)
+		}
+	}
+}
+
+// A capture that takes the history right after the sync's change, while its
+// suppression is still on, is told as a change once it is off.
+func TestCaptureHiddenBySuppressionIsTold(t *testing.T) {
+	remote := []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")}
+	for _, capture := range []bool{false, true} {
+		srv := serveSnapshot(t, snapshotFile(t, remote))
+		var h History = &unitHistory{}
+		if capture {
+			h = &captureAfterMutationHistory{extra: textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "captured")}
+		}
+		syn := unitSyncer(t, srv, signedIn(model.DefaultSettings()), h)
+		told := 0
+		syn.changed = func() { told++ }
+		_, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil)
+		srv.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := map[bool]int{false: 0, true: 1}[capture]; told != want {
+			t.Fatalf("capture=%v: told %d times, want %d", capture, told, want)
+		}
+	}
+	a := NewAuto(New(Config{Layout: paths.Layout{Root: t.TempDir()}}), nil)
+	if a == nil || New(Config{Layout: paths.Layout{Root: t.TempDir()}}).changed != nil {
+		t.Fatal("only NewAuto tells the changes")
+	}
+}
+
+// A restore records its state only when no other sync ran since its
+// download; Restore does both in one workflow.
+func TestRestoreStateIsNotRecordedOverANewerSync(t *testing.T) {
+	remote := []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")}
+	srv := serveSnapshot(t, snapshotFile(t, remote))
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, s, &unitHistory{})
+	dr, err := syn.DownloadAndApply(context.Background(), nil, "test", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syn.beginWorkflow() // an automatic sync in between
+	syn.workflow.Unlock()
+	if err := syn.PersistAfterDownload(context.Background(), dr); !errors.Is(err, ErrRestoreSuperseded) {
+		t.Fatalf("recorded over a newer sync: %v", err)
+	}
+	if s.SyncLastLocalFingerprint != nil {
+		t.Fatal("the state was written")
+	}
+	dr, err = syn.Restore(context.Background(), nil, "test", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.Str(s.SyncLastLocalFingerprint) != dr.Fingerprint {
+		t.Fatalf("Restore recorded %q, want %q", model.Str(s.SyncLastLocalFingerprint), dr.Fingerprint)
+	}
+}

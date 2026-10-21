@@ -29,7 +29,7 @@ func (s *Syncer) CanAutoSync() bool {
 // state. It is RunAutoSyncAsync without the window, and also what "sync
 // now" does.
 func (s *Syncer) Run(ctx context.Context, progress func(Progress), reason string) (RunResult, error) {
-	s.workflow.Lock()
+	s.beginWorkflow()
 	defer s.workflow.Unlock()
 	return s.run(ctx, progress, reason)
 }
@@ -145,7 +145,7 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 // UploadAfterLocalMutation uploads right after the user changed the history
 // (UploadCloudAfterLocalMutationAsync), without looking at the server first.
 func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.UploadResult, error) {
-	s.workflow.Lock()
+	s.beginWorkflow()
 	defer s.workflow.Unlock()
 	account := s.currentAccount()
 	if account == "" {
@@ -241,8 +241,27 @@ func uploadIsInManifest(up *syncclient.UploadResult, m ManifestInfo) bool {
 // recorded next to the restored history would make the next sync think the
 // two are the same.
 func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) error {
-	s.workflow.Lock()
+	s.workflow.Lock() // not a workflow of its own: the restore's last step
 	defer s.workflow.Unlock()
+	if dr.gen != s.gen {
+		return ErrRestoreSuperseded
+	}
+	return s.persistAfterDownload(ctx, dr)
+}
+
+// Restore is a manual restore: the download and the recording of its state,
+// in one workflow, so that no sync comes between them.
+func (s *Syncer) Restore(ctx context.Context, progress func(Progress), reason, expectFingerprint string, baseline []model.Item) (DownloadResult, error) {
+	s.beginWorkflow()
+	defer s.workflow.Unlock()
+	dr, err := s.downloadAndApplyWorkflow(ctx, progress, reason, expectFingerprint, baseline)
+	if err != nil {
+		return DownloadResult{}, err
+	}
+	return dr, s.persistAfterDownload(ctx, dr)
+}
+
+func (s *Syncer) persistAfterDownload(ctx context.Context, dr DownloadResult) error {
 	if err := s.checkBound(dr.Account); err != nil {
 		return err
 	}

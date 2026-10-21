@@ -43,9 +43,10 @@ type Auto struct {
 	timer *time.Timer
 }
 
-// NewAuto returns an Auto that runs s.
+// NewAuto returns an Auto that runs s. A change of the history that the
+// sync's suppression hid is told to it (Syncer.mutateHistory).
 func NewAuto(s *Syncer, done func(reason string, manual bool, err error)) *Auto {
-	return &Auto{
+	a := &Auto{
 		CanSync: s.CanAutoSync,
 		Run: func(ctx context.Context, reason string, manual bool) error {
 			_, err := s.Run(ctx, nil, reason)
@@ -53,6 +54,8 @@ func NewAuto(s *Syncer, done func(reason string, manual bool, err error)) *Auto 
 		},
 		Done: done,
 	}
+	s.changed = func() { a.OnHistoryChanged(a.baseContext()) }
+	return a
 }
 
 func (a *Auto) debounce() time.Duration {
