@@ -1,16 +1,22 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -985,6 +991,89 @@ func TestRepairThatCouldNotBeWrittenIsWrittenAgain(t *testing.T) {
 	}
 	if !(&pendingDeletes{path: path}).NeedsRepair("a@example.com") {
 		t.Fatal("the file lacks the repair")
+	}
+}
+
+// A server whose manifest gives no time for its snapshot: a deletion still
+// merges in what another device uploaded since, instead of uploading over it.
+func TestDeletionMergesASnapshotWithoutATime(t *testing.T) {
+	srv := nastest.Start(t)
+	ctx := context.Background()
+	tokA := srv.Subscribe(ctx, "owner@example.com", "password1")
+	login := func() syncclient.TokenSet {
+		tok, err := syncclient.New(srv.URL).Login(ctx, "owner@example.com", "password1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	target, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ModifyResponse = func(r *http.Response) error {
+		if r.Request.URL.Path != "/sync/manifest" || r.StatusCode != http.StatusOK {
+			return nil
+		}
+		b, err := io.ReadAll(r.Body)
+		r.Body.Close()
+		if err != nil {
+			return err
+		}
+		var doc map[string]any
+		if json.Unmarshal(b, &doc) == nil {
+			if latest, ok := doc["latest"].(map[string]any); ok {
+				delete(latest, "updatedAt")
+				b, _ = json.Marshal(doc)
+			}
+		}
+		r.Body = io.NopCloser(bytes.NewReader(b))
+		r.ContentLength = int64(len(b))
+		r.Header.Set("Content-Length", strconv.Itoa(len(b)))
+		return nil
+	}
+	timeless := httptest.NewServer(proxy)
+	defer timeless.Close()
+	remote := syncclient.New(srv.URL)
+	manifest := func() string { m, _ := remote.GetManifestJSON(ctx, tokA.AccessToken); return m }
+
+	rootA := signedInRoot(t, tokA)
+	a := newApp(t, rootA, &fakeClip{}, srv.URL)
+	a.Start()
+	waitFor(t, "A's first sync", func() bool { return strings.HasPrefix(a.SyncStatus(), "已同步") })
+	a.History.Add(item("x", "x"))
+	a.History.Add(item("y", "y"))
+	waitFor(t, "A synced", func() bool {
+		return model.Str(a.Settings.Get().SyncLastLocalFingerprint) == a.Syncer.Fingerprint() && manifest() != ""
+	})
+	a.Stop()
+
+	clipB := &fakeClip{}
+	b := newApp(t, signedInRoot(t, login()), clipB, srv.URL)
+	b.Start()
+	waitFor(t, "B downloaded", func() bool { return b.History.Len() == 2 })
+	m1 := manifest()
+	time.Sleep(40 * time.Millisecond)
+	clipB.copy("from B")
+	waitFor(t, "B uploaded", func() bool { return b.History.Len() == 3 && manifest() != m1 })
+	b.Stop()
+
+	a2 := newApp(t, rootA, &fakeClip{}, timeless.URL)
+	if info := syncer.ParseManifestInfo(func() string { m, _ := syncclient.New(timeless.URL).GetManifestJSON(ctx, tokA.AccessToken); return m }()); info.UpdatedAt != nil || info.Version == "" {
+		t.Fatalf("the manifest seen: %+v", info)
+	}
+	a2.Delete("x")
+	waitFor(t, "the deletion went up", func() bool { return !a2.pending.Owed(a2.owner()) })
+	if !hasText(a2, "from B") || hasText(a2, "x") {
+		t.Fatalf("A after the deletion: %v", texts(a2))
+	}
+	c := newApp(t, signedInRoot(t, login()), &fakeClip{}, srv.URL)
+	c.Start()
+	defer c.Stop()
+	waitFor(t, "C downloaded", func() bool { return c.History.Len() >= 2 })
+	if got := texts(c); len(got) != 2 || !hasText(c, "from B") || !hasText(c, "y") {
+		t.Fatalf("the server has %v", got)
 	}
 }
 

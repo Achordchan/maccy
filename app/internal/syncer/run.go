@@ -80,7 +80,7 @@ func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.Uplo
 	if err != nil {
 		return nil, err
 	}
-	if manifest.UpdatedAt != nil && !s.remoteUnchanged(manifest) {
+	if remoteExists(manifest) && !s.remoteUnchanged(manifest) {
 		if err := s.MergeAndApply(ctx, manifest, s.Fingerprint(), nil, "local_mutation"); err != nil {
 			return nil, err
 		}
@@ -91,6 +91,14 @@ func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.Uplo
 	}
 	s.persistAfterUpload(ctx, up, &manifest)
 	return up, nil
+}
+
+// remoteExists says that the server has a snapshot: the manifest names one,
+// by its time, its version or its hash. Decide goes by the time alone, as the
+// C# client does; a snapshot whose time cannot be read is still one that an
+// upload would replace.
+func remoteExists(m ManifestInfo) bool {
+	return m.UpdatedAt != nil || strings.TrimSpace(m.Version) != "" || strings.TrimSpace(m.SnapshotSHA256) != ""
 }
 
 // remoteUnchanged says that the server's snapshot is the one the last sync

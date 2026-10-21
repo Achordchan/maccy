@@ -53,13 +53,21 @@ const (
 	maxWindow = 980
 )
 
+// fileRowH is the height of a line of the list of files, fileRows how many
+// lines show before it scrolls, fileGap the line under the list.
+const fileRowH, fileRows, fileGap = 18, 6, 17
+
 // Size is the size of the window for an item: fixed for text and files, and
 // following the picture for an image, which is shown at least as large as a
 // short side that fits the smallest window, and no larger than the largest.
 func Size(it model.Item, pw, ph int) (w, h int) {
 	switch it.Kind {
 	case model.KindFileList:
-		return FileWidth, FileHeight
+		n := min(len(Files(it)), fileRows)
+		if n == 0 {
+			return FileWidth, FileHeight
+		}
+		return FileWidth, FileHeight + n*fileRowH + fileGap
 	case model.KindImage:
 		if pw <= 0 || ph <= 0 {
 			return minWindow, minWindow
@@ -227,10 +235,12 @@ func (m *Model) View(c *ui.Context) {
 	}
 	m.wasOver = m.over
 	root.Children(func() {
-		isFile := it.Kind == model.KindFileList
-		if !isFile {
+		files := Files(it)
+		if it.Kind != model.KindFileList || len(files) > 0 {
 			ui.Box(c).Grow(1).MinHeight(0).Children(func() {
 				switch it.Kind {
+				case model.KindFileList:
+					m.fileList(c, p, files)
 				case model.KindImage:
 					if m.Bitmap != nil {
 						ui.Image(c, m.Bitmap).Fill().Fit(ui.Contain)
@@ -271,6 +281,32 @@ func (m *Model) View(c *ui.Context) {
 			ui.Text(c, m.MetaLine).FontSize(11).TextColor(p.Muted).Wrap()
 			ui.Text(c, m.Times()).FontSize(11).TextColor(p.Muted2).Wrap()
 			ui.Text(c, m.NoteLine()).FontSize(12).TextColor(p.Text).Wrap()
+		})
+	})
+}
+
+// Files are the files of a file item, as listed in the window: the row of the
+// main window names only the first.
+func Files(it model.Item) []string {
+	var out []string
+	for _, p := range it.FilePaths {
+		if strings.TrimSpace(p) != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// fileList is the list of the files: the name, then the folder it is in.
+func (m *Model) fileList(c *ui.Context, p panel.Palette, files []string) {
+	ui.Scroll(c).Fill().Children(func() {
+		ui.Column(c).FillWidth().Children(func() {
+			for _, f := range files {
+				ui.Row(c).FillWidth().Height(fileRowH).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, filepath.Base(f)).FontSize(12).TextColor(p.Text).SingleLine().Ellipsis("…").MinWidth(0)
+					ui.Text(c, filepath.Dir(f)).FontSize(11).TextColor(p.Muted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+				})
+			}
 		})
 	})
 }

@@ -210,3 +210,32 @@ func TestTextOfAHugeEntryIsCut(t *testing.T) {
 		t.Fatal("a short text was changed")
 	}
 }
+
+// The window of a file item lists every file, which the row names only the
+// first of; a long list scrolls in a window of a set height.
+func TestFilesAreListed(t *testing.T) {
+	m := &Model{Item: item(model.KindFileList)}
+	m.Item.FilePaths = []string{"/docs/a report.pdf", "", "/docs/b.xlsx", "/tmp/c.zip"}
+	m.MetaLine = m.Meta()
+	w, h := Size(m.Item, 0, 0)
+	if w != FileWidth || h != FileHeight+3*fileRowH+fileGap {
+		t.Fatalf("size %dx%d", w, h)
+	}
+	tt := ui.NewTester(m.View, w, h)
+	for _, s := range []string{"a report.pdf", "b.xlsx", "c.zip", "/docs", "复制次数：3"} {
+		if !tt.HasText(s) {
+			t.Fatalf("missing %q in %q", s, tt.Texts())
+		}
+	}
+	if b, ok := tt.Find("c.zip"); !ok || b.H <= 0 || b.Y+b.H > float32(h) {
+		t.Fatalf("the last file is not in view: %+v %v", b, ok)
+	}
+
+	many := item(model.KindFileList)
+	for i := range 20 {
+		many.FilePaths = append(many.FilePaths, filepath.Join("/docs", "file"+string(rune('a'+i))+".txt"))
+	}
+	if _, h := Size(many, 0, 0); h != FileHeight+fileRows*fileRowH+fileGap {
+		t.Fatalf("a long list: height %d", h)
+	}
+}
