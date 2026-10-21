@@ -395,7 +395,7 @@ func TestSessionRefreshStoresAndSignsOut(t *testing.T) {
 	now := time.UnixMilli(1_000_000)
 	sess := &Session{
 		Client:   New(srv.URL),
-		Settings: Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		Settings: Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 		Now:      func() time.Time { return now },
 	}
 

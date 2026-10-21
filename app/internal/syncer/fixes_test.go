@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -135,7 +136,7 @@ func unitSyncer(t *testing.T, srv *httptest.Server, s *model.Settings, h History
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { return *s },
-			Update: func(f func(*model.Settings)) { f(s) },
+			Update: func(f func(*model.Settings)) error { f(s); return nil },
 		},
 		History: h,
 		Client:  syncclient.New(srv.URL),
@@ -279,7 +280,7 @@ func TestMergeStopsWhenTheBackupBlobCannotBeStored(t *testing.T) {
 		Layout: l,
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { return *s },
-			Update: func(f func(*model.Settings)) { f(s) },
+			Update: func(f func(*model.Settings)) error { f(s); return nil },
 		},
 		History: h,
 		Client:  syncclient.New("http://127.0.0.1:1"),
@@ -828,7 +829,7 @@ func TestUploadStopsWhenTheSessionChanges(t *testing.T) {
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
-			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+			Update: func(f func(*model.Settings)) error { mu.Lock(); defer mu.Unlock(); f(&s); return nil },
 		},
 		History: &unitHistory{items: []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "private")}},
 		Client:  syncclient.New(srv.URL),
@@ -887,7 +888,7 @@ func TestDownloadStopsWhenTheSessionChanges(t *testing.T) {
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
-			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+			Update: func(f func(*model.Settings)) error { mu.Lock(); defer mu.Unlock(); f(&s); return nil },
 		},
 		History: h,
 		Client:  syncclient.New(srv.URL),
@@ -923,7 +924,7 @@ func TestTokenForRejectsAnotherAccountsToken(t *testing.T) {
 	syn := New(Config{
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { return s },
-			Update: func(f func(*model.Settings)) { f(&s) },
+			Update: func(f func(*model.Settings)) error { f(&s); return nil },
 		},
 	})
 	if _, err := syn.tokenFor("account-a"); !errors.Is(err, ErrSessionChanged) {
@@ -967,7 +968,7 @@ func TestDownloadStopsWhenSignedOut(t *testing.T) {
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
-			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+			Update: func(f func(*model.Settings)) error { mu.Lock(); defer mu.Unlock(); f(&s); return nil },
 		},
 		History: h,
 		Client:  syncclient.New(srv.URL),
@@ -1129,7 +1130,7 @@ func TestDownloadKeepsPayloadsUntilFlushed(t *testing.T) {
 	s := signedIn(model.DefaultSettings())
 	syn := New(Config{
 		Layout:   l,
-		Settings: syncclient.Settings{Get: func() model.Settings { return *s }, Update: func(f func(*model.Settings)) { f(s) }},
+		Settings: syncclient.Settings{Get: func() model.Settings { return *s }, Update: func(f func(*model.Settings)) error { f(s); return nil }},
 		History:  h,
 		Client:   syncclient.New(srv.URL),
 		BaseURL:  srv.URL,
@@ -1288,7 +1289,7 @@ func TestRemoveFilesOnlyGetsKlipPayloads(t *testing.T) {
 	s := signedIn(model.DefaultSettings())
 	syn := New(Config{
 		Layout:   l,
-		Settings: syncclient.Settings{Get: func() model.Settings { return *s }, Update: func(f func(*model.Settings)) { f(s) }},
+		Settings: syncclient.Settings{Get: func() model.Settings { return *s }, Update: func(f func(*model.Settings)) error { f(s); return nil }},
 		History:  h,
 		Client:   syncclient.New(srv.URL),
 		BaseURL:  srv.URL,
@@ -1357,7 +1358,7 @@ func TestDownloadDiscardsItemsWhenTheSessionChangesAtCommit(t *testing.T) {
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
-			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+			Update: func(f func(*model.Settings)) error { mu.Lock(); defer mu.Unlock(); f(&s); return nil },
 		},
 		History: h,
 		Client:  syncclient.New(srv.URL),
@@ -1400,7 +1401,7 @@ func TestSyncRefusesAnotherAccountsState(t *testing.T) {
 	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
 	syn := New(Config{
 		Layout:   l,
-		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 		History:  &unitHistory{items: []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "account a")}},
 		Client:   syncclient.New(srv.URL),
 		BaseURL:  srv.URL,
@@ -1452,7 +1453,7 @@ func TestDownloadDiscardsItemsWhenTheSessionChangesDuringFlush(t *testing.T) {
 		Layout: l,
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
-			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+			Update: func(f func(*model.Settings)) error { mu.Lock(); defer mu.Unlock(); f(&s); return nil },
 		},
 		History: h,
 		Client:  syncclient.New(srv.URL),
@@ -1520,7 +1521,7 @@ func TestUploadStopsWhenTheSessionChangesWhileReadingHistory(t *testing.T) {
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
-			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+			Update: func(f func(*model.Settings)) error { mu.Lock(); defer mu.Unlock(); f(&s); return nil },
 		},
 		History: h,
 		Client:  syncclient.New(srv.URL),
@@ -1574,7 +1575,7 @@ func TestFailedFirstSyncStillBindsTheAccount(t *testing.T) {
 	s.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
 	syn := New(Config{
 		Layout:   paths.Layout{Root: t.TempDir()},
-		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 		History:  &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}},
 		Client:   syncclient.New(srv.URL),
 		BaseURL:  srv.URL,
@@ -1620,7 +1621,7 @@ func TestRefreshOnlySessionBindsTheAccount(t *testing.T) {
 	s.AuthExpiresAtUnixMs = 0
 	syn := New(Config{
 		Layout:   paths.Layout{Root: t.TempDir()},
-		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 		History:  &unitHistory{},
 		Client:   syncclient.New(srv.URL),
 		BaseURL:  srv.URL,
@@ -1781,7 +1782,7 @@ func TestSessionCleanupSurvivesCancelledFlush(t *testing.T) {
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
-			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+			Update: func(f func(*model.Settings)) error { mu.Lock(); defer mu.Unlock(); f(&s); return nil },
 		},
 		History: h,
 		Client:  syncclient.New(srv.URL),
@@ -1846,7 +1847,7 @@ func TestSessionCleanupIsSavedAfterACancelledFlush(t *testing.T) {
 		Layout: paths.Layout{Root: t.TempDir()},
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
-			Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+			Update: func(f func(*model.Settings)) error { mu.Lock(); defer mu.Unlock(); f(&s); return nil },
 		},
 		History: h,
 		Client:  syncclient.New(srv.URL),
@@ -2373,7 +2374,7 @@ func TestPersistSyncStateChecksTheAccountInsideTheUpdate(t *testing.T) {
 	s := model.DefaultSettings()
 	s.AuthAccessToken = model.Ptr(testJWT("account-a"))
 	syn := New(Config{
-		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 	})
 	syn.PersistSyncState("fp", ManifestInfo{Version: "v1"}, "account-b")
 	if s.SyncLastLocalFingerprint != nil || s.SyncLastRemoteVersion != nil {
@@ -2534,7 +2535,7 @@ func TestRunRecoversAPendingMergeBeforeDeciding(t *testing.T) {
 func TestPersistSyncStateRejectsASignedOutSession(t *testing.T) {
 	s := model.DefaultSettings()
 	syn := New(Config{
-		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		Settings: syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 	})
 	syn.PersistSyncState("fp", ManifestInfo{Version: "v1"}, "account-a")
 	if s.SyncLastLocalFingerprint != nil {
@@ -2766,7 +2767,7 @@ func TestDownloadFailsWhenThePendingRecordCannotBeWritten(t *testing.T) {
 	h := &unitHistory{}
 	syn := New(Config{
 		Layout:   l,
-		Settings: syncclient.Settings{Get: func() model.Settings { return *signedIn(model.DefaultSettings()) }, Update: func(f func(*model.Settings)) {}},
+		Settings: syncclient.Settings{Get: func() model.Settings { return *signedIn(model.DefaultSettings()) }, Update: func(f func(*model.Settings)) error { ; return nil }},
 		History:  h,
 		Client:   syncclient.New(srv.URL),
 		BaseURL:  srv.URL,
@@ -2787,7 +2788,7 @@ func TestRollbackSuppressesTheHistoryNotification(t *testing.T) {
 	h := &unitHistory{}
 	syn := New(Config{
 		Layout:           paths.Layout{Root: t.TempDir()},
-		Settings:         syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		Settings:         syncclient.Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 		History:          h,
 		SuppressAutoSync: func(on bool) { events = append(events, on) },
 	})
@@ -3003,5 +3004,138 @@ func TestRestoreStateIsNotRecordedOverANewerSync(t *testing.T) {
 	}
 	if model.Str(s.SyncLastLocalFingerprint) != dr.Fingerprint {
 		t.Fatalf("Restore recorded %q, want %q", model.Str(s.SyncLastLocalFingerprint), dr.Fingerprint)
+	}
+}
+
+// A sync that starts with only a refresh token learns its account from the
+// token its manifest was asked with: a sign-in to another account while that
+// request is out stops it, instead of using A's manifest with B's tokens.
+func TestRunKeepsTheAccountOfItsManifest(t *testing.T) {
+	var mu sync.Mutex
+	st := model.DefaultSettings()
+	st.AuthRefreshToken = model.Ptr("refresh-a")
+	others := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/refresh":
+			fmt.Fprintf(w, `{"accessToken":%q,"refreshToken":"refresh-a2","accessTokenExpiresAt":%q}`,
+				testJWT("account-a"), time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+		case "/sync/manifest":
+			mu.Lock() // B signs in while A's manifest is on its way
+			st.AuthAccessToken, st.AuthRefreshToken = model.Ptr(testJWT("account-b")), model.Ptr("refresh-b")
+			st.AuthExpiresAtUnixMs = time.Now().Add(time.Hour).UnixMilli()
+			mu.Unlock()
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			mu.Lock()
+			others++
+			mu.Unlock()
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	h := &unitHistory{items: []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "local")}}
+	syn := New(Config{
+		Layout: paths.Layout{Root: t.TempDir()},
+		Settings: syncclient.Settings{
+			Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return st },
+			Update: func(f func(*model.Settings)) error { mu.Lock(); f(&st); mu.Unlock(); return nil },
+		},
+		History: h, Client: syncclient.New(srv.URL), BaseURL: srv.URL,
+	})
+	if _, err := syn.Run(context.Background(), nil, "test"); !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if others != 0 {
+		t.Fatalf("%d requests after A's manifest, with B's tokens", others)
+	}
+}
+
+// failingSettings are settings whose saves fail (a full disk): the change is
+// made in memory, and Update says it was not saved.
+func failingSettings(s *model.Settings, fail *bool) syncclient.Settings {
+	return syncclient.Settings{
+		Get: func() model.Settings { return *s },
+		Update: func(f func(*model.Settings)) error {
+			f(s)
+			if *fail {
+				return errors.New("disk full")
+			}
+			return nil
+		},
+	}
+}
+
+// The record of a merge stays until its state is saved: a merge whose state
+// cannot be saved stops before the upload and keeps it, and the next run
+// recovers from it instead of merging again.
+func TestPendingRecordStaysUntilTheStateIsSaved(t *testing.T) {
+	remote := []model.Item{textItemAt("0f8fad5b-d9cb-469f-a165-70867728950e", "from the server")}
+	srv := serveSnapshot(t, snapshotFile(t, remote))
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	fail := true
+	h := &unitHistory{items: []model.Item{textItemAt("7c9e6679-7425-40de-944b-e07fc1f90ae7", "local")}}
+	syn := unitSyncer(t, srv, s, h)
+	syn.cfg.Settings = failingSettings(s, &fail)
+	syn.session.Settings = syn.cfg.Settings
+	if err := syn.MergeAndApply(context.Background(), ManifestInfo{Version: "v1"}, "pre", nil, "test"); err == nil {
+		t.Fatal("a merge whose state was not saved went on")
+	}
+	if _, err := os.Stat(syn.pendingMergePath()); err != nil {
+		t.Fatalf("the record went with the state unsaved: %v", err)
+	}
+	if err := syn.recoverPendingMerge(context.Background(), ""); err == nil {
+		t.Fatal("recovered without saving the state")
+	}
+	if _, err := os.Stat(syn.pendingMergePath()); err != nil {
+		t.Fatalf("the record went with the state unsaved: %v", err)
+	}
+	fail = false
+	if err := syn.recoverPendingMerge(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(syn.pendingMergePath()); !os.IsNotExist(err) {
+		t.Fatalf("the record outlived its saved state: %v", err)
+	}
+	if model.Str(s.SyncLastLocalFingerprint) != "pre" {
+		t.Fatalf("recovered state %q: not the pending upload", model.Str(s.SyncLastLocalFingerprint))
+	}
+}
+
+// A record of an earlier download goes once an upload's state is saved: the
+// server has the newer history, and recovering the record would put the old
+// state back over it.
+func TestUploadRetiresAnOlderPendingRecord(t *testing.T) {
+	srv := serveSnapshot(t, nil) // no manifest: the upload's own answer is the state
+	defer srv.Close()
+	s := signedIn(model.DefaultSettings())
+	fail := true
+	syn := unitSyncer(t, srv, s, &unitHistory{})
+	syn.cfg.Settings = failingSettings(s, &fail)
+	if err := syn.writePendingMerge(pendingMergeState{Fingerprint: "old", Version: "v1", Committed: true}); err != nil {
+		t.Fatal(err)
+	}
+	up := &syncclient.UploadResult{Version: "v2", SHA256: "abc"}
+	if err := syn.persistAfterUpload(context.Background(), up, nil, "new", ""); err == nil {
+		t.Fatal("a state that was not saved was reported")
+	}
+	if _, err := os.Stat(syn.pendingMergePath()); err != nil {
+		t.Fatal("the record went before the upload's state was saved")
+	}
+	fail = false
+	if err := syn.persistAfterUpload(context.Background(), up, nil, "new", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(syn.pendingMergePath()); !os.IsNotExist(err) {
+		t.Fatalf("the older record outlived the upload: %v", err)
+	}
+	if err := syn.recoverPendingMerge(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if model.Str(s.SyncLastRemoteVersion) != "v2" || model.Str(s.SyncLastLocalFingerprint) != "new" {
+		t.Fatalf("state %q %q", model.Str(s.SyncLastRemoteVersion), model.Str(s.SyncLastLocalFingerprint))
 	}
 }

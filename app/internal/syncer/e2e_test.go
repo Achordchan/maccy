@@ -91,7 +91,7 @@ func newDevice(t *testing.T, srv *nastest.Server, name string, tok syncclient.To
 		Layout: d.layout,
 		Settings: syncclient.Settings{
 			Get:    d.settings,
-			Update: func(f func(*model.Settings)) { d.mu.Lock(); f(&d.st); d.mu.Unlock() },
+			Update: func(f func(*model.Settings)) error { d.mu.Lock(); f(&d.st); d.mu.Unlock(); return nil },
 		},
 		History:          d.hist,
 		Flush:            func(context.Context) error { d.mu.Lock(); d.flushes++; d.mu.Unlock(); return nil },

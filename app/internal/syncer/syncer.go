@@ -252,21 +252,30 @@ func (s *Syncer) ManifestJSON(ctx context.Context) (string, error) {
 }
 
 func (s *Syncer) manifestJSON(ctx context.Context) (string, error) {
+	out, _, err := s.manifestJSONOf(ctx)
+	return out, err
+}
+
+// manifestJSONOf is manifestJSON with the account of the token the manifest
+// was asked with ("" for an opaque token): the manifest is that account's,
+// whoever is signed in by the time it arrives.
+func (s *Syncer) manifestJSONOf(ctx context.Context) (string, string, error) {
 	started := s.cfg.Now()
 	token, err := s.connection(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	var out string
+	var out, account string
 	_, err = s.refreshAndRetry(ctx, token, syncclient.AccountID(token), func(t string) error {
 		var e error
 		out, e = s.cfg.Client.GetManifestJSON(ctx, t)
+		account = syncclient.AccountID(t)
 		return e
 	})
 	if err == nil {
 		s.timing("manifest", "fetch", started, "ok")
 	}
-	return out, err
+	return out, account, err
 }
 
 // ManifestInfo fetches and parses the manifest. A server without a snapshot
@@ -293,12 +302,20 @@ func (s *Syncer) manifestInfoLocked(ctx context.Context) (ManifestInfo, error) {
 // upload ("remote_missing"). The C# client fails here with a 404 instead, so
 // a new account's first sync never uploads by itself; that is the one
 // difference of Run from RunAutoSyncAsync.
-func (s *Syncer) remoteManifest(ctx context.Context) (ManifestInfo, error) {
-	m, err := s.ManifestInfo(ctx)
+//
+// It also returns the account the manifest is of (manifestJSONOf).
+func (s *Syncer) remoteManifest(ctx context.Context) (ManifestInfo, string, error) {
+	s.gate.Lock()
+	text, account, err := s.manifestJSONOf(ctx)
+	s.gate.Unlock()
 	if syncclient.IsStatus(err, 404) {
-		return ManifestInfo{}, nil
+		return ManifestInfo{}, account, nil
 	}
-	return m, err
+	if err != nil {
+		return ManifestInfo{}, account, err
+	}
+	m, err := ParseManifestStrict(text)
+	return m, account, err
 }
 
 // ---- state
@@ -326,8 +343,11 @@ func (s *Syncer) DecideItems(manifest ManifestInfo, items []model.Item) Decision
 
 // PersistSyncState remembers that this history and that snapshot were the
 // same at this moment.
-func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo, account string) {
-	s.cfg.Settings.Update(func(st *model.Settings) {
+//
+// Its error says the state was not saved: a record that waits for it (the
+// pending merge) must then be kept.
+func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo, account string) error {
+	return s.cfg.Settings.Update(func(st *model.Settings) {
 		if account != "" {
 			// Check the account inside the same update that writes the state:
 			// a check before the callback cannot stop a sign-in or sign-out
@@ -350,9 +370,15 @@ func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo, accou
 
 // persistPendingMerge records the state before a merge, so that the upload
 // that follows is seen as a local change.
-func (s *Syncer) persistPendingMerge(preMergeFingerprint string, basis ManifestInfo, account string) {
-	s.PersistSyncState(pendingFingerprint(preMergeFingerprint, s.Fingerprint()), basis, account)
+//
+// The record of the merge (pending-merge.json) goes only once the state is
+// saved; until then it is what a restart recovers from.
+func (s *Syncer) persistPendingMerge(preMergeFingerprint string, basis ManifestInfo, account string) error {
+	if err := s.PersistSyncState(pendingFingerprint(preMergeFingerprint, s.Fingerprint()), basis, account); err != nil {
+		return err
+	}
 	s.clearPendingMerge()
+	return nil
 }
 
 func basisUpdatedAt(m ManifestInfo) string {
@@ -457,14 +483,18 @@ func (s *Syncer) readPendingMerge() (pendingMergeState, bool) {
 // recoverPendingMerge finishes the state of a merge whose history was saved
 // before the pending state: if the merged items are in the history, record the
 // pending upload (so the next decision uploads instead of merging again).
-func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) {
+//
+// The record goes once its state is saved; when the settings cannot be saved
+// it stays, and the error stops the run: deciding on the old state would
+// merge the same items again.
+func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error {
 	p, ok := s.readPendingMerge()
 	if !ok {
-		return
+		return nil
 	}
-	defer s.clearPendingMerge()
 	if p.Account != "" && s.accountChanged(p.Account) {
-		return
+		s.clearPendingMerge()
+		return nil
 	}
 	items := s.cfg.History.Items()
 	current := Fingerprint(items)
@@ -472,7 +502,8 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) {
 		// Only the marker written after a successful Flush, or the exact
 		// merged history, proves the merge reached the disk. A different
 		// fingerprint can be an unflushed capture.
-		return
+		s.clearPendingMerge()
+		return nil
 	}
 	m := ManifestInfo{Version: p.Version, SnapshotSHA256: p.SHA256, SnapshotSize: p.Size}
 	if p.UpdatedAt != "" {
@@ -480,8 +511,12 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) {
 			m.UpdatedAt = &at
 		}
 	}
-	s.PersistSyncState(p.Fingerprint, m, p.Account)
-	s.bindFor(p.Account)
+	if err := s.PersistSyncState(p.Fingerprint, m, p.Account); err != nil {
+		return fmt.Errorf("recover the pending merge: %w", err)
+	}
+	s.clearPendingMerge()
+	_ = s.bindFor(p.Account)
+	return nil
 }
 
 func nonEmpty(v string) *string {
@@ -1312,14 +1347,16 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		return ErrSessionChanged
 	}
 	// The merged history is on disk: record the pending upload before the
-	// payload cleanup and the upload that follows.
-	s.persistPendingMerge(preMergeFingerprint, basis, account)
+	// payload cleanup and the upload that follows. A state that cannot be
+	// saved leaves the record, from which the next run recovers, and stops
+	// this one before the upload.
+	perr := s.persistPendingMerge(preMergeFingerprint, basis, account)
 	if moves != nil {
 		moves.Commit()
 	}
 	_ = s.cfg.History.RemoveFiles(removed)
 	s.timing("merge", "persist_local", started, reason)
-	return nil
+	return perr
 }
 
 // ensureLocalBackupBlobs copies the files the backup refers to into the blob

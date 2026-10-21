@@ -30,7 +30,7 @@ func TestSessionRefreshKeepsTheTokensWhenTheServerIsUnwell(t *testing.T) {
 	s.AuthExpiresAtUnixMs = 1234
 	sess := &Session{
 		Client:   New(srv.URL),
-		Settings: Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		Settings: Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 	}
 
 	ok, err := sess.Refresh(context.Background())
@@ -59,7 +59,7 @@ func TestSessionRefreshIsCoordinatedAcrossSessions(t *testing.T) {
 	s.AuthExpiresAtUnixMs = time.Now().Add(-time.Hour).UnixMilli()
 	settings := Settings{
 		Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
-		Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+		Update: func(f func(*model.Settings)) error { mu.Lock(); defer mu.Unlock(); f(&s); return nil },
 	}
 	session := func() *Session { return &Session{Client: New(srv.URL), Settings: settings} }
 
@@ -157,7 +157,7 @@ func TestSessionRefreshDoesNotOverwriteANewSignIn(t *testing.T) {
 			s.AuthAccessToken, s.AuthRefreshToken = model.Ptr("old-access"), model.Ptr("old-refresh")
 			settings := Settings{
 				Get:    func() model.Settings { mu.Lock(); defer mu.Unlock(); return s },
-				Update: func(f func(*model.Settings)) { mu.Lock(); defer mu.Unlock(); f(&s) },
+				Update: func(f func(*model.Settings)) error { mu.Lock(); defer mu.Unlock(); f(&s); return nil },
 			}
 			sess := &Session{Client: New(srv.URL), Settings: settings}
 			done := make(chan struct{})

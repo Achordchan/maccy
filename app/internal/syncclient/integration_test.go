@@ -296,7 +296,7 @@ func TestAgainstTheRealServer(t *testing.T) {
 	s.AuthExpiresAtUnixMs = time.Now().UnixMilli() + 3_600_000 // looks valid, is not
 	current := func() model.Settings { mu.Lock(); defer mu.Unlock(); return s }
 	sess := &syncclient.Session{Client: c, Settings: syncclient.Settings{
-		Get: current, Update: func(f func(*model.Settings)) { mu.Lock(); f(&s); mu.Unlock() }}}
+		Get: current, Update: func(f func(*model.Settings)) error { mu.Lock(); f(&s); mu.Unlock(); return nil }}}
 	updated := make(chan struct{}, 4)
 	wctx, wcancel := context.WithCancel(ctx)
 	watchDone := make(chan struct{})

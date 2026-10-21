@@ -43,12 +43,18 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		return RunResult{}, err
 	}
 	report(progress, "check_remote", "检查远端", 10)
-	manifest, err := s.remoteManifest(ctx)
+	manifest, of, err := s.remoteManifest(ctx)
 	if err != nil {
 		return RunResult{}, err
 	}
-	if strings.TrimSpace(account) == "" {
-		account = s.currentAccount()
+	switch {
+	case strings.TrimSpace(account) == "":
+		// The workflow learns its account from the token the manifest was
+		// asked with, not from what is signed in now: a sign-in to another
+		// account meanwhile must not make this manifest that account's.
+		account = of
+	case of != "" && !strings.EqualFold(of, account):
+		return RunResult{}, ErrSessionChanged
 	}
 	if err := s.checkBound(account); err != nil {
 		return RunResult{}, err
@@ -59,7 +65,9 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 	if s.accountChanged(account) {
 		return RunResult{}, ErrSessionChanged
 	}
-	s.recoverPendingMerge(ctx, account)
+	if err := s.recoverPendingMerge(ctx, account); err != nil {
+		return RunResult{}, err
+	}
 	localItems := s.cfg.History.Items()
 	d := s.DecideItems(manifest, localItems)
 	res := RunResult{Decision: d}
@@ -72,7 +80,9 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		// timestamp_fallback is a no-op on two histories that differ: do not
 		// record them as synchronized, or the next run believes they match.
 		if d.Reason != "timestamp_fallback" {
-			s.PersistSyncState(d.LocalFingerprint, d.Manifest, account)
+			if err := s.PersistSyncState(d.LocalFingerprint, d.Manifest, account); err != nil {
+				return res, err
+			}
 		}
 
 	case Download:
@@ -89,7 +99,9 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 			if s.accountChanged(account) {
 				return res, ErrSessionChanged
 			}
-			s.persistPendingMerge(dr.PreMergeFingerprint, state, dr.Account)
+			if err := s.persistPendingMerge(dr.PreMergeFingerprint, state, dr.Account); err != nil {
+				return res, err
+			}
 			up, fp, err := s.uploadWithFingerprint(ctx, progress, reason+"_download_merge_upload", account)
 			if err != nil {
 				return res, err
@@ -107,7 +119,9 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 		if s.accountChanged(account) {
 			return res, ErrSessionChanged
 		}
-		s.PersistSyncState(dr.Fingerprint, state, dr.Account)
+		if err := s.PersistSyncState(dr.Fingerprint, state, dr.Account); err != nil {
+			return res, err // the record of the download stays for the next run
+		}
 		s.clearPendingMerge()
 
 	case Merge:
@@ -179,6 +193,10 @@ func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.Uplo
 // items that went into it. The manifest is used only when it still describes
 // that upload: another device may have uploaded in between, and remembering
 // its version next to this history would lose both changes.
+//
+// Once the state is saved, a record of an earlier download or merge
+// (pending-merge.json) is out of date: the server has this history now, and
+// recovering that record would put its older state back. It goes.
 func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadResult, fallback *ManifestInfo, fp, account string) error {
 	if s.accountChanged(account) {
 		// The upload went to the old account; the new session must not record
@@ -189,23 +207,29 @@ func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadRe
 		if s.accountChanged(account) {
 			return ErrSessionChanged
 		}
-		s.PersistSyncState(fp, m, account)
-		return nil
+		return s.retireAfter(s.PersistSyncState(fp, m, account))
 	}
 	if s.accountChanged(account) {
 		return ErrSessionChanged
 	}
+	var m ManifestInfo
 	switch {
 	case up != nil:
 		// No server timestamp: the client's clock would look like a rollback.
-		m := ManifestInfo{Version: up.Version, SnapshotSHA256: up.SHA256, SnapshotSize: up.Size}
-		s.PersistSyncState(fp, m, account)
+		m = ManifestInfo{Version: up.Version, SnapshotSHA256: up.SHA256, SnapshotSize: up.Size}
 	case fallback != nil:
-		s.PersistSyncState(fp, *fallback, account)
-	default:
-		s.PersistSyncState(fp, ManifestInfo{}, account)
+		m = *fallback
 	}
-	return nil
+	return s.retireAfter(s.PersistSyncState(fp, m, account))
+}
+
+// retireAfter drops the pending record once the state after an upload is
+// saved (err nil), and returns err.
+func (s *Syncer) retireAfter(err error) error {
+	if err == nil {
+		s.clearPendingMerge()
+	}
+	return err
 }
 
 // uploadIsInManifest says the server's manifest describes the snapshot this
@@ -288,9 +312,13 @@ func (s *Syncer) persistAfterDownload(ctx context.Context, dr DownloadResult) er
 		// A restore that had to merge a local capture has items that were
 		// never uploaded: remember the pending upload, not a synchronized
 		// history, so the next run publishes it.
-		s.persistPendingMerge(dr.PreMergeFingerprint, state, dr.Account)
+		if err := s.persistPendingMerge(dr.PreMergeFingerprint, state, dr.Account); err != nil {
+			return err
+		}
 	} else {
-		s.PersistSyncState(dr.Fingerprint, state, dr.Account)
+		if err := s.PersistSyncState(dr.Fingerprint, state, dr.Account); err != nil {
+			return err
+		}
 		s.clearPendingMerge()
 	}
 	_ = s.bindAccount(dr.Account)

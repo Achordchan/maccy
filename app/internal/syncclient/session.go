@@ -17,10 +17,12 @@ import (
 var refreshMu sync.Mutex
 
 // Settings is where a Session keeps the sign-in: the app's settings, behind
-// two functions so that the owner can lock and save them.
+// two functions so that the owner can lock and save them. Update applies a
+// change and saves it; its error says the save failed (the change is still
+// made, in memory), so that what must not be lost is not taken as recorded.
 type Settings struct {
 	Get    func() model.Settings
-	Update func(func(*model.Settings))
+	Update func(func(*model.Settings)) error
 }
 
 // Session is the signed-in state kept in the settings: it hands out a valid
@@ -96,7 +98,7 @@ func (s *Session) Refresh(ctx context.Context) (bool, error) {
 		if !errors.As(err, &ae) || !refreshRejected(ae) {
 			return false, err // no answer, or a server that is unwell: keep the tokens
 		}
-		s.Settings.Update(func(m *model.Settings) {
+		_ = s.Settings.Update(func(m *model.Settings) {
 			// The user may have signed out, or into another account, while
 			// the request was in flight: its refusal is not about that
 			// session, so leave it alone.
@@ -109,7 +111,7 @@ func (s *Session) Refresh(ctx context.Context) (bool, error) {
 	}
 
 	applied := false
-	s.Settings.Update(func(m *model.Settings) {
+	_ = s.Settings.Update(func(m *model.Settings) {
 		// The tokens belong to the session that asked for them. If the user
 		// signed out or in while the request was in flight, do not resurrect
 		// the old one (nor overwrite the new one) with this answer.
