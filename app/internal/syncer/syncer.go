@@ -29,10 +29,9 @@ type Syncer struct {
 	// snapshot from, which is what the server has; the history may have moved
 	// on by the time the state is written down.
 	uploadFP atomic.Value
-	// dropped says that a merge or a download left out items the user deleted
-	// (Config.Deleted) which the server still has: the history here is not the
-	// server's until it is uploaded.
-	dropped atomic.Bool
+	// uploaded are the items the last upload took its snapshot from (under
+	// gate).
+	uploaded []model.Item
 }
 
 // New returns a Syncer. cfg.Client, Settings, History, Layout and BaseURL are
@@ -223,8 +222,8 @@ func (s *Syncer) Upload(ctx context.Context, progress func(Progress), reason str
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	up, err := s.upload(ctx, progress, reason)
-	if err == nil {
-		s.dropped.Store(false) // what was left out here is now left out there
+	if err == nil && s.cfg.Uploaded != nil {
+		s.cfg.Uploaded(s.uploaded)
 	}
 	return up, err
 }
@@ -245,6 +244,7 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason str
 
 	items := s.cfg.History.Items()
 	s.uploadFP.Store(Fingerprint(items))
+	s.uploaded = items
 	st := s.settings()
 	s.timing("upload", "snapshot_source_ready", started, fmt.Sprintf("%s;items=%d", reason, len(items)))
 
@@ -520,7 +520,9 @@ func (s *Syncer) withoutDeleted(items []model.Item) []model.Item {
 	if len(gone) == 0 {
 		return items
 	}
-	s.dropped.Store(true)
+	if s.cfg.Dropped != nil {
+		s.cfg.Dropped()
+	}
 	skip := map[string]bool{}
 	for _, it := range gone {
 		skip[strings.ToLower(it.ID)] = true
@@ -568,10 +570,6 @@ func (s *Syncer) Deleted(items []model.Item) []model.Item {
 	}
 	return out
 }
-
-// Dropped says that a merge or a download has left out deleted items the
-// server still has, and no upload has been made since.
-func (s *Syncer) Dropped() bool { return s.dropped.Load() }
 
 // ensureLocalBackupBlobs copies the files the backup refers to into the blob
 // store, so that the backup can be read back later.

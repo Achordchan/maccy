@@ -19,9 +19,6 @@ func (m *Model) View(c *ui.Context) {
 	var act *action
 	if m.dlg == nil {
 		act = m.keys(c)
-	} else if c.Shortcut(0, ui.KeyEscape) {
-		m.dlg = nil
-		m.input.Focus()
 	}
 	if runtime.GOOS == "darwin" {
 		c.OnShortcut(ui.Cmd, ui.KeyQ, m.Host.Quit)
@@ -374,36 +371,50 @@ func (m *Model) dialogView(c *ui.Context, p Palette) {
 	if d == nil {
 		return
 	}
-	ui.Column(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).Background(ui.RGBA(0, 0, 0, 0.25)).Center().Children(func() {
-		ui.Column(c).Width(328).Padding(16).Gap(0).Background(p.Panel).Border(1, p.Border).Radius(14).Children(func() {
-			ui.Text(c, d.title).FontSize(15).FontWeight(600).TextColor(p.Text)
-			switch d.kind {
-			case "note":
-				ui.Text(c, d.hint).FontSize(12).TextColor(p.Muted2).Margin(6, 0, 0)
-				ui.Column(c).FillWidth().Margin(10, 0, 0).Padding(10).Background(p.Control).Border(1, p.Border).Radius(12).Children(func() {
-					if d.focus {
-						d.focus = false
-						m.noteHand.Focus()
-					}
-					ui.TextAreaBase(c, &d.text).Bind(&m.noteHand).FillWidth().MinHeight(80).FontSize(13).TextColor(p.Text).Label("备注")
-				})
-			default:
-				ui.Column(c).FillWidth().Margin(10, 0, 0).Padding(12).Background(p.Control).Border(1, p.Border).Radius(12).Children(func() {
-					ui.Text(c, d.hint).FontSize(12).TextColor(p.Muted).Wrap()
-				})
-			}
-			ui.Row(c).FillWidth().Margin(12, 0, 0).Gap(10).Justify(ui.End).Children(func() {
-				cancel := dialogButton(c, p, "取消", p.Control, p.Text, true)
-				ok := dialogButton(c, p, d.ok, map[bool]ui.Color{true: p.Red, false: p.Blue}[d.danger], ui.RGB(255, 255, 255), false)
-				if cancel {
-					m.dlg = nil
-					m.input.Focus()
-				} else if ok {
-					m.dlg = nil
-					m.finish(d)
-					m.input.Focus()
+	// Modal, over the window: the focus goes into the dialog and Tab goes
+	// round inside it; the rows and buttons behind it (which apply an item
+	// and hide the window, losing a note being written) take no keys.
+	ui.Overlay(c, func() {
+		back := ui.Column(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).Background(ui.RGBA(0, 0, 0, 0.25)).Center().Modal()
+		if back.OverlayShortcut(0, ui.KeyEscape) {
+			m.dlg = nil
+			m.input.Focus()
+			return
+		}
+		back.Children(func() { m.dialogBox(c, p, d) })
+	})
+}
+
+// dialogBox is the box of the dialog d.
+func (m *Model) dialogBox(c *ui.Context, p Palette, d *dialog) {
+	ui.Column(c).Width(328).Padding(16).Gap(0).Background(p.Panel).Border(1, p.Border).Radius(14).Children(func() {
+		ui.Text(c, d.title).FontSize(15).FontWeight(600).TextColor(p.Text)
+		switch d.kind {
+		case "note":
+			ui.Text(c, d.hint).FontSize(12).TextColor(p.Muted2).Margin(6, 0, 0)
+			ui.Column(c).FillWidth().Margin(10, 0, 0).Padding(10).Background(p.Control).Border(1, p.Border).Radius(12).Children(func() {
+				if d.focus {
+					d.focus = false
+					m.noteHand.Focus()
 				}
+				ui.TextAreaBase(c, &d.text).Bind(&m.noteHand).FillWidth().MinHeight(80).FontSize(13).TextColor(p.Text).Label("备注")
 			})
+		default:
+			ui.Column(c).FillWidth().Margin(10, 0, 0).Padding(12).Background(p.Control).Border(1, p.Border).Radius(12).Children(func() {
+				ui.Text(c, d.hint).FontSize(12).TextColor(p.Muted).Wrap()
+			})
+		}
+		ui.Row(c).FillWidth().Margin(12, 0, 0).Gap(10).Justify(ui.End).Children(func() {
+			cancel := dialogButton(c, p, "取消", p.Control, p.Text, true)
+			ok := dialogButton(c, p, d.ok, map[bool]ui.Color{true: p.Red, false: p.Blue}[d.danger], ui.RGB(255, 255, 255), false)
+			if cancel {
+				m.dlg = nil
+				m.input.Focus()
+			} else if ok {
+				m.dlg = nil
+				m.finish(d)
+				m.input.Focus()
+			}
 		})
 	})
 }

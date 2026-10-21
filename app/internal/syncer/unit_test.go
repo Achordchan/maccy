@@ -324,9 +324,10 @@ func TestDeletedMatchesByIDOrMergeKeyUpToTheDeletion(t *testing.T) {
 		return model.Item{ID: id, Kind: model.KindText, Text: model.Ptr(s), ContentHash: model.Ptr("text:" + s), CapturedAt: model.Time{Time: captured}}
 	}
 	deleted := text("a", "hello", at.Add(-time.Hour))
+	dropped := 0
 	s := &Syncer{cfg: Config{Deleted: func() []Tombstone {
 		return []Tombstone{{ID: deleted.ID, Key: MergeKey(deleted), At: at}}
-	}}}
+	}, Dropped: func() { dropped++ }}}
 	items := []model.Item{
 		text("a", "hello", at.Add(-time.Hour)),     // the item itself
 		text("b", "hello", at.Add(-2*time.Hour)),   // the same text, copied on another device
@@ -343,7 +344,7 @@ func TestDeletedMatchesByIDOrMergeKeyUpToTheDeletion(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("deleted %v, want %v", got, want)
 	}
-	if kept := s.withoutDeleted(items); len(kept) != 2 || !s.Dropped() {
-		t.Fatalf("kept %d, dropped %v", len(kept), s.Dropped())
+	if kept := s.withoutDeleted(items); len(kept) != 2 || dropped != 1 {
+		t.Fatalf("kept %d, dropped told %d times", len(kept), dropped)
 	}
 }

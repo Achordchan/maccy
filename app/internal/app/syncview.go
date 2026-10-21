@@ -317,15 +317,10 @@ func (a *App) remove(pick func() []model.Item) {
 				a.cfg.Logf("pending deletions: %v", err)
 			}
 			a.mutateQuietly(func() { a.History.RemoveMany(idsOf(items)) })
-			if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil {
-				if ctx.Err() == nil {
-					a.cfg.Logf("upload after change: %v", err)
-					a.retryLater()
-				}
-				return
-			}
-			if err := a.pending.Ack(owner); err != nil {
-				a.cfg.Logf("pending deletions: %v", err)
+			// The upload, once through, tells the deletions it took (Uploaded).
+			if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil && ctx.Err() == nil {
+				a.cfg.Logf("upload after change: %v", err)
+				a.retryLater()
 			}
 		})
 		if !ran {
@@ -388,17 +383,19 @@ func (a *App) retryLater() {
 
 // settleDeletions is for the end of a sync that went through, for the account
 // owner. What it brought in has left out the items the user deleted; the
-// result is uploaded when the server still has one of them (the sync left one
-// out and did not upload), when one is still here (the program stopped
-// between writing the deletion down and making it), or when the server has
-// not had a deletion yet. What other devices added stays.
+// result is uploaded when the server still has one of them (a merge or a
+// download left one out, written down by Dropped, also across a restart),
+// when one is still here (the program stopped between writing the deletion
+// down and making it), or when the server has not had a deletion yet. The
+// upload tells which deletions it took (Uploaded). What other devices added
+// stays.
 func (a *App) settleDeletions(ctx context.Context, owner string) error {
 	if len(a.pending.Tombstones(owner)) == 0 {
-		return nil
+		return a.pending.Prune(owner)
 	}
 	here := a.Syncer.Deleted(a.History.Items())
-	if len(here) == 0 && !a.Syncer.Dropped() && !a.pending.Owed(owner) {
-		return a.pending.Ack(owner) // drops what has been kept long enough
+	if len(here) == 0 && !a.pending.NeedsRepair(owner) && !a.pending.Owed(owner) {
+		return a.pending.Prune(owner) // drops what has been enforced long enough
 	}
 	if len(here) > 0 {
 		a.mutateQuietly(func() { a.History.RemoveMany(idsOf(here)) })
@@ -408,9 +405,6 @@ func (a *App) settleDeletions(ctx context.Context, owner string) error {
 			a.retryLater()
 		}
 		return err
-	}
-	if err := a.pending.Ack(owner); err != nil {
-		a.cfg.Logf("pending deletions: %v", err)
 	}
 	return nil
 }

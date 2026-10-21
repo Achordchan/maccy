@@ -834,3 +834,42 @@ func TestImageInfoIsReadInTheBackground(t *testing.T) {
 		t.Fatalf("info = %q", got)
 	}
 }
+
+// While the note dialog shows, the keys stay in it: no Tab and Enter reaches
+// a row behind it (which would apply the item and hide the window); Escape
+// closes it.
+func TestNoteDialogKeepsTheKeys(t *testing.T) {
+	open := func() *rig {
+		r := newRig(t, "one", "two", "three")
+		if err := r.tt.RightClick("two"); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.tt.ChooseMenuItem("添加备注"); err != nil {
+			t.Fatal(err)
+		}
+		r.tt.Frame()
+		r.tt.Frame()
+		if !r.tt.HasText("添加备注") {
+			t.Fatalf("no dialog: %q", r.tt.Texts())
+		}
+		return r
+	}
+	for tabs := range 12 {
+		r := open()
+		for range tabs {
+			r.tt.Key(0, ui.KeyTab)
+			r.tt.Frame()
+		}
+		r.tt.Key(0, ui.KeyEnter)
+		r.tt.Frame()
+		if len(r.ho.applied) != 0 || r.ho.hidden != 0 {
+			t.Fatalf("after %d tabs Enter reached a row behind the dialog: applied %v", tabs, r.ho.applied)
+		}
+	}
+	r := open()
+	r.tt.Key(0, ui.KeyEscape)
+	r.tt.Frame()
+	if r.tt.HasText("请输入备注（可用于搜索）：") {
+		t.Fatal("Escape did not close the dialog")
+	}
+}

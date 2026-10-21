@@ -15,8 +15,8 @@ import (
 	"klip/internal/syncer"
 )
 
-// keepDeleted is how long a deletion the server has had is still enforced
-// here.
+// keepDeleted is how long a deletion is still enforced here after the server
+// has had it.
 const keepDeleted = 30 * 24 * time.Hour
 
 // pendingDeletes are the items the user deleted (or cleared) on this device,
@@ -27,9 +27,11 @@ const keepDeleted = 30 * 24 * time.Hour
 // A sync merges what the server has with the local history, which would bring
 // such an item back; so a merge or a download leaves them out (see
 // syncer.Tombstone for which items that is), and when it has left one out the
-// result is uploaded. A deletion that has not reached the server (the upload
-// failed, or the program stopped first) stays until it has. One that has is
-// still enforced for keepDeleted: a device that was offline with the item, and
+// result is uploaded; that an upload is owed for it is written down too, so
+// that a restart before the upload does not forget it. A deletion counts as
+// the server's once an upload went through without the item (only what that
+// upload left out: a deletion asked for meanwhile is not), and is enforced
+// for keepDeleted after that: a device that was offline with the item, and
 // uploads its history merged with the server's, brings it back; this device
 // takes it out again at its next sync.
 //
@@ -38,26 +40,31 @@ const keepDeleted = 30 * 24 * time.Hour
 // for them, so when this device does not sync again after another has
 // brought the item back, the item stays.
 type pendingDeletes struct {
-	path  string
-	logf  func(string, ...any)
-	now   func() time.Time
-	mu    sync.Mutex
-	lists map[string][]deletion // by account (lower case)
-	alias map[string]string     // an account known by another address since (Adopt)
-	read  bool
+	path   string
+	logf   func(string, ...any)
+	now    func() time.Time
+	mu     sync.Mutex
+	lists  map[string][]deletion // by account (lower case)
+	repair map[string]bool       // accounts whose server still has deleted items
+	alias  map[string]string     // an account known by another address since (Adopt)
+	read   bool
 }
 
 // deletion is one item the user deleted.
 type deletion struct {
-	ID    string    `json:"id"`
-	Key   string    `json:"key,omitempty"` // syncer.MergeKey
-	At    time.Time `json:"at"`
-	Acked bool      `json:"acked,omitempty"` // the server has had it
+	ID      string     `json:"id"`
+	Key     string     `json:"key,omitempty"` // syncer.MergeKey
+	At      time.Time  `json:"at"`
+	AckedAt *time.Time `json:"acked_at,omitempty"` // when the server had it
 }
+
+// expired says that d has been enforced long enough after the server had it.
+func (d deletion) expired(cut time.Time) bool { return d.AckedAt != nil && d.AckedAt.Before(cut) }
 
 // pendingFile is what the file holds.
 type pendingFile struct {
 	Accounts map[string][]deletion `json:"accounts"`
+	Repair   map[string]bool       `json:"repair,omitempty"`
 }
 
 func accountKey(owner string) string { return strings.ToLower(strings.TrimSpace(owner)) }
@@ -82,7 +89,7 @@ func (p *pendingDeletes) load() {
 		return
 	}
 	p.read = true
-	p.lists = map[string][]deletion{}
+	p.lists, p.repair = map[string][]deletion{}, map[string]bool{}
 	b, err := os.ReadFile(p.path)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -97,6 +104,11 @@ func (p *pendingDeletes) load() {
 	}
 	for k, l := range f.Accounts {
 		p.lists[accountKey(k)] = append(p.lists[accountKey(k)], l...)
+	}
+	for k, on := range f.Repair {
+		if on {
+			p.repair[accountKey(k)] = true
+		}
 	}
 }
 
@@ -117,6 +129,11 @@ func (p *pendingDeletes) save() error {
 			delete(p.lists, k)
 		}
 	}
+	for k, on := range p.repair {
+		if !on || len(p.lists[k]) == 0 {
+			delete(p.repair, k)
+		}
+	}
 	if len(p.lists) == 0 {
 		if err := os.Remove(p.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
@@ -126,7 +143,7 @@ func (p *pendingDeletes) save() error {
 	for _, l := range p.lists {
 		sort.SliceStable(l, func(i, j int) bool { return l[i].At.Before(l[j].At) })
 	}
-	b, err := json.Marshal(pendingFile{Accounts: p.lists})
+	b, err := json.Marshal(pendingFile{Accounts: p.lists, Repair: p.repair})
 	if err != nil {
 		return err
 	}
@@ -182,8 +199,8 @@ func (p *pendingDeletes) Tombstones(owner string) []syncer.Tombstone {
 	cut := p.clock().Add(-keepDeleted)
 	var out []syncer.Tombstone
 	for _, d := range p.lists[p.account(owner)] {
-		if d.Acked && d.At.Before(cut) {
-			continue // kept long enough; Ack drops it
+		if d.expired(cut) {
+			continue // enforced long enough; Prune drops it
 		}
 		out = append(out, syncer.Tombstone{ID: d.ID, Key: d.Key, At: d.At})
 	}
@@ -196,40 +213,105 @@ func (p *pendingDeletes) Owed(owner string) bool {
 	defer p.mu.Unlock()
 	p.load()
 	for _, d := range p.lists[p.account(owner)] {
-		if !d.Acked {
+		if d.AckedAt == nil {
 			return true
 		}
 	}
 	return false
 }
 
-// Ack notes that the server of the account owner has had all its deletions
-// (they are made, and uploaded, one piece of work at a time), and drops those
-// that have been enforced long enough.
-func (p *pendingDeletes) Ack(owner string) error {
+// NeedsRepair says that the server of the account owner still has items this
+// device deleted (a merge or a download left them out here; see MarkRepair).
+func (p *pendingDeletes) NeedsRepair(owner string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.load()
+	return p.repair[p.account(owner)]
+}
+
+// MarkRepair writes down that the server of the account owner still has
+// items this device deleted, until an upload went through (Delivered).
+func (p *pendingDeletes) MarkRepair(owner string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.load()
 	k := p.account(owner)
-	l := p.lists[k]
-	cut := p.clock().Add(-keepDeleted)
-	kept := make([]deletion, 0, len(l))
-	changed := false
-	for _, d := range l {
-		if !d.Acked {
-			d.Acked, changed = true, true
-		}
-		if d.At.Before(cut) {
-			changed = true
-			continue
-		}
-		kept = append(kept, d)
-	}
-	if !changed {
+	if p.repair[k] {
 		return nil
 	}
-	p.lists[k] = kept
+	p.repair[k] = true
 	return p.save()
+}
+
+// Delivered is for an upload of the account owner that went through: the
+// server now has items, and the deletions of what is not among them are the
+// server's (a deletion whose item the upload still had, as one asked for
+// while it was on its way, is not). The server needs no repair any more.
+func (p *pendingDeletes) Delivered(owner string, items []model.Item) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.load()
+	k := p.account(owner)
+	// The earliest capture of each id and each merge key the server has.
+	byID, byKey := map[string]time.Time{}, map[string]time.Time{}
+	earliest := func(m map[string]time.Time, key string, t time.Time) {
+		if key == "" {
+			return
+		}
+		if old, ok := m[key]; !ok || t.Before(old) {
+			m[key] = t
+		}
+	}
+	for _, it := range items {
+		earliest(byID, strings.ToLower(it.ID), it.CapturedAt.Time)
+		earliest(byKey, syncer.MergeKey(it), it.CapturedAt.Time)
+	}
+	has := func(m map[string]time.Time, key string, at time.Time) bool {
+		t, ok := m[key]
+		return ok && key != "" && !t.After(at)
+	}
+	now := p.clock()
+	changed := p.repair[k]
+	delete(p.repair, k)
+	for i, d := range p.lists[k] {
+		if d.AckedAt != nil || has(byID, strings.ToLower(d.ID), d.At) || has(byKey, strings.ToLower(d.Key), d.At) {
+			continue
+		}
+		at := now
+		p.lists[k][i].AckedAt, changed = &at, true
+	}
+	if p.prune(k) || changed {
+		return p.save()
+	}
+	return nil
+}
+
+// Prune drops the deletions of the account owner that have been enforced
+// long enough.
+func (p *pendingDeletes) Prune(owner string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.load()
+	if p.prune(p.account(owner)) {
+		return p.save()
+	}
+	return nil
+}
+
+func (p *pendingDeletes) prune(k string) bool {
+	cut := p.clock().Add(-keepDeleted)
+	l := p.lists[k]
+	kept := make([]deletion, 0, len(l))
+	for _, d := range l {
+		if !d.expired(cut) {
+			kept = append(kept, d)
+		}
+	}
+	if len(kept) == len(l) {
+		return false
+	}
+	p.lists[k] = kept
+	return true
 }
 
 // Adopt is for a login that learned its address: what it noted under the
@@ -252,6 +334,10 @@ func (p *pendingDeletes) Adopt(from, to string) error {
 	}
 	p.lists[t] = append(p.lists[t], p.lists[f]...)
 	delete(p.lists, f)
+	if p.repair[f] {
+		p.repair[t] = true
+		delete(p.repair, f)
+	}
 	return p.save()
 }
 

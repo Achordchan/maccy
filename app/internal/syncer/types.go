@@ -107,6 +107,13 @@ type Config struct {
 	// merge or a download leaves those items out, instead of bringing them
 	// back. It may be nil.
 	Deleted func() []Tombstone
+	// Dropped is called when a merge or a download left out such items, which
+	// the server still has, before the result is written down as synced: the
+	// server needs an upload. It may be nil.
+	Dropped func()
+	// Uploaded is called after an upload went through (or was found not to be
+	// needed), with the items the server now has. It may be nil.
+	Uploaded func(items []model.Item)
 	// Now is time.Now unless a test sets it.
 	Now func() time.Time
 }

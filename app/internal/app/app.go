@@ -190,6 +190,22 @@ func New(cfg Config) (*App, error) {
 		BaseURL:          cfg.BaseURL,
 		SuppressAutoSync: func(on bool) { a.Auto.Suppress(on) },
 		Deleted:          func() []syncer.Tombstone { return a.pending.Tombstones(a.owner()) },
+		Dropped: func() {
+			if a.stale() {
+				return
+			}
+			if err := a.pending.MarkRepair(a.owner()); err != nil {
+				a.cfg.Logf("pending deletions: %v", err)
+			}
+		},
+		Uploaded: func(items []model.Item) {
+			if a.stale() {
+				return
+			}
+			if err := a.pending.Delivered(a.owner(), items); err != nil {
+				a.cfg.Logf("pending deletions: %v", err)
+			}
+		},
 	})
 	a.Auto = syncer.NewAuto(a.Syncer, a.syncDone)
 	// Every sync is counted while it runs, so that Stop can wait for them (they
@@ -523,6 +539,10 @@ func (a *App) ownerLearned(before, after model.Settings) {
 		a.cfg.Logf("pending deletions: %v", err)
 	}
 }
+
+// stale says that the sync running is of an account that is gone: what it
+// reports is not the account's signed in now.
+func (a *App) stale() bool { return a.runActive.Load() && a.runGen.Load() != a.acctGen.Load() }
 
 // owner is the address of the account signed in, whose the pending deletions
 // are (see ownerOf).

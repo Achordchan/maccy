@@ -640,7 +640,7 @@ func TestPendingDeletesKeepAcrossRuns(t *testing.T) {
 	if got := again.Tombstones("b@example.com"); got != nil {
 		t.Fatalf("another account reads the list: %v", got)
 	}
-	again.Ack("a@example.com")
+	again.Delivered("a@example.com", nil)
 	if p := (&pendingDeletes{path: path}); p.Owed("a@example.com") || len(p.Tombstones("a@example.com")) != 2 {
 		t.Fatal("a deletion the server has had is kept, as the server's")
 	}
@@ -651,10 +651,10 @@ func TestPendingDeletesKeepAcrossRuns(t *testing.T) {
 	if got := ids(later.Tombstones("a@example.com")); len(got) != 1 || got[0] != "c" {
 		t.Fatalf("enforced after the time: %v", got)
 	}
-	again.Ack("a@example.com")
+	again.Delivered("a@example.com", nil)
 	// After the time it is kept for, it goes.
 	late := &pendingDeletes{path: path, now: func() time.Time { return time.Now().Add(keepDeleted + time.Hour) }}
-	late.Ack("a@example.com")
+	late.Prune("a@example.com")
 	if _, err := os.Stat(path); err == nil {
 		t.Fatal("the list outlived its marks")
 	}
@@ -680,6 +680,57 @@ func TestDeletionCoversAnItemFromTheFuture(t *testing.T) {
 	}
 }
 
+// An upload takes only the deletions whose items it did not have; one asked
+// for while it was on its way is still owed.
+func TestUploadTakesOnlyTheDeletionsItLeftOut(t *testing.T) {
+	p := &pendingDeletes{}
+	first, second := item("a", "a"), item("b", "b")
+	p.Add("x@example.com", first, second) // b's removal still waits for its turn
+	p.MarkRepair("x@example.com")
+	p.Delivered("x@example.com", []model.Item{second, item("c", "c")})
+	if !p.Owed("x@example.com") || p.NeedsRepair("x@example.com") {
+		t.Fatal("b's deletion was taken by an upload that still had b")
+	}
+	p.Delivered("x@example.com", []model.Item{item("c", "c")})
+	if p.Owed("x@example.com") {
+		t.Fatal("not taken by the upload without b")
+	}
+}
+
+// A deletion made long ago and delivered only now is enforced for the whole
+// time after it reached the server.
+func TestDeletionIsKeptFromWhenTheServerHadIt(t *testing.T) {
+	now := time.Now()
+	p := &pendingDeletes{now: func() time.Time { return now }}
+	p.Add("", item("a", "a"))
+	now = now.Add(keepDeleted + 24*time.Hour) // offline all this time
+	p.Delivered("", nil)
+	if got := p.Tombstones(""); len(got) != 1 {
+		t.Fatal("dropped as soon as it reached the server")
+	}
+	now = now.Add(keepDeleted + time.Hour)
+	p.Prune("")
+	if got := p.Tombstones(""); len(got) != 0 {
+		t.Fatalf("kept for ever: %v", got)
+	}
+}
+
+// That the server needs a repair outlives a restart.
+func TestRepairIsWrittenDown(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pending-delete.json")
+	p := &pendingDeletes{path: path}
+	p.Add("x@example.com", item("a", "a"))
+	p.Delivered("x@example.com", nil)
+	p.MarkRepair("x@example.com") // a download left a restored copy out
+	if !(&pendingDeletes{path: path}).NeedsRepair("X@example.com") {
+		t.Fatal("not on disk")
+	}
+	p.Delivered("x@example.com", nil)
+	if (&pendingDeletes{path: path}).NeedsRepair("x@example.com") {
+		t.Fatal("kept after the upload")
+	}
+}
+
 // Each account has its list: a sign-out, a sign-in to the same account, or
 // the work of another account leave it as it is.
 func TestPendingDeletesFollowTheirAccount(t *testing.T) {
@@ -687,7 +738,7 @@ func TestPendingDeletesFollowTheirAccount(t *testing.T) {
 	p.Add("a@example.com", item("a1", "a1"))
 	p.Add("b@example.com", item("b1", "b1")) // B signed in and deleted something
 	p.Add("a@example.com", item("a2", "a2")) // the old account's upload failed now
-	p.Ack("b@example.com")
+	p.Delivered("b@example.com", nil)
 	if got := ids(p.Tombstones("a@example.com")); len(got) != 2 || !p.Owed("a@example.com") {
 		t.Fatalf("A's list: %v", got)
 	}
@@ -935,7 +986,7 @@ func TestDeviceThatWasOfflineCannotBringBackADeletion(t *testing.T) {
 		if !hasText(a, "from B") || hasText(a, "deleted on A") || !hasText(a, "kept") {
 			return false
 		}
-		return model.Str(a.Settings.Get().SyncLastLocalFingerprint) == a.Syncer.Fingerprint() && !a.Syncer.Dropped()
+		return model.Str(a.Settings.Get().SyncLastLocalFingerprint) == a.Syncer.Fingerprint() && !a.pending.NeedsRepair(a.owner())
 	})
 	c := newApp(t, signedInRoot(t, login()), &fakeClip{}, srv.URL)
 	c.Start()
