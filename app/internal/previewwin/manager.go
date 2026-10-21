@@ -21,12 +21,29 @@ type Manager struct {
 	// closed instead of hiding, or Quit would wait for it for ever.
 	Quitting func() bool
 
+	// decode reads a picture cut down to a size (panel.ScaledBitmap when
+	// nil), and onMain runs on the UI thread (mygo.RunOnMain when nil).
+	decode func(path string, max int) (*ui.Bitmap, int, int)
+	onMain func(func())
+
 	mu    sync.Mutex
 	model *Model
 	win   *mygo.Window
 	id    string
 	seq   int  // moves with each Show and each Hide
 	shut  bool // Close was called: nothing is shown any more
+	// failed is the picture that could not be shown, which is not read again
+	// while the pointer stays on its row (the panel asks for it each frame);
+	// Hide, or another item, forgets it.
+	failed string
+}
+
+func (mg *Manager) runOnMain(f func()) {
+	if mg.onMain != nil {
+		mg.onMain(f)
+		return
+	}
+	mygo.RunOnMain(f)
 }
 
 // Preview says which item the window shows ("" when hidden) and whether the
@@ -50,9 +67,12 @@ const maxPicture = 1960
 // moved on by then. Any goroutine.
 func (mg *Manager) Show(it model.Item, anchor Rect) {
 	mg.mu.Lock()
-	shut := mg.shut
+	shut, failed := mg.shut, mg.failed != "" && mg.failed == it.ID
+	if !failed {
+		mg.failed = ""
+	}
 	mg.mu.Unlock()
-	if shut {
+	if shut || failed {
 		return
 	}
 	if it.Kind != model.KindImage && it.Kind != model.KindFileList {
@@ -72,7 +92,11 @@ func (mg *Manager) Show(it model.Item, anchor Rect) {
 		var bm *ui.Bitmap
 		var pw, ph int
 		if it.Kind == model.KindImage {
-			bm, pw, ph = panel.ScaledBitmap(model.Str(it.ImageFilePath), maxPicture)
+			decode := mg.decode
+			if decode == nil {
+				decode = panel.ScaledBitmap
+			}
+			bm, pw, ph = decode(model.Str(it.ImageFilePath), maxPicture)
 		}
 		mg.mu.Lock()
 		current := mg.wanted(seq)
@@ -81,7 +105,14 @@ func (mg *Manager) Show(it model.Item, anchor Rect) {
 			return // another item, or none, since
 		}
 		if it.Kind == model.KindImage && bm == nil {
-			mg.hide(seq) // the file is gone, or too big to show: nothing to show
+			// The file is gone, or too big to show: nothing to show, and
+			// nothing to read again for it.
+			mg.mu.Lock()
+			if mg.wanted(seq) {
+				mg.failed = it.ID
+			}
+			mg.mu.Unlock()
+			mg.hide(seq)
 			return
 		}
 		meta := (&Model{Item: it, Bitmap: bm, Width: pw, Height: ph}).Meta()
@@ -93,7 +124,7 @@ func (mg *Manager) Show(it model.Item, anchor Rect) {
 // still the latest request when the UI thread gets to it (a Hide or another
 // Show in between voids it).
 func (mg *Manager) present(it model.Item, bm *ui.Bitmap, pw, ph int, meta string, anchor Rect, seq int) {
-	mygo.RunOnMain(func() {
+	mg.runOnMain(func() {
 		mg.mu.Lock()
 		defer mg.mu.Unlock()
 		if !mg.wanted(seq) {
@@ -149,11 +180,14 @@ func (mg *Manager) Hide() { mg.hide(-1) }
 // thread gets to it (-1: whatever it is). A picture that could not be read
 // must not close the window another item has opened since.
 func (mg *Manager) hide(seq int) {
-	mygo.RunOnMain(func() {
+	mg.runOnMain(func() {
 		mg.mu.Lock()
 		defer mg.mu.Unlock()
 		if seq >= 0 && mg.seq != seq {
 			return
+		}
+		if seq < 0 {
+			mg.failed = "" // the pointer left the row: it may be tried again
 		}
 		mg.id = ""
 		mg.seq++ // a picture that is still being made is not wanted

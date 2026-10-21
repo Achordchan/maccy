@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -303,4 +304,53 @@ func TestClosedManagerShowsNothing(t *testing.T) {
 	if ok {
 		t.Fatal("a request is wanted after Close")
 	}
+}
+
+// A picture that cannot be shown is read once while the pointer stays on its
+// row, though the panel asks for it again each frame; another item, or Hide,
+// lets it be tried again.
+func TestFailedPictureIsNotReadAgain(t *testing.T) {
+	var mu sync.Mutex
+	reads := map[string]int{}
+	mg := &Manager{
+		decode: func(path string, _ int) (*ui.Bitmap, int, int) {
+			mu.Lock()
+			reads[path]++
+			mu.Unlock()
+			return nil, 0, 0 // broken, or too big
+		},
+		onMain: func(f func()) { f() },
+	}
+	pic := func(id string) model.Item {
+		it := item(model.KindImage)
+		it.ID, it.ImageFilePath = id, model.Ptr("/pics/"+id+".png")
+		return it
+	}
+	count := func(id string) int { mu.Lock(); defer mu.Unlock(); return reads["/pics/"+id+".png"] }
+	failed := func() string { mg.mu.Lock(); defer mg.mu.Unlock(); return mg.failed }
+	wait := func(what string, f func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); !f(); time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s", what)
+			}
+		}
+	}
+
+	mg.Show(pic("a"), Rect{})
+	wait("a failed", func() bool { return failed() == "a" })
+	for range 10 { // the frames that follow
+		mg.Show(pic("a"), Rect{})
+	}
+	time.Sleep(20 * time.Millisecond)
+	if n := count("a"); n != 1 {
+		t.Fatalf("a was read %d times", n)
+	}
+	mg.Show(pic("b"), Rect{}) // another row
+	wait("b failed", func() bool { return failed() == "b" })
+	mg.Show(pic("a"), Rect{})
+	wait("a failed again", func() bool { return failed() == "a" && count("a") == 2 })
+	mg.Hide()
+	mg.Show(pic("a"), Rect{})
+	wait("a after Hide", func() bool { return count("a") == 3 })
 }
