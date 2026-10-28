@@ -84,6 +84,14 @@ func (c *Controller) Open() View {
 		st = c.Settings.Get()
 	}
 
+	return c.CurrentView()
+}
+
+// CurrentView reads current settings without normalizing or writing them.
+func (c *Controller) CurrentView() View {
+	st := c.Settings.Get()
+	enabled := c.Autostart.IsEnabled()
+	ext := st.CaptureFileExtensions
 	shelf := st.ShelfEnabled
 	if strings.EqualFold(st.ShelfTriggerModifier, "Disabled") {
 		shelf = false

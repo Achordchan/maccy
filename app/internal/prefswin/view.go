@@ -23,6 +23,7 @@ func (m *Model) View(c *ui.Context) {
 	p := panel.PaletteFor(c.Theme().Dark)
 	c.Root().Background(p.Background)
 	m.followLogin()
+	m.followSettings()
 	for _, msg := range m.takeToasts() {
 		m.toastMsg, m.toastUntil = msg, c.Now().Add(toastFor)
 	}

@@ -6,6 +6,7 @@ package prefswin
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"time"
 
@@ -42,8 +43,9 @@ type Model struct {
 	// Now is time.Now unless a test sets it.
 	Now func() time.Time
 
-	tab int
-	v   prefs.View
+	tab      int
+	v        prefs.View
+	observed prefs.View
 
 	// account page
 	email, password string
@@ -103,6 +105,7 @@ func (m *Model) takeToasts() []string {
 // and, when signed in, asks the server about the plan.
 func (m *Model) Open() {
 	m.v = m.Prefs.Open()
+	m.observed = m.v
 	m.refreshAccount()
 	m.closeDialogs()
 	m.sub = account.None("未登录")
@@ -342,4 +345,16 @@ func (m *Model) redeemCard() {
 			}
 		}
 	})
+}
+
+// followSettings updates fields unchanged locally, preserving in-progress edits.
+func (m *Model) followSettings() {
+	next := m.Prefs.CurrentView()
+	cur, old, fresh := reflect.ValueOf(&m.v).Elem(), reflect.ValueOf(m.observed), reflect.ValueOf(next)
+	for i := 0; i < cur.NumField(); i++ {
+		if reflect.DeepEqual(cur.Field(i).Interface(), old.Field(i).Interface()) {
+			cur.Field(i).Set(fresh.Field(i))
+		}
+	}
+	m.observed = next
 }

@@ -30,6 +30,7 @@ var (
 	procSetHook       = user32.NewProc("SetWindowsHookExW")
 	procUnhook        = user32.NewProc("UnhookWindowsHookEx")
 	procCallNext      = user32.NewProc("CallNextHookEx")
+	procPeekMessage   = user32.NewProc("PeekMessageW")
 	procGetMessage    = user32.NewProc("GetMessageW")
 	procTranslateMsg  = user32.NewProc("TranslateMessage")
 	procDispatchMsg   = user32.NewProc("DispatchMessageW")
@@ -114,6 +115,8 @@ func StartHook(ev Events) (stop func(), err error) {
 			return
 		}
 		hookHandle = h
+		var queueMsg [48]byte
+		procPeekMessage.Call(uintptr(unsafe.Pointer(&queueMsg[0])), 0, 0, 0, 0)
 		id, _, _ := procThreadID.Call()
 		tid <- uint32(id)
 		ready <- nil
@@ -189,7 +192,13 @@ func StartHook(ev Events) (stop func(), err error) {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			procPostThreadMsg.Call(uintptr(threadID), wmQuit, 0, 0)
+			posted, _, _ := procPostThreadMsg.Call(uintptr(threadID), wmQuit, 0, 0)
+			if posted == 0 {
+				procUnhook.Call(hookHandle)
+				close(quit)
+				<-consumed
+				return
+			}
 			<-done
 			close(quit)
 			<-consumed
