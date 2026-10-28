@@ -911,7 +911,7 @@ func (s *Service) write(it model.Item) (bool, written, error) {
 
 	case model.KindFileList:
 		var resolved []string
-		for i, p := range it.FilePaths {
+		for i, p := range nonBlank(it.FilePaths) {
 			if strings.TrimSpace(p) == "" {
 				continue
 			}
