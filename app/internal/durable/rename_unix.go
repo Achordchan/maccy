@@ -19,3 +19,12 @@ func Rename(from, to string) error {
 	defer dir.Close()
 	return dir.Sync()
 }
+
+func syncDirectory(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
