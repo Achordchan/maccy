@@ -415,15 +415,17 @@ const pendingUploadFingerprint = "pending-upload"
 // can come before it: a crash can resume the upload instead of merging the
 // same items again.
 type pendingMergeState struct {
-	Mutation    string        `json:"mutation,omitempty"`
-	Baseline    *syncBaseline `json:"baseline,omitempty"`
-	Fingerprint string        `json:"fingerprint"`
-	Version     string        `json:"version,omitempty"`
-	UpdatedAt   string        `json:"updatedAt,omitempty"`
-	SHA256      string        `json:"sha256,omitempty"`
-	Size        *int64        `json:"size,omitempty"`
-	Before      string        `json:"before"`
-	After       string        `json:"after,omitempty"`
+	OldPortable       *model.Settings `json:"oldPortable,omitempty"`
+	InstalledPortable *model.Settings `json:"installedPortable,omitempty"`
+	Mutation          string          `json:"mutation,omitempty"`
+	Baseline          *syncBaseline   `json:"baseline,omitempty"`
+	Fingerprint       string          `json:"fingerprint"`
+	Version           string          `json:"version,omitempty"`
+	UpdatedAt         string          `json:"updatedAt,omitempty"`
+	SHA256            string          `json:"sha256,omitempty"`
+	Size              *int64          `json:"size,omitempty"`
+	Before            string          `json:"before"`
+	After             string          `json:"after,omitempty"`
 	// Applied is the history as the mutation made it, before the limits
 	// (After is after them): the record is written before the mutation is
 	// seen, and a save of the history can come between the two.
@@ -487,6 +489,9 @@ func (s *Syncer) pendingMergePath() string {
 }
 
 func (s *Syncer) writePendingMerge(p pendingMergeState) error {
+	if old, ok := s.readPendingMerge(); ok && old.Mutation == p.Mutation && p.OldPortable == nil {
+		p.OldPortable, p.InstalledPortable = old.OldPortable, old.InstalledPortable
+	}
 	if p.Baseline == nil {
 		b := syncBaselineOf(s.settings())
 		p.Baseline = &b
@@ -596,7 +601,13 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error 
 		// Only the marker written after a successful Flush, the exact
 		// merged history, or the mark of the merge in the history proves the
 		// merge reached the disk. A different fingerprint alone can be an
-		// unflushed capture. Persist the current rollback before discarding evidence.
+		// unflushed capture. Restore only portable fields still equal to the import.
+		if p.OldPortable != nil && p.InstalledPortable != nil {
+			if err := s.cfg.Settings.Update(func(st *model.Settings) { st.RestorePortable(*p.InstalledPortable, *p.OldPortable) }); err != nil {
+				return err
+			}
+		}
+		// Persist the current rollback before discarding evidence.
 		if err := s.flush(ctx); err != nil {
 			return err
 		}
@@ -1321,6 +1332,9 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		// What the user deleted while the snapshot was downloading is left out
 		// of it, or the merge would bring it back.
 		merged = MergeItems(withoutDeletedSince(remote.Items, local, current), current)
+		if model.Str(localSettings.SyncLastLocalFingerprint) == pendingUploadFingerprint {
+			recountMergedSides(merged, withoutDeletedSince(remote.Items, local, current), current)
+		}
 		applied, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, merged, before)
 		if err != nil {
 			return nil, err
@@ -1563,6 +1577,13 @@ func (s *Syncer) suppress(on bool) {
 //
 // undo learns what was written.
 func (s *Syncer) applySettingsFor(account string, settings model.Settings, undo *settingsUndo) (map[string]bool, error) {
+	if p, ok := s.readPendingMerge(); ok {
+		old, installed := undo.old.Portable(), settings.Portable()
+		p.OldPortable, p.InstalledPortable = &old, &installed
+		if err := s.writePendingMerge(p); err != nil {
+			return nil, err
+		}
+	}
 	skipped := false
 	err := s.cfg.Settings.Update(func(m *model.Settings) {
 		if account != "" {
