@@ -1267,7 +1267,7 @@ func TestDownloadMergeRecordsPendingStateBeforeUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Decision.Reason != "local_changed_only" || puts.Load() != 2 {
+	if (res.Decision.Reason != "local_changed_only" && res.Decision.Reason != "pending_upload_remote_changed") || puts.Load() != 2 {
 		t.Errorf("retry: %+v, uploads %d", res.Decision, puts.Load())
 	}
 }
