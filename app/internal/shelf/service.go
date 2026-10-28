@@ -48,7 +48,7 @@ func (s *Service) startLocked() error {
 			s.Spawn()
 		}
 	}}
-	stop, err := hook(Events{LeftDown: g.LeftDown, LeftUp: g.LeftUp, Move: g.Move})
+	stop, err := hook(Events{LeftDown: g.leftDownAt, LeftUp: func(time.Time) { g.LeftUp() }, Move: g.moveAt})
 	if err != nil {
 		return err
 	}

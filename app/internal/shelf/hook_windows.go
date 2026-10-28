@@ -36,6 +36,7 @@ var (
 	procPostThreadMsg = user32.NewProc("PostThreadMessageW")
 	procAsyncKey      = user32.NewProc("GetAsyncKeyState")
 	procThreadID      = kernel32.NewProc("GetCurrentThreadId")
+	procGetTickCount  = kernel32.NewProc("GetTickCount")
 	procMoveMemory    = ntdll.NewProc("RtlMoveMemory")
 )
 
@@ -44,6 +45,7 @@ var (
 type mouseEvent struct {
 	kind int // wm* message
 	x, y int32
+	tick uint32
 }
 
 var (
@@ -70,15 +72,17 @@ func lowLevelMouseProc(nCode, wParam, lParam uintptr) uintptr {
 			var st msllhookstruct
 			procMoveMemory.Call(uintptr(unsafe.Pointer(&st)), lParam, unsafe.Sizeof(st))
 			select {
-			case hookEvents <- mouseEvent{wmMouseMove, st.X, st.Y}:
+			case hookEvents <- mouseEvent{wmMouseMove, st.X, st.Y, st.Time}:
 			default: // the consumer is behind: a move is not worth waiting for
 			}
 		case wmLButtonDown, wmLButtonUp:
+			var st msllhookstruct
+			procMoveMemory.Call(uintptr(unsafe.Pointer(&st)), lParam, unsafe.Sizeof(st))
 			// A press or a release must not be lost, or the gesture would
 			// think the button is still down; a full queue is not waited for
 			// here, but 4096 events are a lot.
 			select {
-			case hookEvents <- mouseEvent{kind: int(wParam)}:
+			case hookEvents <- mouseEvent{kind: int(wParam), tick: st.Time}:
 			default:
 				// It could not be queued: say so, and the consumer will not
 				// trust what it believes about the button (see below).
@@ -135,6 +139,7 @@ func StartHook(ev Events) (stop func(), err error) {
 	consumed := make(chan struct{})
 	go func() {
 		defer close(consumed)
+		var clock mouseClock
 		for {
 			select {
 			case <-quit:
@@ -152,27 +157,30 @@ func StartHook(ev Events) (stop func(), err error) {
 							break drain
 						}
 					}
+					tick, _, _ := procGetTickCount.Call()
+					at := clock.at(uint32(tick))
 					if down, _, _ := procAsyncKey.Call(vkLButton); down&0x8000 != 0 {
 						if ev.LeftDown != nil {
-							ev.LeftDown()
+							ev.LeftDown(at)
 						}
 					} else if ev.LeftUp != nil {
-						ev.LeftUp()
+						ev.LeftUp(at)
 					}
 					continue
 				}
+				at := clock.at(m.tick)
 				switch m.kind {
 				case wmMouseMove:
 					if ev.Move != nil {
-						ev.Move(int(m.x), int(m.y))
+						ev.Move(int(m.x), int(m.y), at)
 					}
 				case wmLButtonDown:
 					if ev.LeftDown != nil {
-						ev.LeftDown()
+						ev.LeftDown(at)
 					}
 				case wmLButtonUp:
 					if ev.LeftUp != nil {
-						ev.LeftUp()
+						ev.LeftUp(at)
 					}
 				}
 			}

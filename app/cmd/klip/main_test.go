@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -99,14 +100,20 @@ func TestHelperModeEndToEnd(t *testing.T) {
 }
 
 func TestHelperModeFailureExitsNonZero(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "klip-under-test")
+	name := "klip-under-test"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	bin := filepath.Join(t.TempDir(), name)
 	build := exec.Command("go", "build", "-o", bin, ".")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	if err := exec.Command(bin, "--apply-update", filepath.Join(t.TempDir(), "no-such-plan.json")).Run(); err == nil {
-		t.Fatal("a missing plan must fail")
+	err := exec.Command(bin, "--apply-update", filepath.Join(t.TempDir(), "no-such-plan.json")).Run()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+		t.Fatalf("missing plan must exit 2, got %v", err)
 	}
 }
 

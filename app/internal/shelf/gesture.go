@@ -49,9 +49,11 @@ func (g *Gesture) detector() *Detector {
 }
 
 // LeftDown is the left button going down anywhere.
-func (g *Gesture) LeftDown() {
+func (g *Gesture) LeftDown() { g.leftDownAt(g.now()) }
+
+func (g *Gesture) leftDownAt(at time.Time) {
 	g.leftDown, g.spawned = true, false
-	g.downAt = g.now()
+	g.downAt = at
 	g.downPoint, g.thresholdMet = nil, false
 	g.detector().Reset()
 }
@@ -64,7 +66,9 @@ func (g *Gesture) LeftUp() {
 }
 
 // Move is the mouse at screen point (x, y).
-func (g *Gesture) Move(x, y int) {
+func (g *Gesture) Move(x, y int) { g.moveAt(x, y, g.now()) }
+
+func (g *Gesture) moveAt(x, y int, at time.Time) {
 	if !g.leftDown || g.spawned {
 		return
 	}
@@ -90,10 +94,10 @@ func (g *Gesture) Move(x, y int) {
 		g.detector().Reset() // a real drag: a fresh shake window
 	}
 	// Not a click and a swipe: a short hold first.
-	if g.now().Sub(g.downAt) < 110*time.Millisecond {
+	if at.Sub(g.downAt) < 110*time.Millisecond {
 		return
 	}
-	if g.detector().Update(g.now(), float64(x)) {
+	if g.detector().Update(at, float64(x)) {
 		g.spawned = true
 		if g.Spawn != nil {
 			g.Spawn(x, y)

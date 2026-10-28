@@ -336,7 +336,7 @@ func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 	// was on its way: the answer belongs to the session that asked.
 	same := false
 	var issued string // the token of the session that asked, as it was stored
-	_ = s.Store.Update(func(m *model.Settings) {
+	saveErr := s.Store.Update(func(m *model.Settings) {
 		if strings.TrimSpace(model.Str(m.AuthRefreshToken)) != refresh {
 			return
 		}
@@ -357,6 +357,9 @@ func (s *Service) EnsureAccessToken(ctx context.Context) (string, error) {
 	})
 	if !same {
 		return "", nil
+	}
+	if saveErr != nil {
+		return "", fmt.Errorf("登录已续期，但无法保存设置，重启后可能需要重新登录: %w", saveErr)
 	}
 	return issued, nil // not read again: the user may be somebody else by now
 }

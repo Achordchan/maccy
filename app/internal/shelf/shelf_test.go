@@ -282,21 +282,21 @@ func TestServiceDrivesTheGestureFromHookEvents(t *testing.T) {
 	if err := s.Start(); err == nil {
 		t.Fatal("started twice")
 	}
-	ev.LeftDown()
-	ev.Move(500, 300)
+	ev.LeftDown(now)
+	ev.Move(500, 300, now)
 	now = now.Add(20 * time.Millisecond)
-	ev.Move(520, 300)
+	ev.Move(520, 300, now)
 	now = now.Add(120 * time.Millisecond)
 	x := 520
 	for i := 0; i < 12; i++ {
 		x += 30 * (1 - 2*((i/3)%2))
 		now = now.Add(16 * time.Millisecond)
-		ev.Move(x, 300)
+		ev.Move(x, 300, now)
 	}
 	if spawns != 1 {
 		t.Fatalf("spawns = %d", spawns)
 	}
-	ev.LeftUp()
+	ev.LeftUp(now)
 	s.Stop()
 	s.Stop()
 	if stopped != 1 {
