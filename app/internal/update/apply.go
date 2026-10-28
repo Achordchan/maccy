@@ -254,6 +254,7 @@ func RunPlan(p Plan, h Hooks) error {
 	if err == nil {
 		lg.say("light update applied")
 		if err := removeRecoveryJournal(p.InstallDir, h.Sleep); err != nil {
+			h.Alert("Klip 更新未完成", "无法清理恢复记录，请关闭占用程序后重新启动Klip以恢复："+err.Error())
 			return err
 		}
 		if lerr := h.Launch(filepath.Join(p.InstallDir, ExeName)); lerr != nil {
@@ -407,7 +408,11 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 		if err != nil {
 			return err
 		}
-		existed := fileExists(e.dest)
+		targetInfo, statErr := os.Stat(e.dest)
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return statErr
+		}
+		existed := statErr == nil && targetInfo.Mode().IsRegular()
 		if existed {
 			if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
 				return err

@@ -94,7 +94,34 @@ func Handler(dir string, logf func(string, ...any)) http.Handler {
 			return
 		}
 		logf("200 %s -> %s", r.URL.Path, full)
-		http.ServeFile(w, r, full)
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer root.Close()
+		relative, err := filepath.Rel(dir, full)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		info, err := root.Lstat(relative)
+		if err != nil || !info.Mode().IsRegular() {
+			http.NotFound(w, r)
+			return
+		}
+		openedFile, err := root.Open(relative)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer openedFile.Close()
+		opened, err := openedFile.Stat()
+		if err != nil || !os.SameFile(info, opened) {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeContent(w, r, info.Name(), info.ModTime(), openedFile)
 	})
 }
 
