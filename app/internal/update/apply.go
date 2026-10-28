@@ -8,6 +8,7 @@ import (
 	"klip/internal/durable"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -124,6 +125,7 @@ type rollbackItem struct {
 	path, backup string
 	existed      bool
 	moved        bool
+	manifest     bool
 }
 
 // RunPlan is the helper: it waits for the program to exit and then, as the
@@ -206,6 +208,9 @@ func RunPlan(p Plan, h Hooks) error {
 				}
 				rerr = nil
 				if it.moved {
+					if _, err := os.Stat(it.backup); os.IsNotExist(err) {
+						break
+					}
 					rerr = os.RemoveAll(it.path)
 					if rerr == nil {
 						rerr = os.Rename(it.backup, it.path)
@@ -239,6 +244,9 @@ func RunPlan(p Plan, h Hooks) error {
 				lg.say("rollback of the file list failed: " + rerr.Error())
 				note(rerr)
 			}
+		}
+		if first == nil {
+			_ = os.Remove(recoveryPath(p.InstallDir))
 		}
 		return first
 	}
@@ -467,6 +475,17 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 	if err := os.MkdirAll(filepath.Dir(p.InstalledManifest), 0o755); err != nil {
 		return err
 	}
+	backup := filepath.Join(p.BackupDir, "previous-installed-manifest.json")
+	existed := fileExists(p.InstalledManifest)
+	if existed {
+		if err := copyFile(p.InstalledManifest, backup); err != nil {
+			return err
+		}
+	}
+	*rollback = append(*rollback, rollbackItem{path: p.InstalledManifest, backup: backup, existed: existed, manifest: true})
+	if err := saveRecovery(p.InstallDir, *rollback); err != nil {
+		return err
+	}
 	return writeJSON(p.InstalledManifest, keep)
 }
 
@@ -571,6 +590,17 @@ func CleanLegacy(installDir, installedManifest string) ([]string, error) {
 // (maccy.exe --apply-update plan.json). It says whether it was; if so the
 // caller must exit with the code.
 func HelperMain(args []string, h Hooks) (handled bool, code int) {
+	if len(args) >= 4 && args[1] == "--recover-update" {
+		pid, _ := strconv.Atoi(args[3])
+		waitExit(pid)
+		if err := RecoverInterruptedUpdate(args[2]); err != nil {
+			return true, 1
+		}
+		if err := launch(filepath.Join(args[2], ExeName)); err != nil {
+			return true, 1
+		}
+		return true, 0
+	}
 	if len(args) < 3 || args[1] != "--apply-update" {
 		return false, 0
 	}

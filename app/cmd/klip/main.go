@@ -91,7 +91,7 @@ func main() {
 		return
 	}
 	if exe, err := os.Executable(); err == nil {
-		if err := update.RecoverInterruptedUpdate(filepath.Dir(exe)); err != nil {
+		if needed, err := update.StartRecovery(filepath.Dir(exe)); needed || err != nil {
 			return
 		}
 	}

@@ -4,19 +4,22 @@ import (
 	"encoding/json"
 	"klip/internal/durable"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 )
 
 type recoveryEntry struct {
 	Path, Backup   string
 	Existed, Moved bool
+	Manifest       bool
 }
 
 func recoveryPath(root string) string { return filepath.Join(root, ".klip-update-recovery.json") }
 func saveRecovery(root string, items []rollbackItem) error {
 	entries := make([]recoveryEntry, len(items))
 	for i, it := range items {
-		entries[i] = recoveryEntry{it.path, it.backup, it.existed, it.moved}
+		entries[i] = recoveryEntry{it.path, it.backup, it.existed, it.moved, it.manifest}
 	}
 	b, err := json.Marshal(entries)
 	if err != nil {
@@ -60,7 +63,7 @@ func RecoverInterruptedUpdate(root string) error {
 		if err != nil {
 			return err
 		}
-		if _, err = insideRoot(root, rel); err != nil {
+		if _, err = insideRoot(root, rel); err != nil && !e.Manifest {
 			return err
 		}
 		if e.Moved {
@@ -84,4 +87,27 @@ func RecoverInterruptedUpdate(root string) error {
 		}
 	}
 	return os.Remove(recoveryPath(root))
+}
+
+// StartRecovery launches a separate executable so Windows can replace the installed binary.
+func StartRecovery(root string) (bool, error) {
+	if _, err := os.Stat(recoveryPath(root)); os.IsNotExist(err) {
+		return false, nil
+	} else if err != nil {
+		return true, err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return true, err
+	}
+	dir, err := os.MkdirTemp("", "klip-recovery-")
+	if err != nil {
+		return true, err
+	}
+	helper := filepath.Join(dir, filepath.Base(exe))
+	if err = copyFile(exe, helper); err != nil {
+		return true, err
+	}
+	cmd := exec.Command(helper, "--recover-update", root, strconv.Itoa(os.Getpid()))
+	return true, cmd.Start()
 }
