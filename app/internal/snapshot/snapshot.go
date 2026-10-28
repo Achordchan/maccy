@@ -1198,9 +1198,9 @@ type fileRecord struct {
 }
 
 func readImage(ctx context.Context, db *sqlite.DB, id string, schema int) (imageRecord, error) {
-	q := "SELECT fileName, bytes FROM item_images WHERE itemId = ? LIMIT 1"
+	q := "SELECT fileName, bytes FROM item_images WHERE itemId = ? COLLATE NOCASE LIMIT 1"
 	if schema >= 2 {
-		q = "SELECT fileName, blobSha256, sizeBytes, bytes FROM item_images WHERE itemId = ? LIMIT 1"
+		q = "SELECT fileName, blobSha256, sizeBytes, bytes FROM item_images WHERE itemId = ? COLLATE NOCASE LIMIT 1"
 	}
 	rows, err := db.Query(ctx, q, id)
 	if err != nil {
@@ -1219,9 +1219,9 @@ func readImage(ctx context.Context, db *sqlite.DB, id string, schema int) (image
 }
 
 func readFiles(ctx context.Context, db *sqlite.DB, id string, schema int) ([]fileRecord, error) {
-	q := "SELECT idx, fileName, bytes FROM item_files WHERE itemId = ? ORDER BY idx ASC"
+	q := "SELECT idx, fileName, bytes FROM item_files WHERE itemId = ? COLLATE NOCASE ORDER BY idx ASC"
 	if schema >= 2 {
-		q = "SELECT idx, fileName, blobSha256, sizeBytes, bytes FROM item_files WHERE itemId = ? ORDER BY idx ASC"
+		q = "SELECT idx, fileName, blobSha256, sizeBytes, bytes FROM item_files WHERE itemId = ? COLLATE NOCASE ORDER BY idx ASC"
 	}
 	rows, err := db.Query(ctx, q, id)
 	if err != nil {
