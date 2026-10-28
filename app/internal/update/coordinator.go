@@ -322,7 +322,7 @@ func (c *Coordinator) Apply(ctx context.Context) {
 // hasInstaller says whether the release has an installer that this machine
 // can run: the installer of the release tool is for 64-bit Intel/AMD Windows.
 func (c *Coordinator) hasInstaller(i *Info) bool {
-	return strings.TrimSpace(i.InstallerURL) != "" && strings.EqualFold(c.Client.runtime(), "win-x64")
+	return validateInstaller(*i) == nil && strings.EqualFold(c.Client.runtime(), "win-x64")
 }
 
 // manualURL is what a user who cannot be updated automatically is sent to: the

@@ -622,7 +622,7 @@ func TestFailedPreparationLeavesNothingStaged(t *testing.T) {
 }
 
 func TestManualUpdateLinkIsForThisSystem(t *testing.T) {
-	info := &Info{InstallerURL: "https://x/setup.exe", PackageKind: "zip", PackageRuntime: "linux-x64", PackageURL: "https://x/linux.zip", PackageSHA256: "AA"}
+	info := &Info{InstallerSHA256: strings.Repeat("a", 64), InstallerURL: "https://x/setup.exe", PackageKind: "zip", PackageRuntime: "linux-x64", PackageURL: "https://x/linux.zip", PackageSHA256: "AA"}
 	linux := &Coordinator{Client: &Client{Runtime: "linux-x64"}}
 	if got := linux.manualURL(info); got != "https://x/linux.zip" {
 		t.Errorf("a Linux user was sent to %q", got)

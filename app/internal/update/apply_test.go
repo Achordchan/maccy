@@ -557,7 +557,7 @@ func TestCoordinatorWithoutPackageUsesTheInstaller(t *testing.T) {
 	r2.s.setManifest(t, m)
 	r2.c.Refresh(context.Background())
 	r2.c.Apply(context.Background())
-	if r2.shut != 0 || r2.c.State().Phase != Problem || !strings.HasPrefix(r2.c.State().Message, "下载失败：") {
+	if r2.shut != 0 || r2.c.State().Phase != Problem || r2.c.State().Message != "没有可用的安装包下载地址。" {
 		t.Fatalf("%d %+v", r2.shut, r2.c.State())
 	}
 }
@@ -714,6 +714,7 @@ func TestFailedRecheckKeepsTheKnownUpdate(t *testing.T) {
 func TestMandatoryUpdateOfAnotherSystemShutsNothing(t *testing.T) {
 	r := newCoord(t, "1.0.10")
 	m := release("1.0.11")
+	m.Latest.Installer = Installer{URL: "https://x/setup.exe", SHA256: strings.Repeat("a", 64)}
 	m.Latest.Mandatory = true
 	r.s.setManifest(t, m)
 	r.c.Check(context.Background())
