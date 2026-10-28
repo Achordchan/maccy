@@ -169,6 +169,7 @@ func RunPlan(p Plan, h Hooks) error {
 	h.Sleep(300 * time.Millisecond)
 
 	if p.Installer != "" {
+		unlock()
 		lg.say("starting installer " + p.Installer)
 		if err := h.LaunchInstaller(p.Installer); err != nil {
 			lg.say("failed: " + err.Error())

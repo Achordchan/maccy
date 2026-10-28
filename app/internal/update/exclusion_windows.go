@@ -12,7 +12,13 @@ func holdUpdateExclusion() (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() { windows.CloseHandle(h) }, nil
+	legacy, _ := windows.UTF16PtrFromString("maccy_mutex")
+	app, appErr := windows.CreateMutex(nil, false, legacy)
+	if appErr != nil && appErr != windows.ERROR_ALREADY_EXISTS {
+		windows.CloseHandle(h)
+		return nil, appErr
+	}
+	return func() { windows.CloseHandle(app); windows.CloseHandle(h) }, nil
 }
 func UpdateInProgress() bool {
 	name, _ := windows.UTF16PtrFromString("klip_update_in_progress")
