@@ -929,6 +929,14 @@ func (s *Service) write(it model.Item) (bool, written, error) {
 	case model.KindFileList:
 		var resolved []string
 		compact := 0
+		legacyComplete := true
+		for _, p := range nonBlank(it.FilePaths) {
+			if !isFile(filepath.Join(s.Layout.Files(), it.IDN(), fmt.Sprintf("%04d_%s", compact, baseName(p)))) {
+				legacyComplete = false
+			}
+			compact++
+		}
+		compact = 0
 		for i, p := range it.FilePaths {
 			if strings.TrimSpace(p) == "" {
 				continue
@@ -940,7 +948,7 @@ func (s *Service) write(it model.Item) (bool, written, error) {
 			cached := filepath.Join(s.Layout.Files(), it.IDN(), fmt.Sprintf("%04d_%s", i, name))
 			legacy := filepath.Join(s.Layout.Files(), it.IDN(), fmt.Sprintf("%04d_%s", compact, name))
 			compact++
-			if !isFile(cached) && isFile(legacy) {
+			if legacyComplete {
 				cached = legacy
 			}
 			switch {
