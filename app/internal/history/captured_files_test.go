@@ -74,3 +74,18 @@ func TestDuplicateImageRepairsMissingPayload(t *testing.T) {
 		t.Fatal("fresh image deleted")
 	}
 }
+
+func TestInterruptedCaptureReplacementRestoresRetainedID(t *testing.T) {
+	root := t.TempDir()
+	backup := filepath.Join(root, "retained.capture-backup")
+	if err := os.Mkdir(backup, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "0000_doc.txt"), []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	recoverCapturedFiles(root)
+	if b, err := os.ReadFile(filepath.Join(root, "retained", "0000_doc.txt")); err != nil || string(b) != "old" {
+		t.Fatal("interrupted replacement not recovered")
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"klip/internal/durable"
 	"klip/internal/model"
 	"klip/internal/paths"
 	"klip/internal/snapshot"
@@ -37,6 +38,7 @@ func Load(l paths.Layout) ([]model.Item, error) {
 	if err := json.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &items); err != nil {
 		return nil, err
 	}
+	recoverCapturedFiles(l.Files())
 	// An interrupted cache replacement is undone before Normalize decides
 	// that an item has no content.
 	snapshot.RecoverPayloads(l, items)
@@ -107,12 +109,17 @@ func SaveWithMutation(l paths.Layout, items []model.Item, mutation string) error
 		os.Remove(tmp)
 		return err
 	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err
 	}
 	_ = os.Chmod(tmp, 0o600)
-	if err := os.Rename(tmp, l.History()); err != nil {
+	if err := durable.Rename(tmp, l.History()); err != nil {
 		os.Remove(tmp)
 		return err
 	}

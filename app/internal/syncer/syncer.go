@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"klip/internal/durable"
 	"klip/internal/history"
 	"klip/internal/model"
 	"klip/internal/snapshot"
@@ -513,12 +514,17 @@ func (s *Syncer) writePendingMerge(p pendingMergeState) error {
 		os.Remove(tmp)
 		return err
 	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err
 	}
 	_ = os.Chmod(tmp, 0o600)
-	if err := os.Rename(tmp, s.pendingMergePath()); err != nil {
+	if err := durable.Rename(tmp, s.pendingMergePath()); err != nil {
 		os.Remove(tmp)
 		return err
 	}
@@ -1939,20 +1945,18 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 		remoteByID[strings.ToLower(it.ID)] = it
 	}
 	for i := range merged {
-		best, found := int32(0), false
-		for _, it := range filteredRemote {
-			if sameMergeIdentity(merged[i], it) {
-				best, found = max(best, it.CopyCount), true
+		totals := [2]int64{}
+		for side, items := range [][]model.Item{filteredRemote, filteredLocal} {
+			for _, it := range items {
+				if sameMergeIdentity(merged[i], it) {
+					totals[side] += int64(max(1, it.CopyCount))
+					if totals[side] > 2147483647 {
+						totals[side] = 2147483647
+					}
+				}
 			}
 		}
-		for _, it := range filteredLocal {
-			if sameMergeIdentity(merged[i], it) {
-				best, found = max(best, it.CopyCount), true
-			}
-		}
-		if found {
-			merged[i].CopyCount = best
-		}
+		merged[i].CopyCount = int32(max(totals[0], totals[1]))
 	}
 
 	// A field the user changed during the download keeps the local value; an
