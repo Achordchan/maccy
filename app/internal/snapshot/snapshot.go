@@ -662,7 +662,8 @@ func (s *importStaging) addImage(n int, img imageRecord, ensure EnsureBlob) (str
 			return "", err
 		}
 	}
-	ext := filepath.Ext(img.fileName)
+	ext := filepath.Ext(sanitizeFileName(img.fileName))
+	ext = truncateUTF8(ext, 32)
 	if ext == "" {
 		ext = ".png"
 	}
