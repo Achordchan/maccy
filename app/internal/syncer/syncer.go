@@ -1351,7 +1351,21 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		}
 		merged = merge(s.withoutDeleted(withoutDeletedSince(remote.Items, local, current)), s.withoutDeleted(current))
 		if model.Str(localSettings.SyncLastLocalFingerprint) == pendingUploadFingerprint {
-			recountMergedSides(merged, withoutDeletedSince(remote.Items, local, current), current)
+			if !localSettings.MergeDuplicates || (remote.Settings != nil && !remote.Settings.MergeDuplicates) {
+				for i := range merged {
+					var count int32
+					for _, side := range [][]model.Item{remote.Items, current} {
+						for _, it := range side {
+							if strings.EqualFold(it.ID, merged[i].ID) {
+								count = max(count, it.CopyCount)
+							}
+						}
+					}
+					merged[i].CopyCount = max(1, count)
+				}
+			} else {
+				recountMergedSides(merged, s.withoutDeleted(withoutDeletedSince(remote.Items, local, current)), s.withoutDeleted(current))
+			}
 		}
 		applied, ap, err := snapshot.ApplyPayloads(s.cfg.Layout, importRoot, merged, before)
 		if err != nil {
