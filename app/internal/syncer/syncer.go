@@ -1366,17 +1366,17 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		merged = merge(s.withoutDeleted(withoutDeletedSince(remote.Items, local, current)), s.withoutDeleted(current))
 		if model.Str(localSettings.SyncLastLocalFingerprint) == pendingUploadFingerprint {
 			if !localSettings.MergeDuplicates || (remote.Settings != nil && !remote.Settings.MergeDuplicates) {
-				for i := range merged {
-					var count int32
-					for _, side := range [][]model.Item{remote.Items, current} {
-						for _, it := range side {
-							if strings.EqualFold(it.ID, merged[i].ID) {
-								count = max(count, it.CopyCount)
-							}
-						}
+				counts := map[string]int32{}
+				for _, side := range [][]model.Item{remote.Items, current} {
+					for _, it := range side {
+						key := strings.ToLower(it.ID)
+						counts[key] = max(counts[key], it.CopyCount)
 					}
-					merged[i].CopyCount = max(1, count)
 				}
+				for i := range merged {
+					merged[i].CopyCount = max(1, counts[strings.ToLower(merged[i].ID)])
+				}
+
 			} else {
 				recountMergedSides(merged, s.withoutDeleted(withoutDeletedSince(remote.Items, local, current)), s.withoutDeleted(current))
 			}
