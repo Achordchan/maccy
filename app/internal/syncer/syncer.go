@@ -99,7 +99,11 @@ func (s *Syncer) flush(ctx context.Context) error {
 	if s.cfg.Flush == nil {
 		return ErrNoFlush
 	}
-	return s.cfg.Flush(ctx)
+	err := s.cfg.Flush(ctx)
+	if err == nil {
+		s.rollbackPending = false
+	}
+	return err
 }
 
 // ---- connection and tokens
