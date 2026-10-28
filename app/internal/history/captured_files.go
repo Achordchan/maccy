@@ -128,6 +128,13 @@ func recoverCaptureTransactions(root string, retireOnly bool, histories ...[]mod
 						continue
 					}
 				}
+				if unknown && !retireOnly {
+					preserved := backup + ".legacy-preserved-" + captureMutationID()
+					if err := os.Rename(backup, preserved); err == nil {
+						_ = os.Remove(backup + ".capture-time")
+					}
+					continue
+				}
 				if !committed && (retireOnly || unknown) {
 					continue
 				}

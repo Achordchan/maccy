@@ -959,8 +959,13 @@ func (s *Service) noteSkipped() {
 
 // retrySkipped starts the retry for a change that was not looked at.
 func (s *Service) retrySkipped() {
-	if s.skipped.Swap(false) && s.Retry != nil {
-		go s.Retry()
+	if s.skipped.Swap(false) {
+		if s.RetryGeneration != nil {
+			g, k := s.retryGeneration.Load(), s.changeKey()
+			go s.RetryGeneration(g, k)
+		} else if s.Retry != nil {
+			go s.Retry()
+		}
 	}
 }
 
