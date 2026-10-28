@@ -341,7 +341,11 @@ func extractOne(f *zip.File, dest string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	n, err := io.Copy(out, io.LimitReader(in, 512*1024*1024+1))
+	if err == nil && n > 512*1024*1024 {
+		err = errors.New("update entry expansion limit exceeded")
+	}
+	if err != nil {
 		out.Close()
 		return err
 	}
