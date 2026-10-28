@@ -67,25 +67,21 @@ func (p *Persister) save() error {
 	p.saveMu.Lock()
 	defer p.saveMu.Unlock()
 	p.svc.mu.Lock()
+	defer p.svc.mu.Unlock()
 	items := append([]model.Item(nil), p.svc.items...)
 	marker := p.svc.mutation
 	trash := p.svc.pendingTrash
 	p.svc.pendingTrash = historyTrashEmpty()
-	p.svc.mu.Unlock()
 	if err := SaveWithMutation(p.layout, items, marker); err != nil {
-		p.svc.mu.Lock()
 		p.svc.pendingTrash.images = append(p.svc.pendingTrash.images, trash.images...)
 		p.svc.pendingTrash.fileDirs = append(p.svc.pendingTrash.fileDirs, trash.fileDirs...)
-		p.svc.mu.Unlock()
 		return err
 	}
-	p.svc.mu.Lock()
 	retireCapturedFiles(p.layout.Files(), items)
 	live := p.svc.items
 	p.svc.items = append(append([]model.Item(nil), live...), items...)
 	p.svc.emptyNow(context.Background(), trash)
 	p.svc.items = live
-	p.svc.mu.Unlock()
 	return nil
 }
 

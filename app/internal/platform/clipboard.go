@@ -88,13 +88,6 @@ func ContentFingerprint() string {
 	h.Write([]byte(strings.Join(formats, "\x00")))
 	h.Write([]byte{1})
 	text := c.ReadText()
-	if text == "" {
-		for _, f := range formats {
-			if strings.EqualFold(f, "text/plain") || strings.EqualFold(f, "text") || strings.EqualFold(f, "unicodetext") {
-				return ""
-			}
-		}
-	}
 	h.Write([]byte(text))
 	h.Write([]byte{1})
 	files, err := c.ReadFiles()
@@ -110,6 +103,16 @@ func ContentFingerprint() string {
 	// The picture always counts: which kinds are captured is a setting that
 	// may change, and screenshot tools name their format in odd ways.
 	picture := c.ReadImage()
+	if len(files) == 0 && len(picture) == 0 {
+		if text == "" {
+			for _, f := range formats {
+				if strings.EqualFold(f, "text/plain") || strings.EqualFold(f, "text") || strings.EqualFold(f, "unicodetext") {
+					return ""
+				}
+			}
+		}
+	}
+
 	for _, format := range formats {
 		f := strings.ToLower(format)
 		if (strings.Contains(f, "image") || strings.Contains(f, "bitmap") || strings.Contains(f, "dib")) && len(picture) == 0 && strings.TrimSpace(text) == "" && len(files) == 0 {
