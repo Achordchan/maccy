@@ -253,7 +253,9 @@ func RunPlan(p Plan, h Hooks) error {
 	err := applyFiles(p, h, lg, &rollback)
 	if err == nil {
 		lg.say("light update applied")
-		_ = os.Remove(recoveryPath(p.InstallDir))
+		if err := removeRecoveryJournal(p.InstallDir, h.Sleep); err != nil {
+			return err
+		}
 		if lerr := h.Launch(filepath.Join(p.InstallDir, ExeName)); lerr != nil {
 			// The new program will not start (a virus scanner may have taken
 			// it): that is a failed update, and the old files come back.
@@ -625,4 +627,18 @@ func HelperMain(args []string, h Hooks) (handled bool, code int) {
 		return true, 1
 	}
 	return true, 0
+}
+
+func removeRecoveryJournal(root string, sleep func(time.Duration)) error {
+	var err error
+	for i := 0; i < 5; i++ {
+		err = os.Remove(recoveryPath(root))
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		if i < 4 {
+			sleep(200 * time.Millisecond)
+		}
+	}
+	return fmt.Errorf("cannot retire update recovery journal: %w", err)
 }
