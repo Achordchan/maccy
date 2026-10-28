@@ -245,6 +245,7 @@ func RunPlan(p Plan, h Hooks) error {
 	err := applyFiles(p, h, lg, &rollback)
 	if err == nil {
 		lg.say("light update applied")
+		_ = os.Remove(recoveryPath(p.InstallDir))
 		if lerr := h.Launch(filepath.Join(p.InstallDir, ExeName)); lerr != nil {
 			// The new program will not start (a virus scanner may have taken
 			// it): that is a failed update, and the old files come back.
@@ -263,6 +264,11 @@ func RunPlan(p Plan, h Hooks) error {
 			}
 			h.Alert("Klip 更新失败", "新版本无法启动："+lerr.Error()+"\n\n已恢复旧版本。日志："+p.LogPath)
 			return err
+		}
+		for _, it := range rollback {
+			if it.moved {
+				_ = os.RemoveAll(it.backup)
+			}
 		}
 		return nil
 	}
@@ -369,10 +375,13 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 			if err = os.Remove(backup); err != nil {
 				return err
 			}
+			*rollback = append(*rollback, rollbackItem{path: candidate, backup: backup, existed: true, moved: true})
+			if err := saveRecovery(p.InstallDir, *rollback); err != nil {
+				return err
+			}
 			if err = os.Rename(candidate, backup); err != nil {
 				return err
 			}
-			*rollback = append(*rollback, rollbackItem{path: candidate, backup: backup, existed: true, moved: true})
 		}
 	}
 	for _, e := range entries {
@@ -392,6 +401,9 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 			}
 		}
 		*rollback = append(*rollback, rollbackItem{path: e.dest, backup: backup, existed: existed})
+		if err := saveRecovery(p.InstallDir, *rollback); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(filepath.Dir(e.dest), 0o755); err != nil {
 			return err
 		}
@@ -441,6 +453,9 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 			return err
 		}
 		*rollback = append(*rollback, rollbackItem{path: dest, backup: backup, existed: true})
+		if err := saveRecovery(p.InstallDir, *rollback); err != nil {
+			return err
+		}
 		if err := os.Remove(dest); err != nil {
 			return err
 		}

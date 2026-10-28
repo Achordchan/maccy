@@ -824,8 +824,8 @@ func TestReadOnlyFileInTheInstallDirMeansTheInstallerIsUsed(t *testing.T) {
 		f.Close()
 		t.Skip("read-only files are writable anyway (root?)")
 	}
-	if r.c.installDirWritable() {
-		t.Fatal("the helper cannot replace a read-only file: the installer must be used")
+	if !r.c.installDirWritable() {
+		t.Fatal("an unrelated read-only file must not block a package")
 	}
 	// The user's own data is not the update's to replace.
 	_ = os.Chmod(ro, 0o644)

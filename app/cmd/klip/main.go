@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -88,6 +89,11 @@ func main() {
 	}
 	if update.UpdateInProgress() {
 		return
+	}
+	if exe, err := os.Executable(); err == nil {
+		if err := update.RecoverInterruptedUpdate(filepath.Dir(exe)); err != nil {
+			return
+		}
 	}
 	if platform.HoldAppMutex() {
 		platform.ShowAlreadyRunning() // another instance, perhaps 1.0.10, holds the named mutex
