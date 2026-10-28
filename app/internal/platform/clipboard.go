@@ -81,6 +81,9 @@ func (Clipboard) WriteImage(png []byte, filePath string) error {
 func ContentFingerprint() string {
 	c := Clipboard{}
 	formats := c.Formats()
+	if len(formats) == 0 {
+		return ""
+	}
 	h := sha256.New()
 	h.Write([]byte(strings.Join(formats, "\x00")))
 	h.Write([]byte{1})
@@ -99,6 +102,16 @@ func ContentFingerprint() string {
 	h.Write([]byte{1})
 	// The picture always counts: which kinds are captured is a setting that
 	// may change, and screenshot tools name their format in odd ways.
-	h.Write(c.ReadImage())
+	picture := c.ReadImage()
+	for _, format := range formats {
+		f := strings.ToLower(format)
+		if (strings.Contains(f, "image") || strings.Contains(f, "bitmap") || strings.Contains(f, "dib")) && len(picture) == 0 {
+			return ""
+		}
+		if (strings.Contains(f, "uri-list") || strings.Contains(f, "file")) && err != nil {
+			return ""
+		}
+	}
+	h.Write(picture)
 	return hex.EncodeToString(h.Sum(nil))
 }

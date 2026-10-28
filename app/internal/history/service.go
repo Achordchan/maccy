@@ -381,6 +381,11 @@ func (s *Service) TogglePinned(id string) {
 		return
 	}
 	s.items[idx].Pinned = !s.items[idx].Pinned
+	if !s.items[idx].Pinned {
+		var trash trash
+		s.enforceLimits(&trash)
+		s.empty(context.Background(), trash)
+	}
 	s.mu.Unlock()
 	s.fire()
 }

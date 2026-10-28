@@ -93,6 +93,9 @@ func (w *Watcher) moved(s int64) bool {
 // contentMoved is moved for the fallback: the first fingerprint only records
 // itself, a different one is a change.
 func (w *Watcher) contentMoved(fp string) bool {
+	if fp == "" {
+		return false
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	was := w.seen

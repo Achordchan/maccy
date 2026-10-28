@@ -411,7 +411,7 @@ func (s *Service) Capture(ctx context.Context) error {
 		files = nonBlank(files)
 		if len(files) > 0 {
 			if opt.images && len(files) == 1 && isImagePath(files[0]) && isFile(files[0]) {
-				if data, err := os.ReadFile(files[0]); err == nil {
+				if data, err := readBoundedImage(files[0], opt.maxBytes); err == nil {
 					p, h, size, err := s.savePNG(data)
 					if err == nil {
 						add(model.Item{ID: s.NewID(), Kind: model.KindImage, ApproxBytes: size, ImageFilePath: &p, CopyCount: 1, ContentHash: &h})
@@ -965,4 +965,27 @@ func validateImageSize(data []byte) error {
 		return errors.New("image dimensions exceed capture limit")
 	}
 	return nil
+}
+
+func readBoundedImage(path string, limit int64) ([]byte, error) {
+	if limit <= 0 || limit > 64*1024*1024 {
+		limit = 64 * 1024 * 1024
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if st.Size() > limit {
+		return nil, errors.New("encoded image exceeds capture limit")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if int64(len(data)) > limit {
+		return nil, errors.New("encoded image exceeds capture limit")
+	}
+	return data, err
 }
