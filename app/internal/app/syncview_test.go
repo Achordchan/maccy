@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -42,6 +43,8 @@ func newBare(t *testing.T) (*App, *[]string) {
 	t.Helper()
 	var toasts []string
 	a := &App{cfg: Config{Logf: func(string, ...any) {}, Toast: func(s string) { toasts = append(toasts, s) }}}
+	a.acctCtx, a.acctCancel = context.WithCancel(context.Background())
+	t.Cleanup(a.acctCancel)
 	return a, &toasts
 }
 

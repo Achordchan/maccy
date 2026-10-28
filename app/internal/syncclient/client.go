@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,7 +42,15 @@ const (
 type Client struct {
 	baseURL string
 	http    *http.Client
+	// accountTimeout bounds the account calls. It is a field so that a test
+	// can shorten it; New sets accountCallTimeout.
+	accountTimeout time.Duration
 }
+
+// accountCallTimeout is the deadline of an account call. The HTTP client has
+// no timeout of its own, and a refresh that never answers would hold the
+// sync gate.
+const accountCallTimeout = 30 * time.Second
 
 // New returns a client for the server at baseURL, without a trailing slash.
 // An empty address is the official server only for the account calls, as in
@@ -56,7 +65,37 @@ func NewWithHTTP(baseURL string, h *http.Client) *Client {
 	if h == nil {
 		h = &http.Client{}
 	}
-	return &Client{baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), http: h}
+	return &Client{
+		baseURL:        strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		http:           h,
+		accountTimeout: accountCallTimeout,
+	}
+}
+
+// AccountID is the account an access token belongs to: the "sub" claim of
+// the JWT, or its email when there is no subject. The signature is not
+// verified: the value is used only to tell two sessions apart, never to trust
+// the token. An opaque token gives "".
+func AccountID(accessToken string) string {
+	parts := strings.Split(strings.TrimSpace(accessToken), ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sub   string `json:"sub"`
+		Email string `json:"email"`
+	}
+	if json.Unmarshal(raw, &claims) != nil {
+		return ""
+	}
+	if claims.Sub != "" {
+		return claims.Sub
+	}
+	return claims.Email
 }
 
 // ErrNoBaseURL is returned when the client has no server address.
@@ -198,6 +237,21 @@ func nullableString(raw json.RawMessage) *string {
 
 // decodeObject reads a JSON object; anything else is an empty one, as
 // ParseJsonOrEmpty does.
+// readObject reads the JSON object of a successful answer: a body cut short
+// (the connection dropped, a timeout) or one that is not an object is an
+// error, not an empty answer.
+func readObject(resp *http.Response, what string) (map[string]json.RawMessage, error) {
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &m); err != nil || m == nil {
+		return nil, fmt.Errorf("%s: malformed response", what)
+	}
+	return m, nil
+}
+
 func decodeObject(b []byte) map[string]json.RawMessage {
 	var m map[string]json.RawMessage
 	if json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &m) != nil || m == nil {
@@ -282,17 +336,18 @@ func gzipReader(path string) (io.ReadCloser, error) {
 }
 
 // saveBody writes a response body, gunzipped when the server compressed it,
-// to target, through target+".download".
+// to target, through a temporary file of its own beside it that then takes
+// target's place: two downloads of the same target do not share one, and the
+// target is never missing in between.
 func saveBody(resp *http.Response, target string) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	tmp := target + ".download"
-	os.Remove(tmp)
-	out, err := os.Create(tmp)
+	out, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".*.download")
 	if err != nil {
 		return err
 	}
+	tmp := out.Name()
 	var in io.Reader = resp.Body
 	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Encoding")), "gzip") {
 		zr, err := gzip.NewReader(resp.Body)
@@ -313,8 +368,11 @@ func saveBody(resp *http.Response, target string) error {
 		os.Remove(tmp)
 		return err
 	}
-	os.Remove(target)
-	return os.Rename(tmp, target)
+	if err := os.Rename(tmp, target); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // ClearAuthSession forgets the tokens, as AppSettingsService.ClearAuthSession

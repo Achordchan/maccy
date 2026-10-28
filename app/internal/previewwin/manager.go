@@ -92,6 +92,14 @@ func (mg *Manager) Show(it model.Item, anchor Rect) {
 	seq := mg.seq
 	mg.mu.Unlock()
 	go func() {
+		previewWork <- struct{}{}
+		defer func() { <-previewWork }()
+		mg.mu.Lock()
+		current := mg.wanted(seq)
+		mg.mu.Unlock()
+		if !current {
+			return
+		}
 		var bm *ui.Bitmap
 		var pw, ph int
 		if it.Kind == model.KindImage {
@@ -102,7 +110,7 @@ func (mg *Manager) Show(it model.Item, anchor Rect) {
 			bm, pw, ph = decode(model.Str(it.ImageFilePath), maxPicture)
 		}
 		mg.mu.Lock()
-		current := mg.wanted(seq)
+		current = mg.wanted(seq)
 		mg.mu.Unlock()
 		if !current {
 			return // another item, or none, since
@@ -218,3 +226,6 @@ func (mg *Manager) Close() {
 		win.Close()
 	}
 }
+
+// previewWork bounds concurrent image decoding and filesystem metadata reads.
+var previewWork = make(chan struct{}, 2)

@@ -22,21 +22,31 @@ type Auto struct {
 	Run func(ctx context.Context, reason string, manual bool) error
 	// Done is called after each sync, with its error (nil on success).
 	Done func(reason string, manual bool, err error)
-	// Begin is called when a sync starts, Progress as it goes (both may be
-	// nil). They are how the main window shows the cloud icon at work and,
-	// for a sync the user asked for, the progress bar.
-	Begin    func(reason string, manual bool)
-	Progress func(p Progress, reason string, manual bool)
+	// Context, when set, is the application's lifetime context for a follow-up
+	// run: the trigger that queued it may have been cancelled by then.
+	Context  context.Context
+	Begin    func(string, bool)
+	Progress func(Progress, string, bool)
 
 	busy        atomic.Bool
 	suppressed  atomic.Bool
 	initialDone atomic.Bool
+	// pending says a history change came while a sync was running; another
+	// sync follows when it ends, so that the change is not left unsynced.
+	pending atomic.Bool
+
+	// startMu makes the busy/pending transition atomic: a trigger that cannot
+	// start records pending before the finish of the running sync can look,
+	// and a finish that clears busy either sees the pending work or the
+	// trigger starts the next run itself.
+	startMu sync.Mutex
 
 	mu    sync.Mutex
 	timer *time.Timer
 }
 
-// NewAuto returns an Auto that runs s.
+// NewAuto returns an Auto that runs s. A change of the history that the
+// sync's suppression hid is told to it (Syncer.mutateHistory).
 func NewAuto(s *Syncer, done func(reason string, manual bool, err error)) *Auto {
 	a := &Auto{CanSync: s.CanAutoSync, Done: done}
 	a.Run = func(ctx context.Context, reason string, manual bool) error {
@@ -47,6 +57,7 @@ func NewAuto(s *Syncer, done func(reason string, manual bool, err error)) *Auto 
 		_, err := s.Run(ctx, progress, reason)
 		return err
 	}
+	s.changed = func() { a.OnHistoryChanged(a.baseContext()) }
 	return a
 }
 
@@ -61,68 +72,110 @@ func (a *Auto) debounce() time.Duration {
 // the history itself.
 func (a *Auto) Suppress(on bool) { a.suppressed.Store(on) }
 
-// Suppressed says whether history changes are being ignored because the sync
-// itself is making them.
-func (a *Auto) Suppressed() bool { return a.suppressed.Load() }
-
 // Trigger runs a sync now, unless one is running. A manual one that cannot
 // start because there is no sign-in reports ErrNotLoggedIn.
 func (a *Auto) Trigger(ctx context.Context, reason string, manual bool) bool {
-	if !a.busy.CompareAndSwap(false, true) {
+	a.startMu.Lock()
+	if a.busy.Load() {
+		// A background trigger that cannot start is remembered: it may be the
+		// only notice of a change or of another device's upload. A manual one
+		// is the user asking again, and is dropped as before.
+		if !manual {
+			a.pending.Store(true)
+		}
+		a.startMu.Unlock()
 		return false
 	}
-	go func() {
-		defer a.busy.Store(false)
-		if !a.CanSync() {
-			if manual && a.Done != nil {
-				a.Done(reason, manual, ErrNotLoggedIn)
-			}
-			return
-		}
-		if a.Begin != nil {
-			a.Begin(reason, manual)
-		}
-		err := a.Run(ctx, reason, manual)
-		if err == nil && !manual {
-			a.initialDone.Store(true)
-		}
-		if a.Done != nil {
-			a.Done(reason, manual, err)
-		}
-	}()
+	a.busy.Store(true)
+	a.startMu.Unlock()
+	go a.perform(ctx, reason, manual)
 	return true
 }
 
-// Exclusive runs f once nothing else is running (a sync, another exclusive
-// piece of work) and keeps everything else out until it returns. It waits for
-// its turn, as long as ctx lives, and says whether f ran.
-func (a *Auto) Exclusive(ctx context.Context, f func()) bool {
-	for !a.busy.CompareAndSwap(false, true) {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(20 * time.Millisecond):
+// perform runs one sync and then hands over to pending work, if any.
+func (a *Auto) perform(ctx context.Context, reason string, manual bool) {
+	if !a.CanSync() {
+		if manual && a.Done != nil {
+			a.Done(reason, manual, ErrNotLoggedIn)
 		}
+		a.finish(ctx)
+		return
 	}
-	defer a.busy.Store(false)
-	if ctx.Err() != nil {
-		return false
+	if a.Begin != nil {
+		a.Begin(reason, manual)
 	}
-	f()
-	return true
+	err := a.Run(ctx, reason, manual)
+	if err == nil && !manual {
+		a.initialDone.Store(true)
+	}
+	if a.Done != nil {
+		a.Done(reason, manual, err)
+	}
+	a.finish(ctx)
+}
+
+// finish clears busy and starts a remembered run atomically with Trigger. A
+// suppressed change (the sync's own write) is not started.
+func (a *Auto) finish(ctx context.Context) {
+	a.startMu.Lock()
+	a.busy.Store(false)
+	if a.pending.Swap(false) && !a.suppressed.Load() && a.CanSync() {
+		a.busy.Store(true)
+		a.startMu.Unlock()
+		go a.perform(a.baseContext(), "auto", false)
+		return
+	}
+	a.startMu.Unlock()
 }
 
 // Startup is the first background sync.
 func (a *Auto) Startup(ctx context.Context) { a.Trigger(ctx, "startup", false) }
 
-// OnRemoteUpdated is for the event stream: another device uploaded.
-func (a *Auto) OnRemoteUpdated(ctx context.Context) { a.Trigger(ctx, "sse", false) }
+// OnRemoteUpdated is for the event stream: another device uploaded. An event
+// that arrives while a sync runs is kept (Trigger records it) and synced after
+// it: the running sync may have read an older manifest.
+func (a *Auto) OnRemoteUpdated(ctx context.Context) { a.Trigger(ctx, "remote_event", false) }
+
+// baseContext is the application's lifetime context, or Background.
+func (a *Auto) baseContext() context.Context {
+	if a.Context != nil {
+		return a.Context
+	}
+	return context.Background()
+}
 
 // OnHistoryChanged is for each change of the history. A sync follows after
-// the pause, unless another change comes first.
+// the pause, unless another change comes first. A change that arrives while
+// a sync is running makes that sync run again when it ends: the sync has
+// already read the history it uploaded.
 func (a *Auto) OnHistoryChanged(ctx context.Context) {
-	if !a.initialDone.Load() || a.suppressed.Load() || a.busy.Load() || !a.CanSync() {
+	if a.suppressed.Load() || !a.CanSync() {
 		return
+	}
+	if !a.initialDone.Load() {
+		// Before the first success changes wait, as in C#; a capture made
+		// while the first sync is running is kept for the run after it.
+		a.startMu.Lock()
+		if a.initialDone.Load() {
+			// The first sync finished while this notification waited: treat
+			// it as a normal change instead of dropping it.
+			a.startMu.Unlock()
+		} else {
+			if a.busy.Load() {
+				a.pending.Store(true)
+			}
+			a.startMu.Unlock()
+			return
+		}
+	}
+	if a.busy.Load() {
+		a.startMu.Lock()
+		if a.busy.Load() {
+			a.pending.Store(true)
+			a.startMu.Unlock()
+			return
+		}
+		a.startMu.Unlock()
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -130,4 +183,28 @@ func (a *Auto) OnHistoryChanged(ctx context.Context) {
 		a.timer.Stop()
 	}
 	a.timer = time.AfterFunc(a.debounce(), func() { a.Trigger(ctx, "auto", false) })
+}
+
+func (a *Auto) Suppressed() bool { return a.suppressed.Load() }
+func (a *Auto) Exclusive(ctx context.Context, f func()) bool {
+	for {
+		a.startMu.Lock()
+		if !a.busy.Load() {
+			a.busy.Store(true)
+			a.startMu.Unlock()
+			break
+		}
+		a.startMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	defer a.finish(ctx)
+	if ctx.Err() != nil {
+		return false
+	}
+	f()
+	return true
 }

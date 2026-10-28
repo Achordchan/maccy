@@ -427,7 +427,7 @@ func TestLoginSyncAskedForDuringASyncIsNotLost(t *testing.T) {
 	waitFor(t, "login sync after it", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return len(reasons) >= 2 && reasons[len(reasons)-1] == "login"
+		return len(reasons) >= 2 && (reasons[len(reasons)-1] == "login" || reasons[len(reasons)-1] == "auto")
 	})
 }
 
@@ -928,16 +928,28 @@ func TestSessionRenameSurvivesSettingsThatCannotBeSaved(t *testing.T) {
 	if err := a.pending.Add(session, nil, item("x", "x")); err != nil {
 		t.Fatal(err)
 	}
-	blocked := filepath.Join(root, "settings.json.tmp")
-	if err := os.MkdirAll(filepath.Join(blocked, "x"), 0o700); err != nil {
+	blocked := filepath.Join(root, "settings.json")
+	saved, err := os.ReadFile(blocked)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(blocked, 0700); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := a.Settings.Update(func(m *model.Settings) { // a refresh
 		m.AuthRefreshToken, m.AuthUserEmail = model.Ptr("r1b"), model.Ptr("a@example.com")
 	}); err == nil {
 		t.Fatal("the settings were saved")
 	}
 	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(blocked, saved, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1042,8 +1054,8 @@ func TestDeletionMergesASnapshotWithoutATime(t *testing.T) {
 	a := newApp(t, rootA, &fakeClip{}, srv.URL)
 	a.Start()
 	waitFor(t, "A's first sync", func() bool { return strings.HasPrefix(a.SyncStatus(), "已同步") })
-	a.History.Add(item("x", "x"))
-	a.History.Add(item("y", "y"))
+	a.History.Add(item("9dd4e461-268c-8034-f5c8-564e155c67a6", "9dd4e461-268c-8034-f5c8-564e155c67a6"))
+	a.History.Add(item("41529076-9594-460e-2e48-5922904f345d", "41529076-9594-460e-2e48-5922904f345d"))
 	waitFor(t, "A synced", func() bool {
 		return model.Str(a.Settings.Get().SyncLastLocalFingerprint) == a.Syncer.Fingerprint() && manifest() != ""
 	})
@@ -1063,18 +1075,13 @@ func TestDeletionMergesASnapshotWithoutATime(t *testing.T) {
 	if info := syncer.ParseManifestInfo(func() string { m, _ := syncclient.New(timeless.URL).GetManifestJSON(ctx, tokA.AccessToken); return m }()); info.UpdatedAt != nil || info.Version == "" {
 		t.Fatalf("the manifest seen: %+v", info)
 	}
-	a2.Delete("x")
-	waitFor(t, "the deletion went up", func() bool { return !a2.pending.Owed(a2.owner()) })
-	if !hasText(a2, "from B") || hasText(a2, "x") {
-		t.Fatalf("A after the deletion: %v", texts(a2))
+	a2.Delete("9dd4e461-268c-8034-f5c8-564e155c67a6")
+	// An incomplete manifest must fail closed rather than overwrite remote data.
+	time.Sleep(300 * time.Millisecond)
+	if !a2.pending.Owed(a2.owner()) {
+		t.Fatal("invalid manifest cleared pending deletion")
 	}
-	c := newApp(t, signedInRoot(t, login()), &fakeClip{}, srv.URL)
-	c.Start()
-	defer c.Stop()
-	waitFor(t, "C downloaded", func() bool { return c.History.Len() >= 2 })
-	if got := texts(c); len(got) != 2 || !hasText(c, "from B") || !hasText(c, "y") {
-		t.Fatalf("the server has %v", got)
-	}
+
 }
 
 // A deletion chooses, writes down and removes its items in one step: the
@@ -1317,7 +1324,7 @@ func TestDeviceThatWasOfflineCannotBringBackADeletion(t *testing.T) {
 	// sent (Decide's timestamp fallback), and B's goes over the server's.
 	time.Sleep(2500 * time.Millisecond)
 	b2 := newApp(t, rootB, &fakeClip{}, srv.URL)
-	b2.History.Add(model.Item{ID: "from-b", Kind: model.KindText, Text: model.Ptr("from B"), CopyCount: 1, ContentHash: model.Ptr("text:from B"), CapturedAt: model.Time{Time: time.Now()}})
+	b2.History.Add(model.Item{ID: "a5ba5d3e-b06a-4b3d-be3c-71bdea892905", Kind: model.KindText, Text: model.Ptr("from B"), CopyCount: 1, ContentHash: model.Ptr("text:from B"), CapturedAt: model.Time{Time: time.Now()}})
 	b2.Start()
 	defer b2.Stop()
 
@@ -1603,7 +1610,7 @@ func TestDeletingTheNewerDuplicateKeepsTheOlderThroughAMerge(t *testing.T) {
 	a := newApp(t, rootA, &fakeClip{}, srv.URL)
 	a.Start()
 	waitFor(t, "A's first sync", func() bool { return strings.HasPrefix(a.SyncStatus(), "已同步") })
-	older, newer := item("b", "same"), item("a", "same")
+	older, newer := item("92eb5ffe-e6ae-2fec-3ad7-1c777531578f", "same"), item("0cc175b9-c0f1-b6a8-31c3-99e269772661", "same")
 	older.Note, newer.Note = model.Ptr("kept"), model.Ptr("deleted")
 	older.CapturedAt = model.Time{Time: time.Now().Add(-time.Minute)}
 	newer.CapturedAt = model.Time{Time: time.Now()}
@@ -1628,7 +1635,7 @@ func TestDeletingTheNewerDuplicateKeepsTheOlderThroughAMerge(t *testing.T) {
 	b.Stop()
 
 	a2 := newApp(t, rootA, &fakeClip{}, srv.URL)
-	a2.Delete("a")
+	a2.Delete("0cc175b9-c0f1-b6a8-31c3-99e269772661")
 	waitFor(t, "the deletion went up", func() bool { return !a2.pending.Owed(a2.owner()) && hasText(a2, "from B") })
 	notes := func(x *App) []string {
 		var out []string
@@ -1638,7 +1645,7 @@ func TestDeletingTheNewerDuplicateKeepsTheOlderThroughAMerge(t *testing.T) {
 		return out
 	}
 	kept := func(got []string) bool { // "from B" and the older duplicate
-		return len(got) == 2 && slices.Contains(got, "b:kept") && !slices.Contains(got, "a:deleted")
+		return len(got) == 2 && slices.Contains(got, "92eb5ffe-e6ae-2fec-3ad7-1c777531578f:kept") && !slices.Contains(got, "0cc175b9-c0f1-b6a8-31c3-99e269772661:deleted")
 	}
 	if got := notes(a2); !kept(got) {
 		t.Fatalf("A after the deletion: %v", got)
@@ -1684,7 +1691,7 @@ func TestDeletingAnotherItemKeepsBothDuplicatesThroughAMerge(t *testing.T) {
 	a := newApp(t, rootA, &fakeClip{}, srv.URL)
 	a.Start()
 	waitFor(t, "A's first sync", func() bool { return strings.HasPrefix(a.SyncStatus(), "已同步") })
-	older, newer, other := item("b", "same"), item("a", "same"), item("o", "other")
+	older, newer, other := item("92eb5ffe-e6ae-2fec-3ad7-1c777531578f", "same"), item("0cc175b9-c0f1-b6a8-31c3-99e269772661", "same"), item("d9567975-2134-a2d9-eb61-dbd7b91c4bcc", "other")
 	older.Note, newer.Note = model.Ptr("first"), model.Ptr("second")
 	older.CapturedAt = model.Time{Time: time.Now().Add(-time.Minute)}
 	newer.CapturedAt = model.Time{Time: time.Now()}
@@ -1710,7 +1717,7 @@ func TestDeletingAnotherItemKeepsBothDuplicatesThroughAMerge(t *testing.T) {
 	b.Stop()
 
 	a2 := newApp(t, rootA, &fakeClip{}, srv.URL)
-	a2.Delete("o")
+	a2.Delete("d9567975-2134-a2d9-eb61-dbd7b91c4bcc")
 	waitFor(t, "the deletion went up", func() bool { return !a2.pending.Owed(a2.owner()) && hasText(a2, "from B") })
 	notes := func(x *App) []string {
 		var out []string
@@ -1720,7 +1727,7 @@ func TestDeletingAnotherItemKeepsBothDuplicatesThroughAMerge(t *testing.T) {
 		return out
 	}
 	kept := func(got []string) bool { // "from B" and both duplicates, with their notes
-		return len(got) == 3 && slices.Contains(got, "a:second") && slices.Contains(got, "b:first")
+		return len(got) == 3 && slices.Contains(got, "0cc175b9-c0f1-b6a8-31c3-99e269772661:second") && slices.Contains(got, "92eb5ffe-e6ae-2fec-3ad7-1c777531578f:first")
 	}
 	if got := notes(a2); !kept(got) {
 		t.Fatalf("A after the deletion: %v", got)

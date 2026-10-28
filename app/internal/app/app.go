@@ -177,9 +177,9 @@ func New(cfg Config) (*App, error) {
 			Get: a.Settings.Get,
 			// The record of a sync belongs to the account it ran for: one that
 			// outlives a change of account does not write into the new one's.
-			Update: func(f func(*model.Settings)) {
+			Update: func(f func(*model.Settings)) error {
 				gen := a.runGen.Load()
-				_ = a.Settings.Update(func(m *model.Settings) {
+				return a.Settings.Update(func(m *model.Settings) {
 					// Looked at inside the update, which the replacing of the
 					// tokens is serialized with: a write that comes after the
 					// account changed is the old account's, and is dropped.
@@ -431,7 +431,7 @@ func (a *App) watchRemote(ctx context.Context) {
 			Client: syncclient.New(a.cfg.BaseURL),
 			Settings: syncclient.Settings{
 				Get:    a.Settings.Get,
-				Update: func(f func(*model.Settings)) { _ = a.Settings.Update(f) },
+				Update: a.Settings.Update,
 			},
 			BaseURL: a.cfg.BaseURL,
 		}

@@ -311,14 +311,8 @@ func TestSignOutThatCannotBeSavedSaysSo(t *testing.T) {
 	m, _ := settings.Open(filepath.Join(dir, "settings.json"))
 	s := &Service{Client: syncclient.New("http://127.0.0.1:1"), Store: m}
 	_ = m.Update(func(st *model.Settings) { st.AuthRefreshToken = model.Ptr("r") })
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Skip("cannot make the folder read-only")
-	}
-	defer os.Chmod(dir, 0o755)
-	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
-		f.Close()
-		t.Skip("the folder is writable anyway")
-	}
+	s.Store = &memorySaveFailure{state: m.Get()}
+
 	if r := s.SignOut(); r.OK {
 		t.Fatalf("a sign-out that was not saved reported success: %+v", r)
 	}
@@ -329,14 +323,8 @@ func TestSignInThatCannotBeSavedSaysSo(t *testing.T) {
 	dir := t.TempDir()
 	m, _ := settings.Open(filepath.Join(dir, "settings.json"))
 	s := &Service{Client: syncclient.New(srv.URL), Store: m}
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Skip("cannot make the folder read-only")
-	}
-	defer os.Chmod(dir, 0o755)
-	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
-		f.Close()
-		t.Skip("the folder is writable anyway")
-	}
+	s.Store = &memorySaveFailure{state: m.Get()}
+
 	r := s.Register(context.Background(), "save@example.com", "password1")
 	if !r.OK || !strings.Contains(r.Message, "无法保存") {
 		t.Fatalf("the user must be told the login was not saved: %+v", r)
@@ -438,12 +426,8 @@ func TestSidecarAndSettingsAgreeAfterAFailedSave(t *testing.T) {
 	m, _ := settings.Open(filepath.Join(dir, "settings.json"))
 	s := &Service{Client: syncclient.New("http://127.0.0.1:1"), Store: m, AccountFile: filepath.Join(dir, "sync", "account.txt")}
 	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a", RefreshToken: "ra", Email: "a@example.com"}, "a@example.com")
-	_ = os.Chmod(dir, 0o500) // settings.json can no longer be replaced
-	defer os.Chmod(dir, 0o755)
-	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
-		f.Close()
-		t.Skip("writable anyway (root?)")
-	}
+	s.Store = &memorySaveFailure{state: m.Get()}
+
 	if err := s.storeTokens(syncclient.TokenSet{AccessToken: "b", RefreshToken: "rb", Email: "b@example.com"}, "b@example.com"); err == nil {
 		t.Fatal("the save should have failed")
 	}
@@ -503,14 +487,8 @@ func TestPasswordUpdatedThatCannotBeSavedSaysSo(t *testing.T) {
 	m, _ := settings.Open(filepath.Join(dir, "settings.json"))
 	s := &Service{Client: syncclient.New("http://127.0.0.1:1"), Store: m}
 	_ = m.Update(func(st *model.Settings) { st.AuthRefreshToken = model.Ptr("r") })
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Skip("cannot make the folder read-only")
-	}
-	defer os.Chmod(dir, 0o755)
-	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
-		f.Close()
-		t.Skip("the folder is writable anyway")
-	}
+	s.Store = &memorySaveFailure{state: m.Get()}
+
 	r := s.passwordUpdated("a@example.com", s.epoch.Load())
 	if !r.OK || !strings.Contains(r.Message, "无法保存设置") {
 		t.Fatalf("the password changed, but the unsaved session must be reported: %+v", r)
@@ -523,13 +501,9 @@ func TestSignOutThatCannotBeSavedDoesNotRelabelTheCheckpoints(t *testing.T) {
 	s := &Service{Client: syncclient.New("http://127.0.0.1:1"), Store: m, AccountFile: filepath.Join(dir, "sync", "account.txt")}
 	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "a", RefreshToken: "ra", Email: "a@example.com"}, "a@example.com")
 	_ = m.Update(func(st *model.Settings) { st.SyncLastRemoteVersion = model.Ptr("a-state") })
-	s.SignOut()              // the disk: no address, A's checkpoints, a record saying A
-	_ = os.Chmod(dir, 0o500) // settings.json can no longer be replaced; sync/ still can be written
-	defer os.Chmod(dir, 0o755)
-	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
-		f.Close()
-		t.Skip("writable anyway (root?)")
-	}
+	s.SignOut() // the disk: no address, A's checkpoints, a record saying A
+	s.Store = &memorySaveFailure{state: m.Get()}
+
 	_ = s.storeTokens(syncclient.TokenSet{AccessToken: "b", RefreshToken: "rb", Email: "b@example.com"}, "b@example.com") // not saved
 	if r := s.SignOut(); r.OK {
 		t.Fatal("the sign-out was not saved")
@@ -561,4 +535,13 @@ func TestSignOutWithARecordThatCannotBeChangedLeavesNoCheckpoints(t *testing.T) 
 	if m.Get().SyncLastRemoteVersion != nil {
 		t.Fatal("B's checkpoints survived the sign-out next to a record that says A")
 	}
+}
+
+// memorySaveFailure models a failed disk write while retaining memory changes.
+type memorySaveFailure struct{ state model.Settings }
+
+func (s *memorySaveFailure) Get() model.Settings { return s.state }
+func (s *memorySaveFailure) Update(f func(*model.Settings)) error {
+	f(&s.state)
+	return errors.New("simulated persistence failure")
 }

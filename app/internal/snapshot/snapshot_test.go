@@ -199,10 +199,11 @@ func TestRoundTripBetweenTwoDevices(t *testing.T) {
 		data, _ := os.ReadFile(byHash[sha])
 		return dest, os.WriteFile(dest, data, 0o644)
 	}
-	got, err := Read(ctx, b, snap, ensure)
+	got, applied, err := Read(ctx, b, snap, ensure)
 	if err != nil {
 		t.Fatal(err)
 	}
+	applied.Commit()
 	if got.ImageCount != 1 || got.FileCount != 2 || len(got.Items) != 3 || len(fetched) != 3 {
 		t.Fatalf("counts: %+v fetched %v", got, fetched)
 	}
@@ -234,8 +235,9 @@ func TestRoundTripBetweenTwoDevices(t *testing.T) {
 		t.Errorf("image name %q", model.Str(got.Items[1].ImageFilePath))
 	}
 	files := got.Items[2].FilePaths
+	idn := "16fd27068baf433b82eb8c7fada847da"
 	if len(files) != 2 || filepath.Base(files[0]) != "0000_report.pdf" || filepath.Base(files[1]) != "0001_数据.csv" ||
-		filepath.Dir(files[0]) != filepath.Join(b.Files(), "16fd27068baf433b82eb8c7fada847da") {
+		!strings.HasPrefix(filepath.Base(filepath.Dir(files[0])), idn+"-") || filepath.Dir(files[0]) != filepath.Dir(files[1]) {
 		t.Errorf("files %v", files)
 	}
 	if d, _ := os.ReadFile(files[1]); string(d) != "a,b\n1,2\n" {
@@ -244,7 +246,7 @@ func TestRoundTripBetweenTwoDevices(t *testing.T) {
 
 	// With the blobs in place, reading again fetches nothing.
 	fetched = map[string]int{}
-	if _, err := Read(ctx, b, snap, ensure); err != nil || len(fetched) != 0 {
+	if _, _, err := Read(ctx, b, snap, ensure); err != nil || len(fetched) != 0 {
 		t.Errorf("second read: %v fetched %v", err, fetched)
 	}
 }
@@ -293,13 +295,14 @@ func csharpSnapshot(t *testing.T, schema int) string {
 func TestReadsSnapshotsWrittenByTheCSharpClient(t *testing.T) {
 	for _, schema := range []int{1, 2} {
 		l := paths.Layout{Root: t.TempDir()}
-		res, err := Read(ctx, l, csharpSnapshot(t, schema), nil)
+		res, applied, err := Read(ctx, l, csharpSnapshot(t, schema), nil)
 		if err != nil {
 			t.Fatalf("schema %d: %v", schema, err)
 		}
 		if len(res.Items) != 3 || res.ImageCount != 1 || res.FileCount != 1 {
 			t.Fatalf("schema %d: %+v", schema, res)
 		}
+		applied.Commit()
 		if model.Str(res.Items[0].Text) != "你好" || !res.Items[0].Pinned || res.Items[0].CopyCount != 2 ||
 			res.Items[0].FirstCapturedAt == nil {
 			t.Errorf("schema %d text item: %+v", schema, res.Items[0])
@@ -346,7 +349,7 @@ func TestErrors(t *testing.T) {
 	if _, err := Export(ctx, d2.l, snap, d2.items, model.DefaultSettings()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Read(ctx, l, snap, nil); err == nil || !strings.Contains(err.Error(), "blob missing") {
+	if _, _, err := Read(ctx, l, snap, nil); err == nil || !strings.Contains(err.Error(), "blob missing") {
 		t.Errorf("missing blob: %v", err)
 	}
 
@@ -355,10 +358,10 @@ func TestErrors(t *testing.T) {
 	db, _ := sql.Open("sqlite", bad)
 	db.Exec(`UPDATE meta SET value='3'`)
 	db.Close()
-	if _, err := Read(ctx, l, bad, nil); err == nil || !strings.Contains(err.Error(), "unsupported snapshot schema") {
+	if _, _, err := Read(ctx, l, bad, nil); err == nil || !strings.Contains(err.Error(), "unsupported snapshot schema") {
 		t.Errorf("schema 3: %v", err)
 	}
-	if _, err := Read(ctx, l, filepath.Join(dir, "none.sqlite"), nil); err == nil {
+	if _, _, err := Read(ctx, l, filepath.Join(dir, "none.sqlite"), nil); err == nil {
 		t.Error("missing file")
 	}
 }
@@ -387,10 +390,16 @@ func TestDuplicateIDsAreSkippedAndPositionsStayContiguous(t *testing.T) {
 }
 
 func TestIndexPrefix(t *testing.T) {
-	for name, want := range map[string]int{"0000_a.txt": 0, "0012_x": 12, "a.txt": -1, "00_a.txt": -1, "0001a.txt": -1, "abcd_x": -1} {
-		if got := indexPrefix(name); got != want {
+	for name, want := range map[string]int{
+		"0000_a.txt": 0, "0012_x": 12, "10000_big.txt": 10000,
+		"a.txt": -1, "00_a.txt": -1, "0001a.txt": -1, "abcd_x": -1,
+	} {
+		if got, _ := indexPrefix(name); got != want {
 			t.Errorf("%q: %d want %d", name, got, want)
 		}
+	}
+	if _, cut := indexPrefix("10000_big.txt"); "10000_big.txt"[cut:] != "big.txt" {
+		t.Errorf("cut %d", cut)
 	}
 }
 
@@ -407,5 +416,21 @@ func TestTimeIsUsableAfterExport(t *testing.T) {
 	openDB(t, snap).QueryRow(`SELECT capturedAt FROM items`).Scan(&s)
 	if s != "2026-10-20T09:30:15.1234567+08:00" {
 		t.Errorf("%s", s)
+	}
+}
+
+func TestSanitizeFileNameTrimsWindowsTrailingDotsAndSpaces(t *testing.T) {
+	cases := map[string]string{
+		"notes.":   "notes",
+		"notes ":   "notes",
+		"a.b.":     "a.b",
+		"a:b?.txt": "a_b_.txt",
+		"  ":       "file",
+		"..":       "file",
+	}
+	for in, want := range cases {
+		if got := sanitizeFileName(in); got != want {
+			t.Errorf("%q: %q want %q", in, got, want)
+		}
 	}
 }

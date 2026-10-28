@@ -226,13 +226,14 @@ func TestAgainstTheRealServer(t *testing.T) {
 		dest := b.BlobPath(h)
 		return dest, c.DownloadBlob(ctx, access, h, dest)
 	}
-	res, err := snapshot.Read(ctx, b, downloaded, ensure)
+	res, applied, err := snapshot.Read(ctx, b, downloaded, ensure)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res.Items) != 3 || res.ImageCount != 1 || res.FileCount != 1 {
 		t.Fatalf("imported %+v", res)
 	}
+	applied.Commit()
 	if got, _ := os.ReadFile(model.Str(res.Items[1].ImageFilePath)); !bytes.Equal(got, imgBytes) {
 		t.Error("the image differs after the trip")
 	}
@@ -295,7 +296,7 @@ func TestAgainstTheRealServer(t *testing.T) {
 	s.AuthExpiresAtUnixMs = time.Now().UnixMilli() + 3_600_000 // looks valid, is not
 	current := func() model.Settings { mu.Lock(); defer mu.Unlock(); return s }
 	sess := &syncclient.Session{Client: c, Settings: syncclient.Settings{
-		Get: current, Update: func(f func(*model.Settings)) { mu.Lock(); f(&s); mu.Unlock() }}}
+		Get: current, Update: func(f func(*model.Settings)) error { mu.Lock(); f(&s); mu.Unlock(); return nil }}}
 	updated := make(chan struct{}, 4)
 	wctx, wcancel := context.WithCancel(ctx)
 	watchDone := make(chan struct{})

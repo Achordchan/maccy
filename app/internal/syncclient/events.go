@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 )
 
@@ -130,17 +130,43 @@ func (o WatchOptions) withDefaults() WatchOptions {
 // returns when ctx is done.
 func (c *Client) Watch(ctx context.Context, ts TokenSource, opts WatchOptions, onUpdated func()) {
 	opts = opts.withDefaults()
-	var queued atomic.Bool
+	var mu sync.Mutex
+	running, pending := false, false
 	dispatch := func(e Event) {
-		if e.Name != "sync-updated" || !queued.CompareAndSwap(false, true) {
+		// A connection is also a reason to look again: events published while
+		// this watcher was disconnected are not replayed by the server.
+		if e.Name != "sync-updated" && e.Name != "connected" {
 			return
 		}
+		mu.Lock()
+		pending = true
+		if running {
+			mu.Unlock()
+			return
+		}
+		running = true
+		mu.Unlock()
 		go func() {
-			defer queued.Store(false)
-			select {
-			case <-time.After(opts.Debounce):
+			for {
+				select {
+				case <-time.After(opts.Debounce):
+				case <-ctx.Done():
+					mu.Lock()
+					running = false
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				pending = false
+				mu.Unlock()
 				onUpdated()
-			case <-ctx.Done():
+				mu.Lock()
+				if !pending {
+					running = false
+					mu.Unlock()
+					return
+				}
+				mu.Unlock()
 			}
 		}()
 	}
@@ -161,6 +187,7 @@ func (c *Client) Watch(ctx context.Context, ts TokenSource, opts WatchOptions, o
 		}
 	}
 	for ctx.Err() == nil {
+		started := time.Now()
 		token, err := ts.AccessToken(ctx)
 		if err != nil || strings.TrimSpace(token) == "" {
 			if !wait(delay) {
@@ -178,8 +205,17 @@ func (c *Client) Watch(ctx context.Context, ts TokenSource, opts WatchOptions, o
 				continue
 			}
 		case err == nil:
-			// The server closed the stream: listen again at once.
-			delay = opts.InitialDelay
+			// A clean EOF. A stream that lasted is a healthy connection: go
+			// back at once. One that closed at once is a server or proxy
+			// that keeps saying 200 and hanging up: back off like a failure.
+			if time.Since(started) >= 30*time.Second {
+				delay = opts.InitialDelay
+				continue
+			}
+			if !wait(delay) {
+				return
+			}
+			delay = min(delay*2, opts.MaxDelay)
 			continue
 		}
 		if !wait(delay) {

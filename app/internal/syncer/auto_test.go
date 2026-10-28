@@ -169,44 +169,68 @@ func TestAutoFailedStartupKeepsChangesQuiet(t *testing.T) {
 	}
 }
 
-func TestExclusiveWaitsForTheRunningSyncAndKeepsOthersOut(t *testing.T) {
-	a := &Auto{CanSync: func() bool { return true }}
-	release := make(chan struct{})
-	started := make(chan struct{})
-	a.Run = func(ctx context.Context, reason string, manual bool) error {
-		close(started)
-		<-release
-		return nil
-	}
-	a.Trigger(context.Background(), "auto", false)
-	<-started
-	var ran atomic.Bool
-	done := make(chan bool, 1)
-	go func() { done <- a.Exclusive(context.Background(), func() { ran.Store(true) }) }()
+// A change that arrives while a sync runs is not dropped: the sync has
+// already read the history, so it runs once more when it ends.
+func TestAutoSyncsAgainForAChangeDuringASync(t *testing.T) {
+	r := newRig()
+	ctx := context.Background()
+	r.a.Startup(ctx)
+	waitFor(t, "startup", func() bool { return r.runs.Load() == 1 && !r.a.busy.Load() })
+
+	gate := make(chan struct{})
+	r.setGate(gate)
+	r.a.Trigger(ctx, "one", true)
+	waitFor(t, "the running sync", func() bool { return r.runs.Load() == 2 })
+	r.a.OnHistoryChanged(ctx)
+	close(gate)
+
+	waitFor(t, "the follow-up sync", func() bool { return r.runs.Load() == 3 })
+	waitFor(t, "idle", func() bool { return !r.a.busy.Load() })
 	time.Sleep(80 * time.Millisecond)
-	if ran.Load() {
-		t.Fatal("it ran while a sync was running")
+	if n := r.runs.Load(); n != 3 {
+		t.Errorf("runs %d: a change during a sync should be one more sync", n)
 	}
-	close(release)
-	if !<-done || !ran.Load() {
-		t.Fatal("it never got its turn")
+}
+
+// A remote update that arrives while a sync runs is not dropped: the running
+// sync may have read an older manifest, so another sync follows.
+func TestAutoSyncsAgainForARemoteUpdateDuringASync(t *testing.T) {
+	r := newRig()
+	ctx := context.Background()
+	r.a.Startup(ctx)
+	waitFor(t, "startup", func() bool { return r.runs.Load() == 1 && !r.a.busy.Load() })
+
+	gate := make(chan struct{})
+	r.setGate(gate)
+	r.a.Trigger(ctx, "one", true)
+	waitFor(t, "the running sync", func() bool { return r.runs.Load() == 2 })
+	r.a.OnRemoteUpdated(ctx)
+	close(gate)
+
+	waitFor(t, "the follow-up sync", func() bool { return r.runs.Load() == 3 })
+	waitFor(t, "idle", func() bool { return !r.a.busy.Load() })
+	time.Sleep(80 * time.Millisecond)
+	if n := r.runs.Load(); n != 3 {
+		t.Errorf("runs %d: a remote update during a sync should be one more sync", n)
 	}
-	// While it runs, a sync is turned away.
-	hold, in := make(chan struct{}), make(chan struct{})
-	go a.Exclusive(context.Background(), func() { close(in); <-hold })
-	<-in
-	if a.Trigger(context.Background(), "auto", false) {
-		t.Fatal("a sync started in the middle of it")
-	}
-	close(hold)
-	for a.busy.Load() {
-		time.Sleep(5 * time.Millisecond)
-	}
-	// A caller that gives up is not left waiting.
-	a.busy.Store(true)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
-	defer cancel()
-	if a.Exclusive(ctx, func() { t.Error("ran although the gate was shut") }) {
-		t.Fatal("reported a run")
+}
+
+// A capture made while the first (startup) sync is running must not be lost:
+// the first sync remembers only what it exported, so a follow-up is needed.
+func TestAutoKeepsACaptureDuringTheFirstSync(t *testing.T) {
+	r := newRig()
+	ctx := context.Background()
+	gate := make(chan struct{})
+	r.setGate(gate)
+	r.a.Startup(ctx)
+	waitFor(t, "the startup sync", func() bool { return r.runs.Load() == 1 })
+	r.a.OnHistoryChanged(ctx) // initialDone is still false, but the sync runs
+	close(gate)
+
+	waitFor(t, "the follow-up sync", func() bool { return r.runs.Load() == 2 })
+	waitFor(t, "idle", func() bool { return !r.a.busy.Load() })
+	time.Sleep(80 * time.Millisecond)
+	if n := r.runs.Load(); n != 2 {
+		t.Errorf("runs %d: the capture made during the first sync was dropped", n)
 	}
 }

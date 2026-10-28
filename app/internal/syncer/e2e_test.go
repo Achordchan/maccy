@@ -42,7 +42,26 @@ func (h *fakeHistory) ReplaceAll(_ context.Context, items []model.Item) error {
 	h.replace++
 	return nil
 }
+func (h *fakeHistory) RemoveFiles([]string) error { return nil }
+
+func (h *fakeHistory) Mutate(_ context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	next, err := f(append([]model.Item(nil), h.items...))
+	if err != nil {
+		return err
+	}
+	h.items = append([]model.Item(nil), next...)
+	h.replace++
+	return nil
+}
 func (h *fakeHistory) ApplyLimits(model.Settings) { h.mu.Lock(); h.limits++; h.mu.Unlock() }
+func (h *fakeHistory) ApplyLimitsAndSnapshot(model.Settings) ([]model.Item, []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.limits++
+	return append([]model.Item(nil), h.items...), nil
+}
 func (h *fakeHistory) add(it model.Item) {
 	h.mu.Lock()
 	h.items = append([]model.Item{it}, h.items...)
@@ -72,7 +91,7 @@ func newDevice(t *testing.T, srv *nastest.Server, name string, tok syncclient.To
 		Layout: d.layout,
 		Settings: syncclient.Settings{
 			Get:    d.settings,
-			Update: func(f func(*model.Settings)) { d.mu.Lock(); f(&d.st); d.mu.Unlock() },
+			Update: func(f func(*model.Settings)) error { d.mu.Lock(); f(&d.st); d.mu.Unlock(); return nil },
 		},
 		History:          d.hist,
 		Flush:            func(context.Context) error { d.mu.Lock(); d.flushes++; d.mu.Unlock(); return nil },
@@ -258,7 +277,7 @@ func TestDevicesSyncThroughTheRealServer(t *testing.T) {
 		t.Fatalf("C: %+v", res.Decision)
 	}
 	backups, _ := filepath.Glob(filepath.Join(c.layout.Root, "sync", "backups", "pre-merge-*.sqlite"))
-	if len(backups) != 1 || !regexpMatch(`pre-merge-\d{8}-\d{6}-\d{3}\.sqlite$`, backups[0]) {
+	if len(backups) != 1 || !regexpMatch(`pre-merge-\d{8}-\d{6}\.\d{3}-[0-9a-f]{8}\.sqlite$`, backups[0]) {
 		t.Errorf("backups %v", backups)
 	}
 	merged := c.hist.Items()
