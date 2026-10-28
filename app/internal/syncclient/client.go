@@ -200,6 +200,9 @@ func scalarString(raw json.RawMessage) string {
 }
 
 func scalarInt64(raw json.RawMessage) *int64 {
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil
+	}
 	var n int64
 	if json.Unmarshal(raw, &n) == nil {
 		return &n
@@ -214,6 +217,9 @@ func scalarInt64(raw json.RawMessage) *int64 {
 }
 
 func scalarBool(raw json.RawMessage) *bool {
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil
+	}
 	var b bool
 	if json.Unmarshal(raw, &b) == nil {
 		return &b
