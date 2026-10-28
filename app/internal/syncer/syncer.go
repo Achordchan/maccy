@@ -619,6 +619,11 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error 
 		s.clearPendingMerge()
 		return nil
 	}
+	if p.OldPortable != nil && p.InstalledPortable != nil {
+		if err := s.cfg.Settings.Update(func(st *model.Settings) { st.RestorePortable(*p.OldPortable, *p.InstalledPortable) }); err != nil {
+			return err
+		}
+	}
 	m := ManifestInfo{Version: p.Version, SnapshotSHA256: p.SHA256, SnapshotSize: p.Size}
 	if p.UpdatedAt != "" {
 		if at, err := model.ParseTime(p.UpdatedAt); err == nil {
@@ -1020,7 +1025,16 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		if merged {
 			fingerprint = pendingUploadFingerprint
 		}
+		oldPortable := oldSettings.Portable()
+		intended := oldPortable
+		if data.Settings != nil {
+			intended = data.Settings.Portable()
+		}
+		if merged {
+			EnsureSettingsCanHoldItems(&intended, out)
+		}
 		if err := s.writePendingMerge(pendingMergeState{
+			OldPortable: &oldPortable, InstalledPortable: &intended,
 			Mutation:    mutation,
 			Fingerprint: fingerprint,
 			Version:     sum,
@@ -1382,7 +1396,14 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		}
 		fp := Fingerprint(applied)
 		added = markOf(before, applied)
+		oldPortable := localSettings.Portable()
+		intended := oldPortable
+		if remote.Settings != nil {
+			intended = remote.Settings.Portable()
+		}
+		EnsureSettingsCanHoldItems(&intended, applied)
 		if err := s.writePendingMerge(pendingMergeState{
+			OldPortable: &oldPortable, InstalledPortable: &intended,
 			Mutation:    mutation,
 			Fingerprint: pendingUploadFingerprint,
 			Version:     basis.Version,
