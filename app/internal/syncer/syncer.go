@@ -2067,6 +2067,9 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 			if !ok {
 				continue
 			}
+			if sameNote(l.Note, b.Note) && l.Pinned == b.Pinned {
+				continue
+			}
 			if _, ok := findConnectedIdentity([]model.Item{l}, merged[i], filteredRemote, filteredLocal); !ok {
 				continue
 			}
