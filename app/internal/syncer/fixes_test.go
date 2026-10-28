@@ -1724,7 +1724,7 @@ func TestPersistAfterDownloadKeepsAMergedRestorePending(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := model.Str(s.SyncLastLocalFingerprint); got != "before-merge" {
+	if got := model.Str(s.SyncLastLocalFingerprint); got != "pending-upload" {
 		t.Errorf("fingerprint %q: the merged restore was recorded as synchronized", got)
 	}
 }
@@ -2084,7 +2084,7 @@ func TestMergeRecordsThePendingUpload(t *testing.T) {
 	if err := syn.MergeAndApply(context.Background(), ManifestInfo{Version: "v1"}, "pre-merge", nil, "test"); err != nil {
 		t.Fatal(err)
 	}
-	if got := model.Str(s.SyncLastLocalFingerprint); got != "pre-merge" {
+	if got := model.Str(s.SyncLastLocalFingerprint); got != "pending-upload" {
 		t.Errorf("fingerprint %q: the pending upload was not recorded", got)
 	}
 }
@@ -3123,7 +3123,7 @@ func TestPendingRecordStaysUntilTheStateIsSaved(t *testing.T) {
 	if _, err := os.Stat(syn.pendingMergePath()); !os.IsNotExist(err) {
 		t.Fatalf("the record outlived its saved state: %v", err)
 	}
-	if model.Str(s.SyncLastLocalFingerprint) != "pre" {
+	if model.Str(s.SyncLastLocalFingerprint) != "pending-upload" {
 		t.Fatalf("recovered state %q: not the pending upload", model.Str(s.SyncLastLocalFingerprint))
 	}
 }

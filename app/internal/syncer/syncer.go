@@ -389,7 +389,7 @@ func (s *Syncer) PersistSyncState(localFingerprint string, m ManifestInfo, accou
 // The record of the merge (pending-merge.json) goes only once the state is
 // saved; until then it is what a restart recovers from.
 func (s *Syncer) persistPendingMerge(preMergeFingerprint string, basis ManifestInfo, account string) error {
-	if err := s.PersistSyncState(pendingFingerprint(preMergeFingerprint, s.Fingerprint()), basis, account); err != nil {
+	if err := s.PersistSyncState(pendingUploadFingerprint, basis, account); err != nil {
 		return err
 	}
 	s.clearPendingMerge()
@@ -403,16 +403,9 @@ func basisUpdatedAt(m ManifestInfo) string {
 	return ""
 }
 
-// pendingFingerprint must differ from the history that is about to be
-// uploaded: an empty remote snapshot plus a capture can make the two equal,
-// and then a failed upload would look synchronized.
-func pendingFingerprint(preMergeFingerprint, current string) string {
-	fp := strings.TrimSpace(preMergeFingerprint)
-	if fp == "" || fp == current {
-		return "pending-upload"
-	}
-	return fp
-}
+// pendingUploadFingerprint is outside the hexadecimal fingerprint namespace, so
+// reverting to any earlier history still requires uploading the local change.
+const pendingUploadFingerprint = "pending-upload"
 
 // pendingMergeState is a merge that was applied but whose pending upload state
 // was not recorded yet. It is written before the mutation is seen (under the
@@ -420,13 +413,14 @@ func pendingFingerprint(preMergeFingerprint, current string) string {
 // can come before it: a crash can resume the upload instead of merging the
 // same items again.
 type pendingMergeState struct {
-	Fingerprint string `json:"fingerprint"`
-	Version     string `json:"version,omitempty"`
-	UpdatedAt   string `json:"updatedAt,omitempty"`
-	SHA256      string `json:"sha256,omitempty"`
-	Size        *int64 `json:"size,omitempty"`
-	Before      string `json:"before"`
-	After       string `json:"after,omitempty"`
+	Baseline    *syncBaseline `json:"baseline,omitempty"`
+	Fingerprint string        `json:"fingerprint"`
+	Version     string        `json:"version,omitempty"`
+	UpdatedAt   string        `json:"updatedAt,omitempty"`
+	SHA256      string        `json:"sha256,omitempty"`
+	Size        *int64        `json:"size,omitempty"`
+	Before      string        `json:"before"`
+	After       string        `json:"after,omitempty"`
 	// Applied is the history as the mutation made it, before the limits
 	// (After is after them): the record is written before the mutation is
 	// seen, and a save of the history can come between the two.
@@ -482,6 +476,10 @@ func (s *Syncer) pendingMergePath() string {
 }
 
 func (s *Syncer) writePendingMerge(p pendingMergeState) error {
+	if p.Baseline == nil {
+		b := syncBaselineOf(s.settings())
+		p.Baseline = &b
+	}
 	dir := filepath.Dir(s.pendingMergePath())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -562,6 +560,15 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error 
 	if p.Account != "" && s.accountChanged(p.Account) {
 		s.clearPendingMerge()
 		return nil
+	}
+	if p.Baseline != nil {
+		current := syncBaselineOf(s.settings())
+		installed := syncBaseline{p.Fingerprint, p.Version, p.UpdatedAt, p.SHA256}
+		if current != *p.Baseline && current != installed {
+			// A later successful sync superseded this journal before deletion.
+			s.clearPendingMerge()
+			return nil
+		}
 	}
 	items := s.cfg.History.Items()
 	current := Fingerprint(items)
@@ -953,7 +960,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		added = markOf(before, out)
 		fingerprint := appliedFP
 		if merged {
-			fingerprint = pendingFingerprint(preMerge, appliedFP)
+			fingerprint = pendingUploadFingerprint
 		}
 		if err := s.writePendingMerge(pendingMergeState{
 			Fingerprint: fingerprint,
@@ -1015,7 +1022,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	after := appliedFP
 	fingerprint := appliedFP
 	if merged {
-		fingerprint = pendingFingerprint(preMerge, after)
+		fingerprint = pendingUploadFingerprint
 	}
 	werr := serr
 	if werr == nil {
@@ -1291,7 +1298,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		fp := Fingerprint(applied)
 		added = markOf(before, applied)
 		if err := s.writePendingMerge(pendingMergeState{
-			Fingerprint: pendingFingerprint(preMergeFingerprint, fp),
+			Fingerprint: pendingUploadFingerprint,
 			Version:     basis.Version,
 			UpdatedAt:   basisUpdatedAt(basis),
 			SHA256:      basis.SnapshotSHA256,
@@ -1343,7 +1350,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	werr := serr
 	if werr == nil {
 		werr = s.writePendingMerge(pendingMergeState{
-			Fingerprint: pendingFingerprint(preMergeFingerprint, after),
+			Fingerprint: pendingUploadFingerprint,
 			Version:     basis.Version,
 			UpdatedAt:   updatedAt,
 			SHA256:      basis.SnapshotSHA256,
