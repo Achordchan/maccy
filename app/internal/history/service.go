@@ -160,6 +160,9 @@ func (s *Service) emptyNow(ctx context.Context, t trash) {
 		}
 		referenced := false
 		for _, it := range s.items {
+			if it.ImageFilePath != nil && withinDir(dir, *it.ImageFilePath) {
+				referenced = true
+			}
 			for _, p := range it.FilePaths {
 				if withinDir(dir, p) {
 					referenced = true
