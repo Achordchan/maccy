@@ -572,6 +572,9 @@ var errStorage = errors.New("capture: cannot store the picture")
 // and its size. A PNG is stored as it is; any other format the standard
 // decoders know is converted.
 func (s *Service) savePNG(data []byte) (path, hash string, size int64, err error) {
+	if err := validateImageSize(data); err != nil {
+		return "", "", 0, err
+	}
 	if !bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n")) {
 		img, _, derr := image.Decode(bytes.NewReader(data))
 		if derr != nil {
@@ -810,6 +813,9 @@ func samePath(a, b string) bool {
 // alpha of a see-through picture makes it a different one, which errs on the
 // side of keeping a copy.
 func samePicture(a, b []byte) bool {
+	if validateImageSize(a) != nil || validateImageSize(b) != nil {
+		return false
+	}
 	ia, _, errA := image.Decode(bytes.NewReader(a))
 	ib, _, errB := image.Decode(bytes.NewReader(b))
 	if errA != nil || errB != nil || ia.Bounds().Dx() != ib.Bounds().Dx() || ia.Bounds().Dy() != ib.Bounds().Dy() {
@@ -962,4 +968,16 @@ func (s *Service) write(it model.Item) (bool, written, error) {
 		return true, written{image: data}, s.Clipboard.WriteImage(data, p)
 	}
 	return false, written{}, errors.New("capture: unknown item kind")
+}
+
+// validateImageSize bounds decoded memory before any full decoder runs.
+func validateImageSize(data []byte) error {
+	c, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	if c.Width <= 0 || c.Height <= 0 || int64(c.Width)*int64(c.Height) > 40_000_000 {
+		return errors.New("image dimensions exceed capture limit")
+	}
+	return nil
 }
