@@ -689,12 +689,13 @@ func tokenEmail(tok string) string {
 
 // Apply puts an item on the clipboard and moves it to the top, as the main
 // window does when one is chosen.
-func (a *App) Apply(it model.Item) {
+func (a *App) Apply(it model.Item) error {
 	if err := a.Capture.Apply(it); err != nil {
 		a.cfg.Logf("apply: %v", err)
-		return
+		return err
 	}
 	a.History.Touch(it.ID)
+	return nil
 }
 
 // SyncNow is the user asking for a sync.

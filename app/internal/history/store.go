@@ -64,7 +64,10 @@ var (
 
 // Save writes the items as System.Text.Json writes a list of
 // ClipboardItem: compact, nulls included.
-func Save(l paths.Layout, items []model.Item) error {
+func Save(l paths.Layout, items []model.Item) error { return SaveWithMutation(l, items, "") }
+
+// SaveWithMutation atomically persists items and their local transaction marker.
+func SaveWithMutation(l paths.Layout, items []model.Item, mutation string) error {
 	path := l.History()
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
@@ -84,6 +87,7 @@ func Save(l paths.Layout, items []model.Item) error {
 	if err != nil {
 		return err
 	}
+	data = withMutation(data, mutation)
 	dir := filepath.Dir(l.History())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

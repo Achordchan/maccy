@@ -11,6 +11,11 @@ import (
 // Mutate publishes a sync transaction under the same lock as user edits.
 // Payload cleanup is deferred until the sync caller has persisted history.
 func (s *Service) Mutate(ctx context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	return s.MutateWithMarker(ctx, "", f)
+}
+
+// MutateWithMarker commits evidence under the same lock as the history change.
+func (s *Service) MutateWithMarker(ctx context.Context, marker string, f func([]model.Item) ([]model.Item, error)) error {
 	s.mu.Lock()
 	if err := ctx.Err(); err != nil {
 		s.mu.Unlock()
@@ -22,6 +27,9 @@ func (s *Service) Mutate(ctx context.Context, f func([]model.Item) ([]model.Item
 		return err
 	}
 	s.items = append([]model.Item(nil), next...)
+	if marker != "" {
+		s.mutation = marker
+	}
 	s.mu.Unlock()
 	s.fire()
 	return nil
@@ -67,6 +75,15 @@ func (s *Service) RemoveFiles(files []string) error {
 		for _, p := range it.FilePaths {
 			keep[strings.ToLower(filepath.Clean(p))] = true
 		}
+		if it.Kind == model.KindFileList {
+			dir := filepath.Join(s.layout.Files(), it.IDN())
+			for _, candidate := range files {
+				if withinDir(dir, candidate) {
+					keep[strings.ToLower(filepath.Clean(candidate))] = true
+				}
+			}
+		}
+
 	}
 	var first error
 	for _, p := range files {

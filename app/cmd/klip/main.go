@@ -439,7 +439,7 @@ func (p *program) shortcut() { p.show() }
 // host is what the panel asks of the program.
 type host struct{ p *program }
 
-func (h host) Apply(it model.Item)               { h.p.app.Apply(it) }
+func (h host) Apply(it model.Item) error         { return h.p.app.Apply(it) }
 func (h host) Hide()                             { h.p.hide() }
 func (h host) Delete(id string)                  { h.p.app.Delete(id) }
 func (h host) ClearAll()                         { h.p.app.ClearAll() }

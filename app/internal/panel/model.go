@@ -27,7 +27,7 @@ import (
 // Host is what the panel asks of the program around it.
 type Host interface {
 	// Apply puts the item on the clipboard.
-	Apply(it model.Item)
+	Apply(it model.Item) error
 	// Hide hides the panel.
 	Hide()
 	// Delete removes an item, ClearAll empties the history (both also from
@@ -278,7 +278,10 @@ func (m *Model) run(a action) {
 	switch a.kind {
 	case "apply":
 		m.dropHover()
-		m.Host.Apply(a.item)
+		if err := m.Host.Apply(a.item); err != nil {
+			m.ShowToast("写入剪贴板失败，请重试")
+			return
+		}
 		m.ShowToast("已写回剪贴板")
 		m.Host.Hide()
 	case "pin":

@@ -281,7 +281,7 @@ func parseExtensions(list string) map[string]bool {
 		}
 		set[ext] = true
 	}
-	if len(set) == 0 {
+	if len(fields) == 0 {
 		return nil
 	}
 	return set
@@ -421,7 +421,10 @@ func (s *Service) Capture(ctx context.Context) error {
 				return nil
 			}
 			id := s.NewID()
-			s.cacheCopies(id, files)
+			if err := s.cacheCopies(id, files); err != nil {
+				storeErr, wantRetry = fmt.Errorf("%w: %v", errStorage, err), true
+				return nil
+			}
 			add(model.Item{
 				ID: id, Kind: model.KindFileList, ApproxBytes: s.fileListBytes(id, files), FilePaths: files, CopyCount: 1,
 				ContentHash: model.Ptr(hashOf("files", []byte(strings.Join(files, "\n")))),
@@ -501,18 +504,26 @@ func (s *Service) filterFiles(in []string, opt options) []string {
 
 // cacheCopies copies the files into files/<id>/NNNN_name, so that the item
 // still has them when the originals move or go.
-func (s *Service) cacheCopies(id string, files []string) {
+func (s *Service) cacheCopies(id string, files []string) (err error) {
 	dir := filepath.Join(s.Layout.Files(), strings.ReplaceAll(strings.ToLower(id), "-", ""))
-	if os.MkdirAll(dir, 0o700) != nil {
-		return
+	if err = os.MkdirAll(dir, 0o700); err != nil {
+		return err
 	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(dir)
+		}
+	}()
 	for i, src := range files {
 		name := baseName(src)
 		if strings.TrimSpace(src) == "" || !isFile(src) || strings.TrimSpace(name) == "" {
-			continue
+			return fmt.Errorf("source file unavailable: %s", src)
 		}
-		_ = copyFile(src, filepath.Join(dir, fmt.Sprintf("%04d_%s", i, name)))
+		if err = copyFile(src, filepath.Join(dir, fmt.Sprintf("%04d_%s", i, name))); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // fileListBytes is the size of the cached copies, else of the originals, else

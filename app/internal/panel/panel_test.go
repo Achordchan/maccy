@@ -2,6 +2,7 @@ package panel
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -146,18 +147,19 @@ func TestPalettes(t *testing.T) {
 }
 
 type fakeHost struct {
-	applied []string
-	hidden  int
-	deleted []string
-	cleared int
-	moved   [][2]string
-	prefs   int
-	about   int
-	quit    int
-	update  string
-	applyng bool
-	updates int
-	sync    app.SyncView
+	applied  []string
+	applyErr error
+	hidden   int
+	deleted  []string
+	cleared  int
+	moved    [][2]string
+	prefs    int
+	about    int
+	quit     int
+	update   string
+	applyng  bool
+	updates  int
+	sync     app.SyncView
 
 	previewed []string
 	hid       int
@@ -165,10 +167,16 @@ type fakeHost struct {
 	over      bool
 }
 
-func (h *fakeHost) Apply(it model.Item) { h.applied = append(h.applied, model.Str(it.Text)) }
-func (h *fakeHost) Hide()               { h.hidden++ }
-func (h *fakeHost) Delete(id string)    { h.deleted = append(h.deleted, id) }
-func (h *fakeHost) ClearAll()           { h.cleared++ }
+func (h *fakeHost) Apply(it model.Item) error {
+	if h.applyErr != nil {
+		return h.applyErr
+	}
+	h.applied = append(h.applied, model.Str(it.Text))
+	return nil
+}
+func (h *fakeHost) Hide()            { h.hidden++ }
+func (h *fakeHost) Delete(id string) { h.deleted = append(h.deleted, id) }
+func (h *fakeHost) ClearAll()        { h.cleared++ }
 func (h *fakeHost) Reorder(id string, before *string) {
 	b := ""
 	if before != nil {
@@ -932,5 +940,14 @@ func TestEnteringAFolderShowsItsFirstRow(t *testing.T) {
 	first := RowText(r.m.rows()[0])
 	if b, ok := r.tt.Find(first); !ok || b.H <= 0 || b.Y < 0 || b.Y > hgt {
 		t.Fatalf("the first row %q is not in view: %v %+v", first, ok, b)
+	}
+}
+
+func TestApplyFailureKeepsPanelOpen(t *testing.T) {
+	r := newRig(t, "item")
+	r.ho.applyErr = errors.New("clipboard busy")
+	r.m.run(action{kind: "apply", item: r.h.Items()[0]})
+	if r.ho.hidden != 0 || len(r.ho.applied) != 0 || r.m.toast != "写入剪贴板失败，请重试" {
+		t.Fatal("failure reported as success")
 	}
 }

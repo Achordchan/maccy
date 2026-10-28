@@ -368,11 +368,11 @@ func TestFileCapture(t *testing.T) {
 	if got := r4.h.Items()[0].FilePaths; len(got) != 1 || got[0] != good {
 		t.Errorf("%v", got)
 	}
-	// Files that no longer exist still make an item, sized by the paths.
+	// Missing files must not publish an unusable capture.
 	r5 := newRig(t)
 	r5.clip.formats, r5.clip.files = []string{"text/uri-list"}, []string{filepath.Join(dir, "ghost.txt")}
 	r5.capture()
-	if got := r5.h.Items(); len(got) != 1 || got[0].ApproxBytes != int64(model.UTF16Len(filepath.Join(dir, "ghost.txt")))*2 {
+	if got := r5.h.Items(); len(got) != 0 {
 		t.Errorf("ghost: %+v", got)
 	}
 }
@@ -1013,5 +1013,16 @@ func TestFoundNothing(t *testing.T) {
 	c.text = "ours"
 	if err := r.s.Capture(context.Background()); err != nil || r.s.FoundNothing() {
 		t.Errorf("the app's own write must not ask for another look: %v", err)
+	}
+}
+
+func TestBlockedOnlyAllowlistDoesNotBecomeUnrestricted(t *testing.T) {
+	allowed := parseExtensions(".exe,.dll")
+	if allowed == nil || len(allowed) != 0 {
+		t.Fatalf("effective allowlist must be empty but restricted: %v", allowed)
+	}
+	if parseExtensions(" , ; ") == nil {
+	} else {
+		t.Fatal("blank configuration should remain unrestricted")
 	}
 }

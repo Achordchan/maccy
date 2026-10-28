@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"klip/internal/model"
 	"klip/internal/paths"
 )
 
@@ -36,9 +37,12 @@ func NewPersister(svc *Service, layout paths.Layout) *Persister {
 // are dropped, see Normalize). A missing file is an empty history.
 func (p *Persister) Load(ctx context.Context) error {
 	items, err := Load(p.layout)
-	if err != nil || len(items) == 0 {
+	if err != nil {
 		return err
 	}
+	p.svc.mu.Lock()
+	p.svc.mutation = SavedMutation(p.layout)
+	p.svc.mu.Unlock()
 	return p.svc.ReplaceAll(ctx, items)
 }
 
@@ -59,7 +63,11 @@ func (p *Persister) Close() error {
 func (p *Persister) save() error {
 	p.saveMu.Lock()
 	defer p.saveMu.Unlock()
-	return Save(p.layout, p.svc.Items())
+	p.svc.mu.Lock()
+	items := append([]model.Item(nil), p.svc.items...)
+	marker := p.svc.mutation
+	p.svc.mu.Unlock()
+	return SaveWithMutation(p.layout, items, marker)
 }
 
 // onChanged schedules one save: changes during the wait are in that save,

@@ -46,3 +46,33 @@ func TestSyncMutationAndDeferredCleanup(t *testing.T) {
 		t.Fatal("unreferenced payload retained")
 	}
 }
+
+func TestClearedHistoryPersistsMutationAcrossRestart(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	s := NewService(l)
+	marker := "0123456789abcdef0123456789abcdef"
+	if err := s.MutateWithMarker(context.Background(), marker, func([]model.Item) ([]model.Item, error) {
+		return []model.Item{{ID: "one", Kind: model.KindText, Text: model.Ptr("hello")}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.ClearAll()
+	p := NewPersister(s, l)
+	if err := p.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if SavedMutation(l) != marker {
+		t.Fatal("clear erased transaction evidence")
+	}
+	fresh := NewService(l)
+	next := NewPersister(fresh, l)
+	if err := next.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := next.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Len() != 0 || SavedMutation(l) != marker {
+		t.Fatal("restart lost empty-history marker")
+	}
+}
