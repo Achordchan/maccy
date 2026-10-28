@@ -132,6 +132,20 @@ type rollbackItem struct {
 // and starts the old program. It returns the error.
 func RunPlan(p Plan, h Hooks) error {
 	h = h.fill()
+	release, lockErr := holdUpdateExclusion()
+	if lockErr != nil {
+		return lockErr
+	}
+	released := false
+	unlock := func() {
+		if !released {
+			released = true
+			release()
+		}
+	}
+	defer unlock()
+	launch := h.Launch
+	h.Launch = func(path string) error { unlock(); return launch(path) }
 	lg := logger{p.LogPath, h.Now}
 	_ = os.Remove(p.LogPath)
 	lg.say("waiting for app exit")

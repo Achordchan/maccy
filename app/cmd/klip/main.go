@@ -86,6 +86,9 @@ func main() {
 		platform.ShowAlreadyRunning()
 		return
 	}
+	if update.UpdateInProgress() {
+		return
+	}
 	if platform.HoldAppMutex() {
 		platform.ShowAlreadyRunning() // another instance, perhaps 1.0.10, holds the named mutex
 		return

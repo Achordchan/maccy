@@ -72,7 +72,7 @@ def traces():
     # slow drift: never reaches 7 px a step
     out.append([(i * 16, 500.0 + 3 * i) for i in range(60)])
     # reversals too close together (under 40 ms)
-    out.append([(i * 10, 500.0 + (12 if i % 2 else -12) * ((i % 2) * 2 - 1) + i * 0) for i in range(30)])
+    out.append([(i * 10, 500.0 + (12 if i % 2 else -12)) for i in range(30)])
     # one direction only
     out.append([(i * 16, 100.0 + 20 * i) for i in range(50)])
     # a shake slower than the window, so samples fall out of it
