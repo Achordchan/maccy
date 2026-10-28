@@ -33,3 +33,16 @@ func TestCountsFollowTransitiveIdentity(t *testing.T) {
 		t.Fatalf("transitive group lost counts: %+v", got)
 	}
 }
+
+func TestCountsUseCaseInsensitiveHashes(t *testing.T) {
+	remote := textItemAt("a", "same")
+	remote.ContentHash = model.Ptr("ABC")
+	remote.CopyCount = 10
+	local := textItemAt("b", "same")
+	local.ContentHash = model.Ptr("abc")
+	local.CopyCount = 1
+	got := MergeForDownload([]model.Item{remote}, []model.Item{local}, nil)
+	if len(got) != 1 || got[0].CopyCount != 10 {
+		t.Fatalf("mixed case lost counts: %+v", got)
+	}
+}
