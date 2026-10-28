@@ -945,6 +945,26 @@ func RecoverPayloads(l paths.Layout, items []model.Item) {
 	}
 	cur := historyDigest(items)
 	for _, e := range j.Entries {
+		if e.Target != "" && e.Backup == "" {
+			if !within(l.Images(), e.Target) && !within(l.Files(), e.Target) {
+				continue
+			}
+			referenced := false
+			for _, it := range items {
+				if model.Str(it.ImageFilePath) == e.Target {
+					referenced = true
+				}
+				for _, p := range it.FilePaths {
+					if within(e.Target, p) {
+						referenced = true
+					}
+				}
+			}
+			if !referenced {
+				_ = os.RemoveAll(e.Target)
+			}
+			continue
+		}
 		if e.Target == "" || e.Backup == "" {
 			continue
 		}
@@ -1044,6 +1064,11 @@ func ApplyPayloads(l paths.Layout, root string, items, previous []model.Item) ([
 			rollback()
 			return nil, nil, err
 		}
+		applied.entries = append(applied.entries, payloadJournalEntry{Target: dest})
+		if err := writePayloadJournal(applied.journal, applied.entries, applied.before, "", false); err != nil {
+			rollback()
+			return nil, nil, err
+		}
 		if err := durable.Rename(p, dest); err != nil {
 			rollback()
 			return nil, nil, err
@@ -1108,6 +1133,11 @@ func ApplyPayloads(l paths.Layout, root string, items, previous []model.Item) ([
 	_ = applied
 	for _, m := range moves {
 		if err := durable.SyncTree(m.staged); err != nil {
+			rollback()
+			return nil, nil, err
+		}
+		applied.entries = append(applied.entries, payloadJournalEntry{Target: m.dest})
+		if err := writePayloadJournal(applied.journal, applied.entries, applied.before, "", false); err != nil {
 			rollback()
 			return nil, nil, err
 		}
