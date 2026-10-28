@@ -361,7 +361,7 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 			if IsProtected(rel) {
 				return errors.New("protected transition")
 			}
-			backup, err := os.MkdirTemp(p.BackupDir, "transition-")
+			backup, err := os.MkdirTemp(p.InstallDir, ".update-transition-")
 			if err != nil {
 				return err
 			}
