@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"klip/internal/model"
@@ -256,6 +257,7 @@ func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadRe
 func (s *Syncer) retireAfter(err error) error {
 	if err == nil {
 		s.clearPendingMerge()
+		_ = os.Remove(s.uploadIntentPath())
 	}
 	return err
 }
