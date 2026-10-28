@@ -74,5 +74,10 @@ func (s *Syncer) recoverUploadIntent(m ManifestInfo, account string) error {
 			return err
 		}
 	}
+	if !strings.EqualFold(v.SHA, m.SnapshotSHA256) {
+		if err := s.PersistSyncState(pendingUploadFingerprint, ManifestInfo{Version: v.SHA, SnapshotSHA256: v.SHA}, account); err != nil {
+			return err
+		}
+	}
 	return os.Remove(s.uploadIntentPath())
 }
