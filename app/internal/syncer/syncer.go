@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"klip/internal/history"
 	"klip/internal/model"
 	"klip/internal/snapshot"
 	"klip/internal/syncclient"
@@ -581,7 +582,7 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error 
 	}
 	items := s.cfg.History.Items()
 	current := Fingerprint(items)
-	if !p.Committed && (p.After == "" || current != p.After) && (p.Applied == "" || current != p.Applied) && !p.markSeen(items) {
+	if !p.Committed && (p.After == "" || current != p.After) && (p.Applied == "" || current != p.Applied) && !p.markSeen(items) && (p.Mutation == "" || history.SavedMutation(s.cfg.Layout) != p.Mutation) {
 		// Only the marker written after a successful Flush, the exact
 		// merged history, or the mark of the merge in the history proves the
 		// merge reached the disk. A different fingerprint alone can be an
@@ -939,7 +940,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	preMerge, appliedFP := "", ""
 	mutation := guidN()
 	var added []string
-	err = s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
+	err = s.mutateHistoryWithMarker(ctx, mutation, func(current []model.Item) ([]model.Item, error) {
 		if s.accountChanged(account) {
 			return nil, ErrSessionChanged
 		}
@@ -1293,7 +1294,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	// The merge runs on the history as it is now, and the payloads it keeps
 	// are moved into place under the same lock: a capture made while the
 	// download ran is merged, not overwritten.
-	err = s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
+	err = s.mutateHistoryWithMarker(ctx, mutation, func(current []model.Item) ([]model.Item, error) {
 		if s.accountChanged(account) {
 			return nil, ErrSessionChanged
 		}
@@ -1591,9 +1592,21 @@ func (s *Syncer) abandonForSession(ctx context.Context, applied []model.Item, mo
 // suppression is off, a history that is not what the mutation made is told
 // as a change (changed): the capture is not left unsynced.
 func (s *Syncer) mutateHistory(ctx context.Context, f func([]model.Item) ([]model.Item, error)) error {
+	return s.mutateHistoryWithMarker(ctx, "", f)
+}
+
+func (s *Syncer) mutateHistoryWithMarker(ctx context.Context, marker string, f func([]model.Item) ([]model.Item, error)) error {
 	s.suppress(true)
 	applied := ""
-	err := s.cfg.History.Mutate(ctx, func(items []model.Item) ([]model.Item, error) {
+	mutate := s.cfg.History.Mutate
+	if h, ok := s.cfg.History.(interface {
+		MutateWithMarker(context.Context, string, func([]model.Item) ([]model.Item, error)) error
+	}); ok && marker != "" {
+		mutate = func(ctx context.Context, f func([]model.Item) ([]model.Item, error)) error {
+			return h.MutateWithMarker(ctx, marker, f)
+		}
+	}
+	err := mutate(ctx, func(items []model.Item) ([]model.Item, error) {
 		out, err := f(items)
 		if err == nil {
 			applied = Fingerprint(out)
