@@ -17,6 +17,16 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 	}
 	from := filepath.Join(s.layout.Files(), next.IDN())
 	to := filepath.Join(s.layout.Files(), old.IDN())
+	for _, it := range s.items {
+		if it.ID == old.ID {
+			continue
+		}
+		for _, p := range it.FilePaths {
+			if withinDir(to, p) {
+				return false
+			}
+		}
+	}
 	if _, err := os.Stat(from); err != nil {
 		return false
 	}

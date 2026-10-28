@@ -423,19 +423,18 @@ func (s *Service) Capture(ctx context.Context) error {
 				}
 			}
 			files = s.filterFiles(files, opt)
-			if len(files) == 0 {
+			if len(files) > 0 {
+				id := s.NewID()
+				if err := s.cacheCopies(id, files, opt.maxBytes); err != nil {
+					storeErr, wantRetry = fmt.Errorf("%w: %v", errStorage, err), true
+					return storeErr
+				}
+				add(model.Item{
+					ID: id, Kind: model.KindFileList, ApproxBytes: s.fileListBytes(id, files), FilePaths: files, CopyCount: 1,
+					ContentHash: model.Ptr(hashOf("files", []byte(strings.Join(files, "\n")))),
+				})
 				return nil
 			}
-			id := s.NewID()
-			if err := s.cacheCopies(id, files, opt.maxBytes); err != nil {
-				storeErr, wantRetry = fmt.Errorf("%w: %v", errStorage, err), true
-				return storeErr
-			}
-			add(model.Item{
-				ID: id, Kind: model.KindFileList, ApproxBytes: s.fileListBytes(id, files), FilePaths: files, CopyCount: 1,
-				ContentHash: model.Ptr(hashOf("files", []byte(strings.Join(files, "\n")))),
-			})
-			return nil
 		}
 	}
 
