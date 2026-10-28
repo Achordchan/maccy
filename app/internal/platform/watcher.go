@@ -94,6 +94,11 @@ func (w *Watcher) moved(s int64) bool {
 // itself, a different one is a change.
 func (w *Watcher) contentMoved(fp string) bool {
 	if fp == "" {
+		w.mu.Lock()
+		if !w.seen {
+			w.seen = true
+		}
+		w.mu.Unlock()
 		return false
 	}
 	w.mu.Lock()
