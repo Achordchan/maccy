@@ -430,7 +430,14 @@ func (a *App) settleDeletions(ctx context.Context, owner string) error {
 	// (which may keep the id of the item it copies again) is newer than the
 	// deletion, and stays.
 	var here []model.Item
-	a.mutateQuietly(func() { here = a.History.RemoveSelected(a.Syncer.Deleted) })
+	a.mutateQuietly(func() {
+		here = a.History.RemoveSelected(func(items []model.Item) []model.Item {
+			if ctx.Err() != nil || a.owner() != owner {
+				return nil
+			}
+			return a.Syncer.Deleted(items)
+		})
+	})
 	if len(here) == 0 && !a.pending.NeedsRepair(owner) && !a.pending.Owed(owner) {
 		return a.pending.Prune(owner) // drops what has been enforced long enough
 	}
