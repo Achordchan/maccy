@@ -210,6 +210,9 @@ func blank(p *string) bool { return strings.TrimSpace(model.Str(p)) == "" }
 // and its pin and note kept. The files of the new capture, which the old item
 // does not need, are deleted.
 func (s *Service) Add(item model.Item) {
+	if item.Kind == model.KindFileList && item.LocalCaptureMutation == "" {
+		item.LocalCaptureMutation = captureMutationID()
+	}
 	var t trash
 	s.mu.Lock()
 	if s.limits.MergeDuplicates && !blank(item.ContentHash) {

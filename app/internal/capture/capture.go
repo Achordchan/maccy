@@ -23,7 +23,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	_ "image/gif"
 	_ "image/jpeg"
@@ -1083,20 +1082,4 @@ func readBoundedImage(path string, limit int64) ([]byte, error) {
 	return data, err
 }
 
-func captureCacheName(index int, name string) string {
-	prefix := fmt.Sprintf("%04d_", index)
-	limit := 255 - len(prefix)
-	if len(name) > limit {
-		ext := filepath.Ext(name)
-		if len(ext) > 32 {
-			ext = ""
-		}
-		stem := strings.TrimSuffix(name, ext)
-		n := limit - len(ext)
-		for n > 0 && !utf8.RuneStart(stem[n]) {
-			n--
-		}
-		name = stem[:n] + ext
-	}
-	return prefix + name
-}
+func captureCacheName(index int, name string) string { return history.CaptureCacheName(index, name) }
