@@ -120,6 +120,14 @@ func recoverCaptureTransactions(root string, retireOnly bool, histories ...[]mod
 					}
 					continue
 				}
+				if unknown && !retireOnly {
+					if _, err := os.Lstat(to); os.IsNotExist(err) {
+						if err := os.Rename(backup, to); err == nil {
+							_ = os.Remove(backup + ".capture-time")
+						}
+						continue
+					}
+				}
 				if !committed && (retireOnly || unknown) {
 					continue
 				}

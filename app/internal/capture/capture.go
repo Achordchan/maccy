@@ -1012,8 +1012,8 @@ func (s *Service) write(it model.Item) (bool, written, error) {
 			if strings.TrimSpace(name) == "" {
 				continue
 			}
-			cached := filepath.Join(s.Layout.Files(), it.IDN(), captureCacheName(i, name))
-			legacy := filepath.Join(s.Layout.Files(), it.IDN(), captureCacheName(compact, name))
+			cached := resolveCachePath(s.Layout.Files(), it.IDN(), i, name)
+			legacy := resolveCachePath(s.Layout.Files(), it.IDN(), compact, name)
 			compact++
 			if legacyComplete {
 				cached = legacy
@@ -1083,3 +1083,11 @@ func readBoundedImage(path string, limit int64) ([]byte, error) {
 }
 
 func captureCacheName(index int, name string) string { return history.CaptureCacheName(index, name) }
+
+func resolveCachePath(root, id string, index int, name string) string {
+	legacy := filepath.Join(root, id, fmt.Sprintf("%04d_%s", index, name))
+	if isFile(legacy) {
+		return legacy
+	}
+	return filepath.Join(root, id, captureCacheName(index, name))
+}
