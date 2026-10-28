@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -222,6 +224,18 @@ func (c *Client) download(ctx context.Context, url, target, wantSHA string, want
 func (c *Client) DownloadInstaller(ctx context.Context, info Info, folder string, progress Progress) (string, error) {
 	if strings.TrimSpace(info.InstallerURL) == "" {
 		return "", errors.New("manifest missing installer url")
+	}
+	sum, err := hex.DecodeString(strings.TrimSpace(info.InstallerSHA256))
+	if err != nil || len(sum) != sha256.Size {
+		return "", errors.New("installer requires a valid SHA-256 checksum")
+	}
+	u, err := url.Parse(info.InstallerURL)
+	if err != nil {
+		return "", err
+	}
+	ip := net.ParseIP(u.Hostname())
+	if u.Scheme != "https" && !(u.Scheme == "http" && ip != nil && ip.IsLoopback()) {
+		return "", errors.New("installer requires HTTPS")
 	}
 	target := filepath.Join(folder, "maccy-"+info.Version+"-setup.exe")
 	if err := c.download(ctx, info.InstallerURL, target, info.InstallerSHA256, info.InstallerSize, progress); err != nil {
