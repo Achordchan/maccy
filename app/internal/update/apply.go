@@ -279,6 +279,11 @@ func RunPlan(p Plan, h Hooks) error {
 }
 
 func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
+	root, rootErr := filepath.Abs(p.InstallDir)
+	if rootErr != nil {
+		return rootErr
+	}
+	p.InstallDir = filepath.Clean(root)
 	data, err := os.ReadFile(p.PackageManifest)
 	if err != nil {
 		return err
@@ -331,6 +336,9 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 	for _, e := range entries {
 		ancestors := []string{}
 		for candidate := e.dest; candidate != p.InstallDir; candidate = filepath.Dir(candidate) {
+			if filepath.Dir(candidate) == candidate {
+				return errors.New("update path escaped installation root")
+			}
 			ancestors = append(ancestors, candidate)
 		}
 		for i := len(ancestors) - 1; i >= 0; i-- {

@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -134,6 +135,15 @@ func iconKey(path string) string {
 }
 
 func shellIcon(path string) image.Image {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	ole := syscall.NewLazyDLL("ole32.dll")
+	hr, _, _ := ole.NewProc("CoInitializeEx").Call(0, 2)
+	if int32(hr) >= 0 {
+		defer ole.NewProc("CoUninitialize").Call()
+	} else if uint32(hr) != 0x80010106 {
+		return nil
+	}
 	p, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
 		return nil
