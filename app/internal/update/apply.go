@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"klip/internal/durable"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,7 +146,19 @@ func RunPlan(p Plan, h Hooks) error {
 	}
 	defer unlock()
 	launch := h.Launch
-	h.Launch = func(path string) error { unlock(); return launch(path) }
+	h.Launch = func(path string) error {
+		unlock()
+		err := launch(path)
+		if err != nil {
+			var lockErr error
+			release, lockErr = holdUpdateExclusion()
+			if lockErr != nil {
+				return fmt.Errorf("launch: %v; update exclusion: %w", err, lockErr)
+			}
+			released = false
+		}
+		return err
+	}
 	lg := logger{p.LogPath, h.Now}
 	_ = os.Remove(p.LogPath)
 	lg.say("waiting for app exit")
@@ -410,15 +423,27 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+	out, err := os.CreateTemp(filepath.Dir(dst), ".update-copy-*")
 	if err != nil {
+		return err
+	}
+	defer os.Remove(out.Name())
+	if err := out.Chmod(0755); err != nil {
+		out.Close()
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
 		return err
 	}
-	return out.Close()
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return durable.Rename(out.Name(), dst)
 }
 
 // copyFileRetry is copyFile, tried again a few times: a virus scanner may

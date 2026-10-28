@@ -183,6 +183,9 @@ func (c *Client) download(ctx context.Context, url, target, wantSHA string, want
 			n, rerr := resp.Body.Read(buf)
 			if n > 0 {
 				watchdog.Reset(idle)
+				if wantSize > 0 && read+int64(n) > wantSize {
+					return struct{}{}, errors.New("download exceeds expected size")
+				}
 				if _, werr := out.Write(buf[:n]); werr != nil {
 					return struct{}{}, werr
 				}
