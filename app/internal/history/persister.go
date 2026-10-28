@@ -80,7 +80,10 @@ func (p *Persister) save() error {
 		return err
 	}
 	p.svc.mu.Lock()
+	live := p.svc.items
+	p.svc.items = append(append([]model.Item(nil), live...), items...)
 	p.svc.emptyNow(context.Background(), trash)
+	p.svc.items = live
 	p.svc.mu.Unlock()
 	return nil
 }
