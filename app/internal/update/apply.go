@@ -275,7 +275,10 @@ func RunPlan(p Plan, h Hooks) error {
 		}
 		for _, it := range rollback {
 			if it.moved {
-				_ = os.RemoveAll(it.backup)
+				// Keep directory transition backups: they may include user-added files.
+				if st, err := os.Stat(it.backup); err == nil && !st.IsDir() {
+					_ = os.Remove(it.backup)
+				}
 			}
 		}
 		return nil
