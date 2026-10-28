@@ -90,7 +90,7 @@ func ContentFingerprint() string {
 	text := c.ReadText()
 	if text == "" {
 		for _, f := range formats {
-			if strings.Contains(strings.ToLower(f), "text") {
+			if strings.EqualFold(f, "text/plain") || strings.EqualFold(f, "text") || strings.EqualFold(f, "unicodetext") {
 				return ""
 			}
 		}
