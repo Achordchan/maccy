@@ -84,7 +84,8 @@ type Service struct {
 	CapturedToken func(string)
 	// Retry is called when a change was not looked at because an Apply was
 	// running; it should capture again (may be nil).
-	Retry func()
+	Retry           func()
+	RetryGeneration func(uint64)
 	// OwnWindow is how long after Apply a change is taken for our own when
 	// there is no counter: the poll interval plus the C# 250 ms. Zero is 250 ms.
 	OwnWindow time.Duration
@@ -308,13 +309,20 @@ func has(set map[string]bool, names []string) bool {
 // change counter when there is one, else by the 250 ms (OwnWindow) after it.
 // Text comes first, then files, then images; the first that yields something
 // is the item.
-func (s *Service) Capture(ctx context.Context) error {
+func (s *Service) Capture(ctx context.Context) error { return s.capture(ctx, nil) }
+func (s *Service) CaptureRetry(ctx context.Context, generation uint64) error {
+	return s.capture(ctx, &generation)
+}
+func (s *Service) capture(ctx context.Context, expected *uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	generation := s.retryGeneration.Load()
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
+	if expected != nil && *expected != s.retryGeneration.Load() {
+		return nil
+	}
 	if generation != s.retryGeneration.Load() && s.lastDone.Load() == any(s.changeKey()) {
 		return nil
 	}
@@ -897,7 +905,7 @@ func (s *Service) discard(it model.Item) {
 // retryLater asks for another look at the clipboard in 300 ms (the budget of
 // five is kept in tries).
 func (s *Service) retryLater(key string) {
-	if s.Retry == nil {
+	if s.Retry == nil && s.RetryGeneration == nil {
 		return
 	}
 	// The budget is for one change: a new one starts with five again.
@@ -918,7 +926,11 @@ func (s *Service) retryLater(key string) {
 		if current := s.changeKey(); key != "" && current != "" && current != key {
 			return
 		}
-		s.Retry()
+		if s.RetryGeneration != nil {
+			s.RetryGeneration(generation)
+		} else {
+			s.Retry()
+		}
 	})
 }
 
