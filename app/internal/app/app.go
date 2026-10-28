@@ -179,15 +179,21 @@ func New(cfg Config) (*App, error) {
 			// outlives a change of account does not write into the new one's.
 			Update: func(f func(*model.Settings)) error {
 				gen := a.runGen.Load()
-				return a.Settings.Update(func(m *model.Settings) {
+				rejected := false
+				err := a.Settings.Update(func(m *model.Settings) {
 					// Looked at inside the update, which the replacing of the
 					// tokens is serialized with: a write that comes after the
 					// account changed is the old account's, and is dropped.
 					if a.runActive.Load() && gen != a.acctGen.Load() {
+						rejected = true
 						return
 					}
 					f(m)
 				})
+				if rejected {
+					return syncer.ErrSessionChanged
+				}
+				return err
 			},
 		},
 		History:          a.History,
