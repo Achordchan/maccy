@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -94,13 +95,20 @@ func (c *Client) UploadSnapshot(ctx context.Context, accessToken, snapshotPath s
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, newAPIError(resp, "upload snapshot failed", true)
 	}
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("upload response: %w", err)
+	}
 	obj := decodeObject(b)
-	return &UploadResult{
+	res := &UploadResult{
 		Version: scalarString(obj["version"]),
 		SHA256:  scalarString(obj["sha256"]),
 		Size:    scalarInt64(obj["size"]),
-	}, nil
+	}
+	if strings.TrimSpace(res.Version) == "" && strings.TrimSpace(res.SHA256) == "" {
+		return nil, errors.New("upload snapshot: response has no snapshot identifier")
+	}
+	return res, nil
 }
 
 // DownloadSnapshot saves the latest snapshot to targetPath.
@@ -132,10 +140,17 @@ func (c *Client) CheckMissingBlobs(ctx context.Context, accessToken string, hash
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, newAPIError(resp, "check missing blobs failed", false)
 	}
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := decodeObject(b)["missing"]
+	if !ok {
+		return nil, errors.New("check missing blobs: response has no missing list")
+	}
 	var list []json.RawMessage
-	if json.Unmarshal(decodeObject(b)["missing"], &list) != nil {
-		return nil, nil
+	if err := json.Unmarshal(raw, &list); err != nil || list == nil {
+		return nil, errors.New("check missing blobs: malformed missing list")
 	}
 	var missing []string
 	for _, raw := range list {

@@ -395,7 +395,7 @@ func TestSessionRefreshStoresAndSignsOut(t *testing.T) {
 	now := time.UnixMilli(1_000_000)
 	sess := &Session{
 		Client:   New(srv.URL),
-		Settings: Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) { f(&s) }},
+		Settings: Settings{Get: func() model.Settings { return s }, Update: func(f func(*model.Settings)) error { f(&s); return nil }},
 		Now:      func() time.Time { return now },
 	}
 
@@ -445,5 +445,79 @@ func TestGetRetriesOnceThenReportsTimeout(t *testing.T) {
 	_, err := New(srv.URL).GetManifestJSON(bg, "t")
 	if err == nil || hits.Load() != 2 {
 		t.Errorf("hits %d, err %v: one retry after a connection error", hits.Load(), err)
+	}
+}
+
+// A 200 with something that is not the auth server's JSON is not a success.
+func TestPasswordCallsRejectANonJSONSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `<html>captive portal</html>`)
+	}))
+	defer srv.Close()
+	c := New(srv.URL + "/")
+	if _, err := c.SendPasswordCode(bg, "reset", "a@b.com", ""); err == nil {
+		t.Error("an HTML 200 was taken as a sent code")
+	}
+	if err := c.ResetPassword(bg, "a@b.com", "123456", "newpassword"); err == nil {
+		t.Error("an HTML 200 was taken as a reset")
+	}
+	if err := c.ChangePassword(bg, "tok", "123456", "newpassword"); err == nil {
+		t.Error("an HTML 200 was taken as a change")
+	}
+}
+
+// A subscription or a redeemed card whose answer is cut short, or is not an
+// object, is an error, not "not subscribed" or "not redeemed".
+func TestCutShortAnswersAreErrors(t *testing.T) {
+	for _, body := range []string{"cut", "bad"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if body == "bad" {
+				w.Write([]byte("<html>proxy</html>"))
+				return
+			}
+			w.Header().Set("Content-Length", "100")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"subscribed":tr`))
+		}))
+		c := New(srv.URL)
+		if st, err := c.SubscriptionStatus(context.Background(), "token"); err == nil {
+			t.Errorf("%s: subscription %+v without an error", body, st)
+		}
+		if r, err := c.RedeemCard(context.Background(), "token", "CODE"); err == nil {
+			t.Errorf("%s: redeem %+v without an error", body, r)
+		}
+		srv.Close()
+	}
+}
+
+// Downloads of the same target at the same time each write a file of their
+// own: every one goes through, and the target is one of them, whole.
+func TestConcurrentDownloadsOfOneTarget(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "blobs", "abc")
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+	for i := range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body := strings.Repeat(string(rune('a'+i)), 64*1024)
+			resp := &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+			errs <- saveBody(resp, target)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := os.ReadFile(target)
+	if err != nil || len(b) != 64*1024 || strings.Count(string(b), string(b[0])) != len(b) {
+		t.Fatalf("the target: %d bytes, %v", len(b), err)
+	}
+	ents, _ := os.ReadDir(filepath.Dir(target))
+	if len(ents) != 1 {
+		t.Fatalf("left behind: %d files", len(ents))
 	}
 }

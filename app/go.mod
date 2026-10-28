@@ -1,5 +1,7 @@
 module klip
 
+// go 1.27.1 is the toolchain this module needs: mygo v0.5.5 declares it in
+// its own go.mod, and the installed toolchain is go1.27.1.
 go 1.27.1
 
 require (

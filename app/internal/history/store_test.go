@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"klip/internal/model"
 	"klip/internal/paths"
@@ -148,5 +151,121 @@ func TestEmptyHistoryIsAnEmptyList(t *testing.T) {
 	b, _ := os.ReadFile(l.History())
 	if string(b) != "[]" {
 		t.Errorf("%q", b)
+	}
+}
+
+// The history holds what the user copied: the file and its folder are private
+// to this user, also on a fresh install where settings.json was never saved.
+func TestHistoryIsPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits")
+	}
+	l := paths.Layout{Root: filepath.Join(t.TempDir(), "Klip")}
+	if err := Save(l, []model.Item{}); err != nil {
+		t.Fatal(err)
+	}
+	checkMode := func(path string, want os.FileMode) {
+		t.Helper()
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := st.Mode().Perm(); got != want {
+			t.Errorf("%s: mode %04o, want %04o", path, got, want)
+		}
+	}
+	checkMode(l.Root, 0o700)
+	checkMode(l.History(), 0o600)
+
+	// What an older version left behind is tightened when it is read.
+	if err := os.Chmod(l.Root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(l.History(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(l); err != nil {
+		t.Fatal(err)
+	}
+	checkMode(l.Root, 0o700)
+	checkMode(l.History(), 0o600)
+}
+
+// A file list whose files are all empty is still content.
+func TestEmptyFileListSurvivesSaveAndLoad(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	id := "16fd2706-8baf-433b-82eb-8c7fada847da"
+	dir := filepath.Join(l.Files(), strings.ReplaceAll(id, "-", ""))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(dir, "0000_empty.txt")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items := []model.Item{{
+		ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()},
+		FilePaths: []string{empty}, CopyCount: 1,
+	}}
+	if err := Save(l, items); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(l)
+	if err != nil || len(got) != 1 || got[0].ID != id {
+		t.Errorf("empty file list: %v %+v", err, got)
+	}
+}
+
+// The size comes from the cache the item references, not the old canonical
+// folder.
+func TestNormalizeUsesTheActiveCacheSize(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	id := "16fd2706-8baf-433b-82eb-8c7fada847da"
+	idn := strings.ReplaceAll(id, "-", "")
+	canonical := filepath.Join(l.Files(), idn)
+	active := filepath.Join(l.Files(), idn+"-new")
+	for dir, size := range map[string]int{canonical: 100, active: 5} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "0000_file.txt"), bytes.Repeat([]byte("x"), size), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	it := model.Item{
+		ID: id, Kind: model.KindFileList, CapturedAt: model.Time{Time: time.Now()},
+		FilePaths: []string{filepath.Join(active, "0000_file.txt")}, CopyCount: 1,
+	}
+	got, ok := Normalize(l, it)
+	if !ok || got.ApproxBytes != 5 {
+		t.Errorf("size %d (ok %v), want 5", got.ApproxBytes, ok)
+	}
+}
+
+// Two saves at once must still leave one valid history file.
+func TestConcurrentSavesLeaveAWholeFile(t *testing.T) {
+	l := paths.Layout{Root: t.TempDir()}
+	items := []model.Item{{ID: "0f8fad5b-d9cb-469f-a165-70867728950e", Kind: model.KindText, CapturedAt: model.Time{Time: time.Now()}, Text: model.Ptr("x"), CopyCount: 1}}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				if err := Save(l, items); err != nil {
+					t.Errorf("save: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	data, err := os.ReadFile(l.History())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []model.Item
+	if err := json.Unmarshal(data, &got); err != nil || len(got) != 1 {
+		t.Errorf("the final file is not a whole history: %v %s", err, data)
 	}
 }

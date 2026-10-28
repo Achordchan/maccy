@@ -59,7 +59,7 @@ func newRealDevice(t *testing.T, srv *nastest.Server, tok syncclient.TokenSet) *
 		Layout: d.layout,
 		Settings: syncclient.Settings{
 			Get:    func() model.Settings { d.mu.Lock(); defer d.mu.Unlock(); return d.st },
-			Update: func(f func(*model.Settings)) { d.mu.Lock(); f(&d.st); d.mu.Unlock() },
+			Update: func(f func(*model.Settings)) error { d.mu.Lock(); f(&d.st); d.mu.Unlock(); return nil },
 		},
 		History: d.hist, Flush: d.pers.Flush, Client: syncclient.New(srv.URL), BaseURL: srv.URL,
 	})

@@ -427,27 +427,22 @@ func TestSharedImageSurvivesRemovalOfOneItem(t *testing.T) {
 
 func TestFailedSaveIsTriedAgain(t *testing.T) {
 	r := newRig(t)
-	dir := filepath.Dir(r.l.History())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Block the destination with a directory: Save intentionally repairs
+	// directory permissions, so chmod is no longer a reliable failure seam.
+	if err := os.MkdirAll(r.l.History(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	p := history.NewPersister(r.svc, r.l)
 	p.Delay = 20 * time.Millisecond
 	defer p.Close()
-	if err := os.Chmod(dir, 0o500); err != nil { // read-only: the save fails
-		t.Skip("cannot make a folder read-only here")
-	}
-	defer os.Chmod(dir, 0o755)
-	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil { // running as root: no way to fail
-		f.Close()
-		t.Skip("the folder is writable anyway")
-	}
 	r.svc.Add(r.text("kept", ""))
 	time.Sleep(200 * time.Millisecond)
-	if exists(r.l.History()) {
-		t.Fatal("it should not be saved yet")
+	if st, err := os.Stat(r.l.History()); err != nil || !st.IsDir() {
+		t.Fatal("blocked save unexpectedly succeeded")
 	}
-	_ = os.Chmod(dir, 0o755) // the disk is back
+	if err := os.Remove(r.l.History()); err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for !exists(r.l.History()) && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)

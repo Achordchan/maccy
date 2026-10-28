@@ -26,9 +26,10 @@ func TestExportSpeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t1 := time.Now()
-	got, err := Read(ctx, l, snap, nil)
+	got, applied, err := Read(ctx, l, snap, nil)
 	if err != nil || len(got.Items) != len(items) {
 		t.Fatalf("%v %d", err, len(got.Items))
 	}
+	applied.Commit()
 	t.Logf("5000 items: export %v (%d KB), read %v", t1.Sub(t0).Round(time.Millisecond), res.Size/1024, time.Since(t1).Round(time.Millisecond))
 }

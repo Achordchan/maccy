@@ -10,9 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"klip/internal/model"
 	"klip/internal/paths"
+	"klip/internal/snapshot"
 )
 
 // Load reads the file and drops what no longer has its content, as
@@ -20,6 +23,10 @@ import (
 // history.
 func Load(l paths.Layout) ([]model.Item, error) {
 	data, err := os.ReadFile(l.History())
+	if err == nil {
+		_ = os.Chmod(filepath.Dir(l.History()), 0o700)
+		_ = os.Chmod(l.History(), 0o600)
+	}
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -30,6 +37,9 @@ func Load(l paths.Layout) ([]model.Item, error) {
 	if err := json.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &items); err != nil {
 		return nil, err
 	}
+	// An interrupted cache replacement is undone before Normalize decides
+	// that an item has no content.
+	snapshot.RecoverPayloads(l, items)
 	out := make([]model.Item, 0, len(items))
 	for _, it := range items {
 		if n, ok := Normalize(l, it); ok {
@@ -39,9 +49,34 @@ func Load(l paths.Layout) ([]model.Item, error) {
 	return out, nil
 }
 
+// Saves are serialized and ordered: an autosave that started with older items
+// must not rename over a newer sync flush that finished first.
+// saveState is the write order of one history path.
+type saveState struct {
+	mu      sync.Mutex
+	written uint64
+}
+
+var (
+	saveSeq    atomic.Uint64
+	saveStates sync.Map // absolute path -> *saveState
+)
+
 // Save writes the items as System.Text.Json writes a list of
 // ClipboardItem: compact, nulls included.
 func Save(l paths.Layout, items []model.Item) error {
+	path := l.History()
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	stateAny, _ := saveStates.LoadOrStore(path, &saveState{})
+	state := stateAny.(*saveState)
+	seq := saveSeq.Add(1)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if seq <= state.written {
+		return nil // a newer save of this history already committed
+	}
 	if items == nil {
 		items = []model.Item{}
 	}
@@ -49,14 +84,37 @@ func Save(l paths.Layout, items []model.Item) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(l.History()), 0o700); err != nil {
+	dir := filepath.Dir(l.History())
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := l.History() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	// Clipboard history holds what the user copied: it is for this user only,
+	// also when an older version created the folder world-readable.
+	_ = os.Chmod(dir, 0o700)
+	// A temporary file of this call's own: two saves at once (an autosave
+	// and a sync flush) must not rename each other's half-written file.
+	f, err := os.CreateTemp(dir, "history.json.tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, l.History())
+	tmp := f.Name()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	_ = os.Chmod(tmp, 0o600)
+	if err := os.Rename(tmp, l.History()); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	_ = os.Chmod(l.History(), 0o600)
+	state.written = seq
+	return nil
 }
 
 // marshal does not escape <, > and &, which Go's encoder does by default;
@@ -113,7 +171,15 @@ func Normalize(l paths.Layout, it model.Item) (model.Item, bool) {
 				break
 			}
 		}
+		// The active cache is the one FilePaths names when it is in Klip's
+		// files folder; the canonical folder is for migrated items whose
+		// paths are the user's documents.
 		cacheDir := filepath.Join(l.Files(), it.IDN())
+		if len(paths) > 0 {
+			if d := filepath.Dir(filepath.Clean(paths[0])); withinDir(l.Files(), d) {
+				cacheDir = d
+			}
+		}
 		cached := listFiles(cacheDir)
 		if !hasSource && len(cached) == 0 {
 			return it, false
@@ -123,20 +189,38 @@ func Normalize(l paths.Layout, it model.Item) (model.Item, bool) {
 			for _, p := range cached {
 				size += fileSize(p)
 			}
-		}
-		if size <= 0 {
+		} else {
 			for _, p := range paths {
 				size += fileSize(p)
 			}
 		}
-		if size <= 0 {
-			return it, false
-		}
+		// Existence, not size, is what keeps the item: a file list of empty
+		// files is still content.
 		it.ApproxBytes = size
 		it.FilePaths = paths
 		return it, true
 	}
 	return it, true
+}
+
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		if r >= 0x10000 {
+			n += 2
+		} else {
+			n++
+		}
+	}
+	return n
+}
+
+func withinDir(base, p string) bool {
+	rel, err := filepath.Rel(base, p)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func isFile(p string) bool {

@@ -16,6 +16,7 @@ import (
 	"log"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -64,8 +65,8 @@ type klip struct {
 	shortcut string
 
 	// poller bookkeeping, read by the footer
-	reads     int // clipboard reads made
-	skipped   int // polls that the change counter spared
+	reads     int          // clipboard reads made
+	skipped   atomic.Int64 // polls that the change counter spared; counted off the UI thread, so no redraw per poll
 	captures  int
 	lastFmts  string
 	lastHash  string
@@ -127,6 +128,7 @@ func (k *klip) view(c *ui.Context) {
 			}
 			if ui.Button(c, "Clear").Clicked() {
 				k.items = nil
+				k.lastHash, k.ownHash = "", "" // the same text copied again must be kept
 				k.filter()
 			}
 		})
@@ -185,7 +187,7 @@ func (k *klip) statsLine() string {
 		avg = k.viewTotal / time.Duration(k.frames)
 	}
 	return fmt.Sprintf("items %d  shown %d | polls: reads %d spared %d captured %d | view avg %v max %v (%d frames) | heap %d MB sys %d MB",
-		len(k.items), len(k.results), k.reads, k.skipped, k.captures,
+		len(k.items), len(k.results), k.reads, k.skipped.Load(), k.captures,
 		avg.Round(time.Microsecond), k.viewMax.Round(time.Microsecond), k.frames,
 		k.mem.HeapAlloc>>20, k.mem.Sys>>20)
 }
@@ -200,6 +202,7 @@ func oneLine(s string) string {
 
 func (k *klip) filter() {
 	q := strings.ToLower(strings.TrimSpace(k.query))
+	clear(k.results) // drop the references the backing array still holds
 	k.results = k.results[:0]
 	for _, it := range k.items {
 		if q == "" || strings.Contains(strings.ToLower(it.text), q) {
@@ -258,14 +261,14 @@ func (k *klip) apply(i int) {
 	var err error
 	switch it.kind {
 	case kindText:
-		k.ownHash = hashOf("text", it.text)
+		k.ownHash = hashOf(fmt.Sprint(kindText), it.text)
 		mygo.Clipboard.WriteText(it.text)
 	case kindImage:
-		k.ownHash = hashOf("image", string(it.png))
+		k.ownHash = hashOf(fmt.Sprint(kindImage), string(it.png))
 		err = mygo.Clipboard.WriteImage(it.png)
 	case kindFiles:
 		paths := strings.Split(it.text, "\n")
-		k.ownHash = hashOf("files", it.text)
+		k.ownHash = hashOf(fmt.Sprint(kindFiles), it.text)
 		err = mygo.Clipboard.WriteFiles(paths...)
 	}
 	k.status = fmt.Sprintf("applied item %d (err=%v)", it.n, err)
@@ -282,7 +285,7 @@ func hashOf(kind, s string) string {
 func (k *klip) poll() {
 	k.seqActive = *useSeq && changeSeq() >= 0
 	k.seqLast = changeSeq()
-	log.Printf("poller start: seqActive=%v seq=%d pbReady=%v", k.seqActive, k.seqLast, pbReady)
+	log.Printf("poller start: seqActive=%v seq=%d", k.seqActive, k.seqLast)
 	k.panel.Update(func() { k.status = fmt.Sprintf("poll every %v, change counter: %v", *pollEvery, k.seqActive) })
 	tick := time.NewTicker(*pollEvery)
 	defer tick.Stop()
@@ -290,11 +293,16 @@ func (k *klip) poll() {
 		if k.seqActive {
 			s := changeSeq()
 			if s == k.seqLast {
-				k.panel.Update(func() { k.skipped++ })
+				k.skipped.Add(1)
 				continue
 			}
 			log.Printf("change counter %d -> %d", k.seqLast, s)
+			prev := k.seqLast
 			k.seqLast = s
+			if !k.capture() {
+				k.seqLast = prev // the clipboard could not be read yet: try again at the next tick
+			}
+			continue
 		}
 		k.capture()
 	}
@@ -302,7 +310,12 @@ func (k *klip) poll() {
 
 // capture reads the clipboard once and adds what it finds. It runs on the
 // poll goroutine: MyGo hops each clipboard call to the main thread.
-func (k *klip) capture() {
+// capture reads the clipboard and adds it to the list. It reports false when
+// nothing could be read (another program may still hold the clipboard open,
+// which also empties Formats), so the caller can try again; an emptied
+// clipboard is retried at every tick until something is copied, which is
+// cheap and good enough for a spike.
+func (k *klip) capture() bool {
 	formats := mygo.Clipboard.Formats()
 	var (
 		kind  itemKind
@@ -319,6 +332,9 @@ func (k *klip) capture() {
 		kind, text = kindText, mygo.Clipboard.ReadText()
 	}
 	_ = files
+	if kind == kindText && text == "" {
+		return false
+	}
 	h := hashOf(fmt.Sprint(kind), text+string(img))
 	var bm *ui.Bitmap
 	if kind == kindImage {
@@ -328,7 +344,14 @@ func (k *klip) capture() {
 	k.panel.Update(func() {
 		k.reads++
 		k.lastFmts = fmt.Sprint(formats)
-		if h == k.lastHash || h == k.ownHash || (kind == kindText && strings.TrimSpace(text) == "") {
+		if h == k.ownHash {
+			// our own write, seen once: remember it as the last content, but
+			// do not let it hide a later copy of the same thing
+			k.ownHash, k.lastHash = "", h
+			return
+		}
+		k.ownHash = "" // the next observation is not our own write, whatever it is
+		if h == k.lastHash || (kind == kindText && strings.TrimSpace(text) == "") {
 			return
 		}
 		k.lastHash = h
@@ -339,6 +362,7 @@ func (k *klip) capture() {
 		k.status = fmt.Sprintf("captured #%d kind=%d formats=%s", k.nextN, kind, k.lastFmts)
 		log.Printf("captured kind=%d formats=%s bytes=%d", kind, k.lastFmts, len(text)+len(img))
 	})
+	return true
 }
 
 func (k *klip) show() {

@@ -21,6 +21,17 @@ import (
 var (
 	ErrSubscriptionExpired = errors.New("subscription expired")
 	ErrNotLoggedIn         = errors.New("not logged in")
+	// ErrSessionChanged says the signed-in account changed while the sync was
+	// running: its requests and its state belong to the old session, so the
+	// workflow stops instead of using the new account's credentials.
+	ErrSessionChanged = errors.New("sync session changed")
+	// ErrRestoreSuperseded says another sync ran between a restore and the
+	// recording of its state: that sync's state is newer, and is kept.
+	ErrRestoreSuperseded = errors.New("sync ran after the restore")
+	// ErrNoFlush says a download or a merge was asked of a Syncer that
+	// cannot save the history: it would record as saved a history that is
+	// not, and delete the files the saved one still names.
+	ErrNoFlush = errors.New("syncer: Config.Flush is required to apply a download or a merge")
 )
 
 // Direction is what a sync has to do.
@@ -70,12 +81,26 @@ type Decision struct {
 type History interface {
 	// Items returns the items, newest first. The caller may keep the slice.
 	Items() []model.Item
+	// Mutate replaces the history with f applied to it as it is at that
+	// moment, under the history's own lock, so that a capture or a note edit
+	// made while a merge is prepared is part of the merge instead of being
+	// overwritten. It does not delete the files of the items that are gone:
+	// the caller removes them with RemoveFiles only after the new history is
+	// safely saved, so a failed save can still recover them.
+	Mutate(ctx context.Context, f func(items []model.Item) ([]model.Item, error)) error
+	// RemoveFiles deletes payload files (images, cached files) that no item
+	// refers to any more.
+	RemoveFiles(paths []string) error
 	// ReplaceAll replaces the history and removes the files of the items that
 	// are gone.
 	ReplaceAll(ctx context.Context, items []model.Item) error
 	// ApplyLimits sets the history's limits from the settings: the number
 	// of items, the size, and whether duplicates are merged.
 	ApplyLimits(model.Settings)
+	// ApplyLimitsAndSnapshot applies the limits and returns the items after
+	// them and the ids the limits actually removed, atomically: a later
+	// Items() read cannot tell a limit removal from a user deletion.
+	ApplyLimitsAndSnapshot(model.Settings) ([]model.Item, []string)
 }
 
 // Config is what a Syncer works with.
@@ -84,6 +109,7 @@ type Config struct {
 	Settings syncclient.Settings
 	History  History
 	// Flush writes the history to disk (ClipboardPersistenceService.FlushAsync).
+	// A download or a merge needs it (ErrNoFlush).
 	Flush func(ctx context.Context) error
 	// Client talks to the server at BaseURL, which is the official one in the
 	// app; tests point both at a server of their own.

@@ -84,20 +84,23 @@ func ParseTime(s string) (time.Time, error) {
 // Item is ClipboardItem. The field order is the order of the C# record,
 // which System.Text.Json follows when it writes.
 type Item struct {
-	ID              string   `json:"Id"`
-	Kind            Kind     `json:"Kind"`
-	CapturedAt      Time     `json:"CapturedAt"`
-	ApproxBytes     int64    `json:"ApproxBytes"`
-	Text            *string  `json:"Text"`
-	ImageFilePath   *string  `json:"ImageFilePath"`
-	FilePaths       []string `json:"FilePaths"`
-	Pinned          bool     `json:"Pinned"`
-	CopyCount       int32    `json:"CopyCount"`
-	FirstCapturedAt *Time    `json:"FirstCapturedAt"`
-	Note            *string  `json:"Note"`
-	ContentHash     *string  `json:"ContentHash"`
-	SourceAppName   *string  `json:"SourceAppName"`
-	SourceAppPath   *string  `json:"SourceAppPath"`
+	// LocalSyncMutation is local recovery evidence, saved atomically with the
+	// item in history.json. Snapshot SQL deliberately does not export it.
+	LocalSyncMutation string   `json:"LocalSyncMutation,omitempty"`
+	ID                string   `json:"Id"`
+	Kind              Kind     `json:"Kind"`
+	CapturedAt        Time     `json:"CapturedAt"`
+	ApproxBytes       int64    `json:"ApproxBytes"`
+	Text              *string  `json:"Text"`
+	ImageFilePath     *string  `json:"ImageFilePath"`
+	FilePaths         []string `json:"FilePaths"`
+	Pinned            bool     `json:"Pinned"`
+	CopyCount         int32    `json:"CopyCount"`
+	FirstCapturedAt   *Time    `json:"FirstCapturedAt"`
+	Note              *string  `json:"Note"`
+	ContentHash       *string  `json:"ContentHash"`
+	SourceAppName     *string  `json:"SourceAppName"`
+	SourceAppPath     *string  `json:"SourceAppPath"`
 }
 
 // UnmarshalJSON gives CopyCount the default the C# record gives a missing

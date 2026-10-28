@@ -182,6 +182,40 @@ func (s Settings) Portable() Settings {
 	return p
 }
 
+// RestorePortable puts back old's value of each setting a snapshot carries
+// where s still has the value installed put there: a setting changed since
+// keeps its new value.
+func (s *Settings) RestorePortable(installed, old Settings) {
+	restore := func(cur *string, inst, prev string) {
+		if *cur == inst {
+			*cur = prev
+		}
+	}
+	restoreBool := func(cur *bool, inst, prev bool) {
+		if *cur == inst {
+			*cur = prev
+		}
+	}
+	restoreInt := func(cur *int32, inst, prev int32) {
+		if *cur == inst {
+			*cur = prev
+		}
+	}
+	restore(&s.Theme, installed.Theme, old.Theme)
+	restoreBool(&s.StartWithWindows, installed.StartWithWindows, old.StartWithWindows)
+	restoreInt(&s.MaxItems, installed.MaxItems, old.MaxItems)
+	restoreInt(&s.MaxMegabytes, installed.MaxMegabytes, old.MaxMegabytes)
+	restoreBool(&s.CaptureText, installed.CaptureText, old.CaptureText)
+	restoreBool(&s.CaptureImages, installed.CaptureImages, old.CaptureImages)
+	restoreBool(&s.CaptureFiles, installed.CaptureFiles, old.CaptureFiles)
+	restore(&s.CaptureFileExtensions, installed.CaptureFileExtensions, old.CaptureFileExtensions)
+	restoreInt(&s.CaptureFileMaxMegabytes, installed.CaptureFileMaxMegabytes, old.CaptureFileMaxMegabytes)
+	restoreBool(&s.MergeDuplicates, installed.MergeDuplicates, old.MergeDuplicates)
+	restoreBool(&s.ExcludePinnedFromLimits, installed.ExcludePinnedFromLimits, old.ExcludePinnedFromLimits)
+	restoreBool(&s.ShelfEnabled, installed.ShelfEnabled, old.ShelfEnabled)
+	restore(&s.ShelfTriggerModifier, installed.ShelfTriggerModifier, old.ShelfTriggerModifier)
+}
+
 // CopyPortable copies the settings a snapshot carries from src.
 func (s *Settings) CopyPortable(src Settings) {
 	s.Theme = src.Theme

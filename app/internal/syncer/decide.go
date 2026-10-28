@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -50,6 +51,55 @@ func ParseManifestInfo(manifestJSON string) ManifestInfo {
 		}
 	}
 	return info
+}
+
+// ParseManifestStrict reads a successful manifest answer. Unlike
+// ParseManifestInfo, a body that is not a manifest is an error: a proxy's HTML
+// page, a truncated body or an invalid time must not become "the server has
+// no snapshot", which would upload over the remote one.
+func ParseManifestStrict(manifestJSON string) (ManifestInfo, error) {
+	// The whole structure is decoded here, not just checked and then read
+	// again leniently: a snapshot that is not an object must fail too.
+	var doc struct {
+		Latest *struct {
+			Version   json.RawMessage `json:"version"`
+			UpdatedAt json.RawMessage `json:"updatedAt"`
+			Snapshot  *struct {
+				SHA256 json.RawMessage `json:"sha256"`
+				Size   json.RawMessage `json:"size"`
+			} `json:"snapshot"`
+		} `json:"latest"`
+	}
+	if err := json.Unmarshal([]byte(manifestJSON), &doc); err != nil {
+		return ManifestInfo{}, fmt.Errorf("manifest: %w", err)
+	}
+	if doc.Latest == nil {
+		return ManifestInfo{}, fmt.Errorf("manifest: no latest snapshot")
+	}
+	at := strings.TrimSpace(rawText(doc.Latest.UpdatedAt))
+	if at == "" {
+		return ManifestInfo{}, fmt.Errorf("manifest: no updatedAt")
+	}
+	t, err := model.ParseTime(at)
+	if err != nil {
+		return ManifestInfo{}, fmt.Errorf("manifest: updatedAt: %w", err)
+	}
+	info := ManifestInfo{RawJSON: manifestJSON, Version: rawText(doc.Latest.Version), UpdatedAt: &t}
+	if s := doc.Latest.Snapshot; s != nil {
+		info.SnapshotSHA256 = rawText(s.SHA256)
+		var n int64
+		if json.Unmarshal(s.Size, &n) == nil {
+			info.SnapshotSize = &n
+		} else {
+			var text string
+			if json.Unmarshal(s.Size, &text) == nil {
+				if v, err := parseInt(text); err == nil {
+					info.SnapshotSize = &v
+				}
+			}
+		}
+	}
+	return info, nil
 }
 
 // rawText is TryReadString: a string as it is, any other value as its JSON
@@ -111,13 +161,19 @@ func Decide(manifest ManifestInfo, localFingerprint string, localCount int, loca
 }
 
 func sameRemoteSnapshot(lastVersion, remoteVersion, lastSha, remoteSha string) bool {
-	if lastVersion != remoteVersion {
-		return false
+	if lastVersion == remoteVersion {
+		if lastSha == "" || remoteSha == "" {
+			return true
+		}
+		return strings.EqualFold(lastSha, remoteSha)
 	}
-	if lastSha == "" || remoteSha == "" {
+	// A download whose manifest could not be matched records the snapshot
+	// hash as the version: it still names the same server file.
+	if len(lastVersion) == 64 && lastSha != "" && remoteSha != "" &&
+		strings.EqualFold(lastVersion, lastSha) && strings.EqualFold(lastSha, remoteSha) {
 		return true
 	}
-	return strings.EqualFold(lastSha, remoteSha)
+	return false
 }
 
 // isRemoteRollback says that the server's snapshot is older (by more than two
