@@ -695,7 +695,7 @@ func (s *importStaging) addFiles(n int, it model.Item, files []fileRecord, ensur
 	}
 	var local []string
 	for _, f := range files {
-		name := fmt.Sprintf("%04d_%s", f.idx, sanitizeFileName(f.name))
+		name := importedFileName(f.idx, f.name)
 		if err := writeFileRecord(s.layout, filepath.Join(from, name), f, ensure); err != nil {
 			return nil, err
 		}
