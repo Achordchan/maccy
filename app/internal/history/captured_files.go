@@ -48,6 +48,16 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 		return false
 	}
 	if s.deferCleanup {
+		if old.LocalCaptureMutation == "" {
+			for i := range s.items {
+				if s.items[i].ID == old.ID {
+					s.items[i].LocalCaptureMutation = captureMutationID()
+				}
+			}
+			if err := SaveWithMutation(s.layout, s.items, s.mutation); err != nil {
+				return false
+			}
+		}
 		b, _ := json.Marshal(next.LocalCaptureMutation)
 		if err := os.WriteFile(backup+".capture-time", b, 0600); err != nil {
 			return false
