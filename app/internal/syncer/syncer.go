@@ -608,7 +608,12 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error 
 		// merge reached the disk. A different fingerprint alone can be an
 		// unflushed capture. Restore only portable fields still equal to the import.
 		if p.OldPortable != nil && p.InstalledPortable != nil {
-			if err := s.cfg.Settings.Update(func(st *model.Settings) { st.RestorePortable(*p.InstalledPortable, *p.OldPortable) }); err != nil {
+			if err := s.cfg.Settings.Update(func(st *model.Settings) {
+				if p.Account != "" && !strings.EqualFold(syncclient.AccountID(model.Str(st.AuthAccessToken)), p.Account) {
+					return
+				}
+				st.RestorePortable(*p.InstalledPortable, *p.OldPortable)
+			}); err != nil {
 				return err
 			}
 		}
@@ -620,7 +625,12 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error 
 		return nil
 	}
 	if p.OldPortable != nil && p.InstalledPortable != nil {
-		if err := s.cfg.Settings.Update(func(st *model.Settings) { st.RestorePortable(*p.OldPortable, *p.InstalledPortable) }); err != nil {
+		if err := s.cfg.Settings.Update(func(st *model.Settings) {
+			if p.Account != "" && !strings.EqualFold(syncclient.AccountID(model.Str(st.AuthAccessToken)), p.Account) {
+				return
+			}
+			st.RestorePortable(*p.OldPortable, *p.InstalledPortable)
+		}); err != nil {
 			return err
 		}
 	}
@@ -982,7 +992,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		return DownloadResult{}, ErrSessionChanged
 	}
 	oldSettings := s.settings()
-	undo := &settingsUndo{old: oldSettings}
+	undo := &settingsUndo{old: oldSettings, account: account}
 	var before, applied []model.Item
 	var moves *snapshot.AppliedPayloads
 	merged := false
@@ -1288,7 +1298,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	}
 	local := s.cfg.History.Items()
 	localSettings := s.settings()
-	undo := &settingsUndo{old: localSettings}
+	undo := &settingsUndo{old: localSettings, account: account}
 
 	report(progress, "backup_snapshot", "backup local snapshot", 28)
 	backup, err := s.preMergeBackupPath()
@@ -2253,6 +2263,9 @@ func itemsNotIn(exclude, items []model.Item) []model.Item {
 // portable settings are restored too.
 func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.Item, undo *settingsUndo, limitPruned map[string]bool) error {
 	if err := s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
+		if undo != nil && s.accountChanged(undo.account) {
+			return itemsNotIn(applied, current), nil
+		}
 		return rollbackItems(before, applied, current, limitPruned), nil
 	}); err != nil {
 		return err
@@ -2288,6 +2301,7 @@ func (s *Syncer) discardMutation(ctx context.Context, applied []model.Item, _ *s
 // what they were before it (old), and what it wrote (installed; nil while it
 // wrote nothing).
 type settingsUndo struct {
+	account   string
 	old       model.Settings
 	installed *model.Settings
 }
@@ -2301,7 +2315,12 @@ func (s *Syncer) restoreSettings(u *settingsUndo) error {
 		return nil
 	}
 	installed, old := u.installed.Portable(), u.old.Portable()
-	return s.cfg.Settings.Update(func(m *model.Settings) { m.RestorePortable(installed, old) })
+	return s.cfg.Settings.Update(func(m *model.Settings) {
+		if u.account != "" && !strings.EqualFold(syncclient.AccountID(model.Str(m.AuthAccessToken)), u.account) {
+			return
+		}
+		m.RestorePortable(installed, old)
+	})
 }
 
 // retainedItems is the applied items that the history still holds: the limits
