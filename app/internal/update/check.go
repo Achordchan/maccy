@@ -242,7 +242,7 @@ var errTimeout = errors.New("检查更新超时")
 
 func (c *Client) decide(m *Manifest) Result {
 	fail := func(s string) Result { return Result{Status: Failed, Error: s} }
-	if m == nil {
+	if m == nil || !strings.EqualFold(m.AppID, AppID) {
 		return fail("invalid manifest")
 	}
 	latest := NormalizeVersion(m.Latest.Version)

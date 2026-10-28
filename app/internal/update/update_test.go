@@ -222,8 +222,8 @@ func TestCheckDecisions(t *testing.T) {
 		m    Manifest
 		want string
 	}{
-		"no version":   {Manifest{Latest: Release{Installer: Installer{URL: "u"}}}, "manifest missing version"},
-		"junk version": {Manifest{Latest: Release{Version: "abc", Installer: Installer{URL: "u"}}}, "manifest missing version"},
+		"no version":   {Manifest{AppID: AppID, Latest: Release{Installer: Installer{URL: "u"}}}, "manifest missing version"},
+		"junk version": {Manifest{AppID: AppID, Latest: Release{Version: "abc", Installer: Installer{URL: "u"}}}, "manifest missing version"},
 		"no url":       {release2("1.0.11", ""), "manifest missing update url"},
 	} {
 		s.setManifest(t, tc.m)

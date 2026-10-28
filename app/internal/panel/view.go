@@ -78,6 +78,7 @@ func (m *Model) keys(c *ui.Context) *action {
 // the box would otherwise keep Enter and the arrows for itself. It runs on
 // the UI thread, between frames.
 func (m *Model) searchKey(k ui.TextKey) bool {
+	m.refresh()
 	cur, ok := m.current()
 	switch {
 	case k.Mods == ui.Ctrl && k.Key == ui.KeyBackspace:
