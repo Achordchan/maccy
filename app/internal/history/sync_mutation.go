@@ -67,6 +67,15 @@ func (s *Service) RemoveFiles(files []string) error {
 		for _, p := range it.FilePaths {
 			keep[strings.ToLower(filepath.Clean(p))] = true
 		}
+		if it.Kind == model.KindFileList {
+			dir := filepath.Join(s.layout.Files(), it.IDN())
+			for _, candidate := range files {
+				if withinDir(dir, candidate) {
+					keep[strings.ToLower(filepath.Clean(candidate))] = true
+				}
+			}
+		}
+
 	}
 	var first error
 	for _, p := range files {

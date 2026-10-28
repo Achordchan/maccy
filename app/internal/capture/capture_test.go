@@ -975,3 +975,14 @@ func cacheDirAndCopy(r *rig, src string) ([]string, error) {
 	err := copyFile(src, dst)
 	return []string{dst, filepath.Dir(dst)}, err
 }
+
+func TestBlockedOnlyAllowlistDoesNotBecomeUnrestricted(t *testing.T) {
+	allowed := parseExtensions(".exe,.dll")
+	if allowed == nil || len(allowed) != 0 {
+		t.Fatalf("effective allowlist must be empty but restricted: %v", allowed)
+	}
+	if parseExtensions(" , ; ") == nil {
+	} else {
+		t.Fatal("blank configuration should remain unrestricted")
+	}
+}

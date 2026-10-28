@@ -280,7 +280,7 @@ func parseExtensions(list string) map[string]bool {
 		}
 		set[ext] = true
 	}
-	if len(set) == 0 {
+	if len(fields) == 0 {
 		return nil
 	}
 	return set

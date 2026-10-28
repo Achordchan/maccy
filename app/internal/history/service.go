@@ -180,6 +180,9 @@ func (s *Service) Add(item model.Item) {
 				break
 			}
 		}
+		if idx >= 0 && item.Kind == model.KindFileList && !s.replaceCapturedFiles(s.items[idx], item) {
+			idx = -1
+		}
 		if idx >= 0 {
 			existing := s.items[idx]
 			if existing.Kind == model.KindImage && !blank(item.ImageFilePath) && !blank(existing.ImageFilePath) &&
