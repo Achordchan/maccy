@@ -224,7 +224,7 @@ func (s *Service) Add(item model.Item) {
 			if item.FilePaths != nil {
 				updated.FilePaths = item.FilePaths
 			}
-			updated.CopyCount = max(1, existing.CopyCount) + 1
+			updated.CopyCount = int32(min(int64(2147483647), int64(max(1, existing.CopyCount))+1))
 			updated.FirstCapturedAt = &first
 			if existing.ContentHash == nil {
 				updated.ContentHash = item.ContentHash
@@ -279,7 +279,7 @@ func (s *Service) Touch(id string) {
 		first = *it.FirstCapturedAt
 	}
 	it.CapturedAt = model.Time{Time: s.Now()}
-	it.CopyCount = max(1, it.CopyCount) + 1
+	it.CopyCount = int32(min(int64(2147483647), int64(max(1, it.CopyCount))+1))
 	it.FirstCapturedAt = &first
 	s.items = append(s.items[:idx], s.items[idx+1:]...)
 	s.items = append([]model.Item{it}, s.items...)

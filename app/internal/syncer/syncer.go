@@ -2065,6 +2065,18 @@ func removedSet(ids []string) map[string]bool {
 // with the note, pin and copy count edits made meanwhile, plus the captures
 // that were added. Items that only the failed mutation added are dropped.
 func rollbackItems(before, applied, current []model.Item, limitPruned map[string]bool) []model.Item {
+	// A deleted representative deletes every original in its identity group.
+	keptBefore := make([]model.Item, 0, len(before))
+	for _, old := range before {
+		ap, ok := findIdentity(applied, old)
+		if ok && !limitPruned[strings.ToLower(ap.ID)] {
+			if _, present := findIdentity(current, ap); !present {
+				continue
+			}
+		}
+		keptBefore = append(keptBefore, old)
+	}
+	before = keptBefore
 	// Resolve retained remote IDs back to their original local identity.
 	applied = cloneItems(applied)
 	current = cloneItems(current)
