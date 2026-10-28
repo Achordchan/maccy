@@ -27,8 +27,6 @@ type Model struct {
 	// MetaLine is Meta, worked out off the UI thread: it reads the files,
 	// which may be on a network share that answers slowly or not at all.
 	MetaLine string
-	// IconOf gives the icon of the program the item came from (may be nil).
-	IconOf func(path string) *ui.Bitmap
 	// Open opens the original of an image.
 	Open func(path string)
 	// Left is called when the pointer, which was over the window, left it.
@@ -36,7 +34,6 @@ type Model struct {
 
 	over, wasOver bool
 	icon          *ui.Bitmap
-	iconPath      string
 	// files is the list of the files, which builds only the rows in view (an
 	// item may hold thousands); filesOf the item it shows.
 	files   ui.ListState
@@ -229,12 +226,6 @@ func (m *Model) View(c *ui.Context) {
 	p := panel.PaletteFor(c.Theme().Dark)
 	c.Root().Background(ui.Transparent)
 	it := m.Item
-	if path := strings.TrimSpace(model.Str(it.SourceAppPath)); path != m.iconPath {
-		m.iconPath, m.icon = path, nil
-		if path != "" && m.IconOf != nil {
-			m.icon = m.IconOf(path)
-		}
-	}
 
 	root := ui.Column(c).Fill().Padding(10).Background(p.PreviewBg).Border(1, p.Divider).Radius(12).Clip()
 	m.over = root.Hovered()

@@ -1,6 +1,7 @@
 package previewwin
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/egoist/mygo"
@@ -35,7 +36,9 @@ type Manager struct {
 	// failed is the picture that could not be shown, which is not read again
 	// while the pointer stays on its row (the panel asks for it each frame);
 	// Hide, or another item, forgets it.
-	failed string
+	failed   string
+	iconBusy bool
+	icons    map[string]*ui.Bitmap
 }
 
 func (mg *Manager) runOnMain(f func()) {
@@ -131,10 +134,13 @@ func (mg *Manager) present(it model.Item, bm *ui.Bitmap, pw, ph int, meta string
 			return
 		}
 		if mg.model == nil {
-			mg.model = &Model{IconOf: mg.IconOf, Left: mg.Left, Open: func(p string) { _ = mygo.Shell.OpenPath(p) }}
+			mg.model = &Model{Left: mg.Left, Open: func(p string) { _ = mygo.Shell.OpenPath(p) }}
 		}
 		mg.model.Item, mg.model.Bitmap, mg.model.Width, mg.model.Height = it, bm, pw, ph
 		mg.model.MetaLine = meta
+		path := strings.TrimSpace(model.Str(it.SourceAppPath))
+		mg.model.icon = mg.icons[path]
+		mg.loadIcon(path)
 		mg.id = it.ID
 		w, h := Size(it, pw, ph)
 		d := mygo.Screen.DisplayNearestPoint(mygo.Point{X: anchor.X + anchor.W/2, Y: anchor.Y + anchor.H/2})

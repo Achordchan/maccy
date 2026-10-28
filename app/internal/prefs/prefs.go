@@ -148,7 +148,7 @@ func (c *Controller) SetTheme(v string) Effect {
 // SetStartWithWindows turns the autostart on or off in the system first; if
 // that fails the setting is left alone and the error says why.
 func (c *Controller) SetStartWithWindows(on bool) Effect {
-	if c.Settings.Get().StartWithWindows == on {
+	if c.Autostart.IsEnabled() == on && c.Settings.Get().StartWithWindows == on {
 		return Effect{}
 	}
 	if err := c.Autostart.SetEnabled(on); err != nil {

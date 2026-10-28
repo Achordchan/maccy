@@ -215,3 +215,13 @@ func TestEnablingShelfReplacesDisabledModifier(t *testing.T) {
 		t.Fatalf("modifier = %q, want the one that is shown", got)
 	}
 }
+
+func TestAutostartReconcilesPortableSetting(t *testing.T) {
+	c, m, a, _ := newCtl(t)
+	if err := m.Update(func(s *model.Settings) { s.StartWithWindows = true }); err != nil {
+		t.Fatal(err)
+	}
+	if e := c.SetStartWithWindows(true); e.Err != nil || !a.on {
+		t.Fatalf("OS entry not enabled: %+v", e)
+	}
+}
