@@ -308,6 +308,9 @@ func has(set map[string]bool, names []string) bool {
 // Text comes first, then files, then images; the first that yields something
 // is the item.
 func (s *Service) Capture(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
 	gen := s.writeGen.Load()
@@ -352,6 +355,10 @@ func (s *Service) Capture(ctx context.Context) error {
 		app = s.ForegroundApp()
 	}
 	add := func(it model.Item) {
+		if ctx.Err() != nil {
+			s.discard(it)
+			return
+		}
 		if s.interfered(gen) {
 			s.noteSkipped()
 			// An Apply wrote while we read: this is our own content.
@@ -916,7 +923,8 @@ func (s *Service) write(it model.Item) (bool, written, error) {
 
 	case model.KindFileList:
 		var resolved []string
-		for i, p := range nonBlank(it.FilePaths) {
+		compact := 0
+		for i, p := range it.FilePaths {
 			if strings.TrimSpace(p) == "" {
 				continue
 			}
@@ -925,6 +933,11 @@ func (s *Service) write(it model.Item) (bool, written, error) {
 				continue
 			}
 			cached := filepath.Join(s.Layout.Files(), it.IDN(), fmt.Sprintf("%04d_%s", i, name))
+			legacy := filepath.Join(s.Layout.Files(), it.IDN(), fmt.Sprintf("%04d_%s", compact, name))
+			compact++
+			if !isFile(cached) && isFile(legacy) {
+				cached = legacy
+			}
 			switch {
 			case isFile(cached):
 				resolved = append(resolved, cached)
