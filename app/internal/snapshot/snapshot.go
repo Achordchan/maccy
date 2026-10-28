@@ -259,7 +259,7 @@ INSERT OR REPLACE INTO items(
 func imageStatement(it model.Item, id string, blobs map[string]Blob) (sqlite.Statement, error) {
 	p := model.Str(it.ImageFilePath)
 	size, sum, ok := hashFile(p)
-	if !ok {
+	if !ok || size <= 0 {
 		return sqlite.Statement{}, errors.New("snapshot: local image payload missing")
 	}
 	name := filepath.Base(p)
