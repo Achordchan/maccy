@@ -298,6 +298,9 @@ func (s *Syncer) PersistAfterDownload(ctx context.Context, dr DownloadResult) er
 func (s *Syncer) Restore(ctx context.Context, progress func(Progress), reason, expectFingerprint string, baseline []model.Item) (DownloadResult, error) {
 	s.beginWorkflow()
 	defer s.workflow.Unlock()
+	if err := s.recoverPendingMerge(ctx, s.currentAccount()); err != nil {
+		return DownloadResult{}, err
+	}
 	dr, err := s.downloadAndApplyWorkflow(ctx, progress, reason, expectFingerprint, baseline)
 	if err != nil {
 		return DownloadResult{}, err
