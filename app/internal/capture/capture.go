@@ -312,8 +312,12 @@ func (s *Service) Capture(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	generation := s.retryGeneration.Load()
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
+	if generation != s.retryGeneration.Load() {
+		return nil
+	}
 	gen := s.writeGen.Load()
 	s.took.Store(false)
 	opt := s.options()
