@@ -89,21 +89,22 @@ type Service struct {
 	// there is no counter: the poll interval plus the C# 250 ms. Zero is 250 ms.
 	OwnWindow time.Duration
 
-	allowed     map[string]bool
-	lastOwnWrit atomic.Int64
-	ownSeq      atomic.Int64                // counter after our last write, plus 2; 0 is none
-	applying    atomic.Int32                // Apply calls in progress
-	ownCheck    atomic.Pointer[func() bool] // reads the clipboard back; true while it holds what we wrote
-	ownMu       sync.Mutex                  // makes a change of the ownership state one step
-	applyID     atomic.Int64                // number of the newest Apply
-	ownGen      atomic.Int64                // moves with every change of it
-	setMu       sync.RWMutex                // guards the capture settings below
-	capMu       sync.Mutex                  // one Capture at a time (the watcher and Retry)
-	lastDone    atomic.Value                // the change key of the last capture that was kept
-	triesFor    atomic.Value                // the change the budget is for
-	tries       atomic.Int32                // retries of an unreadable clipboard in a row
-	skipped     atomic.Bool                 // a Capture gave way to an Apply
-	writeGen    atomic.Int64                // moves at the start and the end of every Apply
+	allowed         map[string]bool
+	lastOwnWrit     atomic.Int64
+	ownSeq          atomic.Int64                // counter after our last write, plus 2; 0 is none
+	applying        atomic.Int32                // Apply calls in progress
+	ownCheck        atomic.Pointer[func() bool] // reads the clipboard back; true while it holds what we wrote
+	ownMu           sync.Mutex                  // makes a change of the ownership state one step
+	applyID         atomic.Int64                // number of the newest Apply
+	ownGen          atomic.Int64                // moves with every change of it
+	setMu           sync.RWMutex                // guards the capture settings below
+	capMu           sync.Mutex                  // one Capture at a time (the watcher and Retry)
+	lastDone        atomic.Value                // the change key of the last capture that was kept
+	triesFor        atomic.Value                // the change the budget is for
+	retryGeneration atomic.Uint64
+	tries           atomic.Int32 // retries of an unreadable clipboard in a row
+	skipped         atomic.Bool  // a Capture gave way to an Apply
+	writeGen        atomic.Int64 // moves at the start and the end of every Apply
 }
 
 // New returns a Service with the defaults of ClipboardCaptureService: all
@@ -373,6 +374,7 @@ func (s *Service) Capture(ctx context.Context) error {
 			// same picture copied again has the same token.
 			s.lastDone.Store(key)
 		}
+		s.retryGeneration.Add(1)
 		wantRetry = false // something was captured: nothing to look at again
 		now := model.Time{Time: s.Now()}
 		it.CapturedAt, it.FirstCapturedAt = now, &now
@@ -878,7 +880,11 @@ func (s *Service) retryLater(key string) {
 	if s.tries.Add(1) > 5 {
 		return
 	}
+	generation := s.retryGeneration.Load()
 	time.AfterFunc(300*time.Millisecond, func() {
+		if generation != s.retryGeneration.Load() {
+			return
+		}
 		// A newer change is the watcher's to take; looking at it here too
 		// would capture it twice.
 		if current := s.changeKey(); key != "" && current != "" && current != key {
