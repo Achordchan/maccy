@@ -45,7 +45,8 @@ type rootLocks struct {
 	workflow sync.Mutex
 	// gen counts the workflows begun (under workflow): a restore's state is
 	// recorded only if no other one began since (PersistAfterDownload).
-	gen uint64
+	gen             uint64
+	rollbackPending bool
 }
 
 // beginWorkflow takes the workflow lock for a whole operation and counts it.
@@ -574,6 +575,14 @@ func (s *Syncer) readPendingMerge() (pendingMergeState, bool) {
 // it stays, and the error stops the run: deciding on the old state would
 // merge the same items again.
 func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error {
+	if s.rollbackPending {
+		if err := s.flush(ctx); err != nil {
+			return err
+		}
+		s.rollbackPending = false
+		s.clearPendingMerge()
+		return nil
+	}
 	p, ok := s.readPendingMerge()
 	if !ok {
 		return nil
@@ -992,7 +1001,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		return DownloadResult{}, ErrSessionChanged
 	}
 	oldSettings := s.settings()
-	undo := &settingsUndo{old: oldSettings, account: account}
+	undo := &settingsUndo{old: oldSettings, account: account, identities: data.Items}
 	var before, applied []model.Item
 	var moves *snapshot.AppliedPayloads
 	merged := false
@@ -1367,6 +1376,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			return nil, ErrSessionChanged
 		}
 		before = append([]model.Item(nil), current...)
+		undo.identities = remote.Items
 		// What the user deleted while the snapshot was downloading is left out
 		// of it, or the merge would bring it back.
 		merge := MergeItems
@@ -2274,11 +2284,29 @@ func itemsNotIn(exclude, items []model.Item) []model.Item {
 // part of the mutation, so losing them would be data loss. The previous
 // portable settings are restored too.
 func (s *Syncer) rollbackMutation(ctx context.Context, before, applied []model.Item, undo *settingsUndo, limitPruned map[string]bool) error {
+	s.rollbackPending = true
 	if err := s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
 		if undo != nil && s.accountChanged(undo.account) {
 			return itemsNotIn(applied, current), nil
 		}
-		return rollbackItems(before, applied, current, limitPruned), nil
+		normalized := cloneItems(before)
+		if undo != nil {
+			for i, it := range normalized {
+				if ap, ok := findConnectedIdentity(applied, it, undo.identities, before, applied); ok && it.ContentHash == nil {
+					normalized[i].ContentHash = ap.ContentHash
+				}
+			}
+		}
+		restored := rollbackItems(normalized, applied, current, limitPruned)
+		for i := range restored {
+			for _, old := range before {
+				if restored[i].ID == old.ID {
+					restored[i].ContentHash = old.ContentHash
+					break
+				}
+			}
+		}
+		return restored, nil
 	}); err != nil {
 		return err
 	}
@@ -2313,9 +2341,10 @@ func (s *Syncer) discardMutation(ctx context.Context, applied []model.Item, _ *s
 // what they were before it (old), and what it wrote (installed; nil while it
 // wrote nothing).
 type settingsUndo struct {
-	account   string
-	old       model.Settings
-	installed *model.Settings
+	identities []model.Item
+	account    string
+	old        model.Settings
+	installed  *model.Settings
 }
 
 // restoreSettings undoes what the operation wrote to the settings, and only
