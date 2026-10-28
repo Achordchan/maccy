@@ -1322,6 +1322,12 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 		// read back is not a backup, so stop before anything is changed.
 		return fmt.Errorf("pre-merge backup: %w", err)
 	}
+	if err := durable.SyncTree(backup); err != nil {
+		return err
+	}
+	if err := durable.SyncParent(backup); err != nil {
+		return err
+	}
 	s.timing("merge", "backup_snapshot", started, fmt.Sprintf("%s;path=%s;items=%d;size=%d", reason, backup, len(local), bexp.Size))
 
 	path, err := s.tempSnapshotPath()
@@ -1611,6 +1617,12 @@ func copyNew(src, dst string) (err error) {
 		}
 	}()
 	_, err = io.Copy(out, in)
+	if err == nil {
+		err = out.Sync()
+	}
+	if err == nil {
+		err = durable.SyncParent(dst)
+	}
 	return err
 }
 
