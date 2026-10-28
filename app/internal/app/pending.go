@@ -518,3 +518,6 @@ func (p *pendingDeletes) keptAliases() map[string]string {
 	}
 	return out
 }
+
+// Ready prevents synchronization from treating an unreadable deletion file as empty.
+func (p *pendingDeletes) Ready() error { p.mu.Lock(); defer p.mu.Unlock(); return p.load() }

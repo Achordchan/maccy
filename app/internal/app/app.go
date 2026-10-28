@@ -237,6 +237,9 @@ func New(cfg Config) (*App, error) {
 		a.runGen.Store(gen) // which account this sync is for
 		a.runOwner.Store(&owner)
 		a.replayOwnerMoves()
+		if err := a.pending.Ready(); err != nil {
+			return err
+		}
 		err := run(ctx, reason, manual)
 		if err != nil {
 			return err

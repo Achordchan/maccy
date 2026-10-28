@@ -256,7 +256,15 @@ func (s *Service) SignOut() Result {
 	// address and the old checkpoints, and a record naming the account of this
 	// run would give those checkpoints to the wrong one.
 	leaving := strings.TrimSpace(model.Str(s.Store.Get().AuthUserEmail))
-	if err := s.Store.Update(func(m *model.Settings) { syncclient.ClearAuthSession(m, true) }); err != nil {
+	record, recordErr := os.ReadFile(s.AccountFile)
+	preserve := leaving != "" && ((s.AccountFile == "" && strings.EqualFold(s.lastAccount, leaving)) || (recordErr == nil && strings.EqualFold(strings.TrimSpace(string(record)), leaving)))
+	if err := s.Store.Update(func(m *model.Settings) {
+		syncclient.ClearAuthSession(m, true)
+		if !preserve {
+			m.SyncLastLocalFingerprint, m.SyncLastRemoteVersion = nil, nil
+			m.SyncLastRemoteUpdatedAt, m.SyncLastRemoteSha256 = nil, nil
+		}
+	}); err != nil {
 		if leaving != "" {
 			s.lastAccount = leaving // this run knows; the disk is not told
 		}
