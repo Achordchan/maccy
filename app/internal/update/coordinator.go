@@ -411,6 +411,15 @@ func (c *Coordinator) spawn(helper, plan string) error {
 }
 
 func (c *Coordinator) startPackage(p *Prepared) error {
+	for _, f := range p.Manifest.Files {
+		target, err := insideRoot(filepath.Dir(c.Exe), f.Path)
+		if err != nil {
+			return err
+		}
+		if st, err := os.Stat(target); err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0200 == 0 {
+			return errors.New("update target is read-only")
+		}
+	}
 	if strings.TrimSpace(c.Exe) == "" {
 		return errors.New("current executable path is unavailable")
 	}

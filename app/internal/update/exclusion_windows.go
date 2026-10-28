@@ -2,7 +2,10 @@
 
 package update
 
-import "golang.org/x/sys/windows"
+import (
+	"golang.org/x/sys/windows"
+	"sync"
+)
 
 // The helper creates this marker before waiting for the old process to exit.
 // Kernel ownership releases it even if the helper crashes.
@@ -18,7 +21,8 @@ func holdUpdateExclusion() (func(), error) {
 		windows.CloseHandle(h)
 		return nil, appErr
 	}
-	return func() { windows.CloseHandle(app); windows.CloseHandle(h) }, nil
+	var once sync.Once
+	return func() { once.Do(func() { windows.CloseHandle(app); windows.CloseHandle(h) }) }, nil
 }
 func UpdateInProgress() bool {
 	name, _ := windows.UTF16PtrFromString("klip_update_in_progress")
