@@ -220,6 +220,9 @@ func (s *Service) Add(item model.Item) {
 				break
 			}
 		}
+		if idx >= 0 && item.Kind == model.KindFileList {
+			item.LocalCaptureMutation = captureMutationID()
+		}
 		if idx >= 0 && item.Kind == model.KindFileList && !s.replaceCapturedFiles(s.items[idx], item) {
 			idx = -1
 		}
@@ -238,6 +241,9 @@ func (s *Service) Add(item model.Item) {
 				first = *existing.FirstCapturedAt
 			}
 			updated := existing
+			if item.Kind == model.KindFileList {
+				updated.LocalCaptureMutation = item.LocalCaptureMutation
+			}
 			updated.CapturedAt = item.CapturedAt
 			updated.ApproxBytes = item.ApproxBytes
 			if item.Text != nil {

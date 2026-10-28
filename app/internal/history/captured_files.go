@@ -1,6 +1,8 @@
 package history
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"klip/internal/model"
@@ -47,7 +49,7 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 		return false
 	}
 	if s.deferCleanup {
-		b, _ := json.Marshal(next.CapturedAt)
+		b, _ := json.Marshal(next.LocalCaptureMutation)
 		if err := os.WriteFile(backup+".capture-time", b, 0600); err != nil {
 			return false
 		}
@@ -74,6 +76,12 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 // recoverCapturedFiles restores the retained ID before history normalization.
 // Backup names encode only an existing directory component, never a path.
 func recoverCapturedFiles(root string, histories ...[]model.Item) {
+	recoverCaptureTransactions(root, false, histories...)
+}
+func retireCapturedFiles(root string, items []model.Item) {
+	recoverCaptureTransactions(root, true, items)
+}
+func recoverCaptureTransactions(root string, retireOnly bool, histories ...[]model.Item) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return
@@ -89,15 +97,18 @@ func recoverCapturedFiles(root string, histories ...[]model.Item) {
 		}
 		backup, to := filepath.Join(root, name), filepath.Join(root, original)
 		if data, err := os.ReadFile(backup + ".capture-time"); err == nil {
-			var at model.Time
-			if json.Unmarshal(data, &at) == nil {
+			var marker string
+			if json.Unmarshal(data, &marker) == nil {
 				committed := false
 				for _, items := range histories {
 					for _, it := range items {
-						if it.IDN() == original && !it.CapturedAt.Before(at.Time) {
+						if it.IDN() == original && it.LocalCaptureMutation == marker && marker != "" {
 							committed = true
 						}
 					}
+				}
+				if !committed && retireOnly {
+					continue
 				}
 				if committed {
 					_ = os.RemoveAll(backup)
@@ -115,4 +126,12 @@ func recoverCapturedFiles(root string, histories ...[]model.Item) {
 			_ = os.RemoveAll(backup)
 		}
 	}
+}
+
+func captureMutationID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b)
 }
