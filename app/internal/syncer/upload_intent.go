@@ -3,17 +3,25 @@ package syncer
 import (
 	"encoding/json"
 	"klip/internal/durable"
+	"klip/internal/model"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-type uploadIntent struct{ Account, Fingerprint, SHA string }
+type uploadIntent struct {
+	Account, Fingerprint, SHA string
+	Baseline                  *syncBaseline
+}
 
 func (s *Syncer) uploadIntentPath() string {
 	return filepath.Join(s.cfg.Layout.Root, "sync", "upload-intent.json")
 }
 func (s *Syncer) writeUploadIntent(v uploadIntent) error {
+	if v.Baseline == nil {
+		b := syncBaselineOf(s.settings())
+		v.Baseline = &b
+	}
 	path := s.uploadIntentPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
@@ -54,6 +62,12 @@ func (s *Syncer) recoverUploadIntent(m ManifestInfo, account string) error {
 	}
 	if !strings.EqualFold(v.Account, account) {
 		return nil
+	}
+	if v.Baseline != nil && syncBaselineOf(s.settings()) != *v.Baseline {
+		if err := s.cfg.Settings.Update(func(*model.Settings) {}); err != nil {
+			return err
+		}
+		return os.Remove(s.uploadIntentPath())
 	}
 	if strings.EqualFold(v.SHA, m.SnapshotSHA256) && v.SHA != "" {
 		if err = s.PersistSyncState(v.Fingerprint, m, account); err != nil {
