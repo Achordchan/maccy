@@ -40,3 +40,22 @@ func TestRecoveryDoesNotReplaySupersededJournal(t *testing.T) {
 		t.Fatalf("new checkpoint overwritten: %+v", syncBaselineOf(*st))
 	}
 }
+
+func TestFailedSupersedingCheckpointKeepsJournal(t *testing.T) {
+	srv := serveSnapshot(t, nil)
+	defer srv.Close()
+	st := signedIn(model.DefaultSettings())
+	syn := unitSyncer(t, srv, st, &unitHistory{})
+	if err := syn.writePendingMerge(pendingMergeState{Fingerprint: "old", Version: "v1", Committed: true}); err != nil {
+		t.Fatal(err)
+	}
+	st.SyncLastLocalFingerprint = model.Ptr("new-memory-only")
+	fail := true
+	syn.cfg.Settings = failingSettings(st, &fail)
+	if err := syn.recoverPendingMerge(context.Background(), ""); err == nil {
+		t.Fatal("unsaved checkpoint retired journal")
+	}
+	if _, ok := syn.readPendingMerge(); !ok {
+		t.Fatal("recovery evidence deleted")
+	}
+}

@@ -581,7 +581,11 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error 
 		current := syncBaselineOf(s.settings())
 		installed := syncBaseline{p.Fingerprint, p.Version, p.UpdatedAt, p.SHA256}
 		if current != *p.Baseline && current != installed {
-			// A later successful sync superseded this journal before deletion.
+			// Update can change memory even when its disk write fails. Flush
+			// that checkpoint again before retiring its recovery evidence.
+			if err := s.cfg.Settings.Update(func(*model.Settings) {}); err != nil {
+				return err
+			}
 			s.clearPendingMerge()
 			return nil
 		}

@@ -25,7 +25,7 @@ func recountMergedSides(merged, remote, local []model.Item) {
 		for _, entry := range []struct {
 			key   string
 			table map[string]int
-		}{{strings.ToLower(it.ID), ids}, {mergeKey(it), keys}} {
+		}{{strings.ToLower(it.ID), ids}, {strings.ToLower(mergeKey(it)), keys}} {
 			if entry.key == "" {
 				continue
 			}
