@@ -187,6 +187,14 @@ func (m *Model) NoteLine() string {
 	if strings.TrimSpace(n) == "" {
 		n = "（无备注）"
 	}
+	count := 0
+	for i := range n {
+		if count == textRunes {
+			n = n[:i] + "…"
+			break
+		}
+		count++
+	}
 	return "备注：" + n
 }
 

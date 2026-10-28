@@ -381,12 +381,13 @@ func (m *Model) hovering(it *model.Item, rect ui.Rect) {
 // in the background, one at a time, and cut down to the size they are drawn
 // at: a screenshot is never held in memory as a whole.
 type thumbCache struct {
-	mu      sync.Mutex
-	items   map[string]*ui.Bitmap // nil: could not be made
-	pending map[string]bool
-	order   []string
-	slot    chan struct{} // one picture is decoded at a time
-	redraw  func()
+	mu       sync.Mutex
+	failedAt map[string]time.Time
+	items    map[string]*ui.Bitmap // nil: could not be made
+	pending  map[string]bool
+	order    []string
+	slot     chan struct{} // one picture is decoded at a time
+	redraw   func()
 }
 
 const (
@@ -412,7 +413,10 @@ func (t *thumbCache) get(path string, redraw func()) *ui.Bitmap {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if bm, ok := t.items[path]; ok {
-		return bm
+		if bm != nil || time.Since(t.failedAt[path]) < 5*time.Second {
+			return bm
+		}
+		delete(t.items, path)
 	}
 	if t.pending[path] || path == "" {
 		return nil
@@ -436,6 +440,12 @@ func (t *thumbCache) make(path string, redraw func()) {
 		t.items = map[string]*ui.Bitmap{}
 	}
 	t.items[path] = bm
+	if bm == nil {
+		if t.failedAt == nil {
+			t.failedAt = map[string]time.Time{}
+		}
+		t.failedAt[path] = time.Now()
+	}
 	t.order = append(t.order, path)
 	if len(t.order) > thumbLimit {
 		delete(t.items, t.order[0])

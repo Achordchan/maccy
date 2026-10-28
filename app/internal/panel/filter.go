@@ -191,9 +191,10 @@ func ImageInfo(path string) string {
 // every frame. The file is read in the background, as the thumbnail is: it
 // may be on a disk that answers slowly, and the window must not wait for it.
 type infoCache struct {
-	mu      sync.Mutex
-	m       map[string]string
-	pending map[string]bool
+	mu       sync.Mutex
+	m        map[string]string
+	pending  map[string]bool
+	failedAt map[string]time.Time
 }
 
 // get returns what is known of the picture at path, or "" while it is being
@@ -202,7 +203,10 @@ func (c *infoCache) get(path string, redraw func()) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if s, ok := c.m[path]; ok {
-		return s
+		if s != "" || time.Since(c.failedAt[path]) < 5*time.Second {
+			return s
+		}
+		delete(c.m, path)
 	}
 	if path == "" || c.pending[path] {
 		return ""
@@ -219,6 +223,12 @@ func (c *infoCache) get(path string, redraw func()) string {
 			c.m = map[string]string{}
 		}
 		c.m[path] = s
+		if s == "" {
+			if c.failedAt == nil {
+				c.failedAt = map[string]time.Time{}
+			}
+			c.failedAt[path] = time.Now()
+		}
 		c.mu.Unlock()
 		if redraw != nil {
 			redraw()
