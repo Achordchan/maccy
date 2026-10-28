@@ -2066,6 +2066,7 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 			merged[i].Pinned = l.Pinned
 		}
 	}
+	components := identityComponents(filteredRemote, filteredLocal)
 	for i := range merged {
 		for _, l := range filteredLocal {
 			b, ok := baseByID[strings.ToLower(l.ID)]
@@ -2075,7 +2076,7 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 			if sameNote(l.Note, b.Note) && l.Pinned == b.Pinned {
 				continue
 			}
-			if _, ok := findConnectedIdentity([]model.Item{l}, merged[i], filteredRemote, filteredLocal); !ok {
+			if components[strings.ToLower(l.ID)] != components[strings.ToLower(merged[i].ID)] {
 				continue
 			}
 			if !sameNote(l.Note, b.Note) {
