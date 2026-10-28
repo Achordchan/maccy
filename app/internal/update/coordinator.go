@@ -407,7 +407,27 @@ func (c *Coordinator) spawn(helper, plan string) error {
 	if c.StartHelper != nil {
 		return c.StartHelper(helper, plan)
 	}
-	return StartHelper(helper, plan)
+	p, err := ReadPlan(plan)
+	if err != nil {
+		return err
+	}
+	p.ReadyFile = plan + ".ready"
+	_ = os.Remove(p.ReadyFile)
+	defer os.Remove(p.ReadyFile)
+	if err = WritePlan(plan, p); err != nil {
+		return err
+	}
+	if err = StartHelper(helper, plan); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err = os.Stat(p.ReadyFile); err == nil {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return errors.New("update helper readiness timed out")
 }
 
 func (c *Coordinator) startPackage(p *Prepared) error {

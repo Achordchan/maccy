@@ -16,6 +16,7 @@ import (
 // Plan is what the helper needs to put an update in place after the program
 // has exited. It is written as JSON by the program and read by the helper.
 type Plan struct {
+	ReadyFile string `json:"readyFile,omitempty"`
 	// PID is the program to wait for.
 	PID int `json:"pid"`
 	// InstallDir is where the program's files are.
@@ -164,6 +165,11 @@ func RunPlan(p Plan, h Hooks) error {
 	}
 	lg := logger{p.LogPath, h.Now}
 	_ = os.Remove(p.LogPath)
+	if p.ReadyFile != "" {
+		if err := os.WriteFile(p.ReadyFile, []byte("ready"), 0600); err != nil {
+			return err
+		}
+	}
 	lg.say("waiting for app exit")
 	if p.PID > 0 {
 		h.WaitExit(p.PID)
