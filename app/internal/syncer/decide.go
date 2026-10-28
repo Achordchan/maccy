@@ -99,6 +99,9 @@ func ParseManifestStrict(manifestJSON string) (ManifestInfo, error) {
 			}
 		}
 	}
+	if strings.TrimSpace(info.Version) == "" && strings.TrimSpace(info.SnapshotSHA256) == "" {
+		return ManifestInfo{}, fmt.Errorf("manifest: missing snapshot identifier")
+	}
 	return info, nil
 }
 
