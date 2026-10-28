@@ -306,6 +306,13 @@ func extractSafely(zipPath, root string) error {
 		return err
 	}
 	defer zr.Close()
+	var expanded uint64
+	for _, f := range zr.File {
+		if f.UncompressedSize64 > 512*1024*1024 || expanded > 2*1024*1024*1024-f.UncompressedSize64 {
+			return errors.New("update archive expansion limit exceeded")
+		}
+		expanded += f.UncompressedSize64
+	}
 	for _, f := range zr.File {
 		rel, err := NormalizePath(f.Name)
 		if err != nil {
