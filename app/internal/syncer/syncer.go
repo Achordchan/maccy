@@ -122,8 +122,13 @@ func (s *Syncer) connection(ctx context.Context) (string, error) {
 	if cur.AuthExpiresAtUnixMs <= nowMs+60_000 {
 		// A temporary failure must reach the caller as it is: the tokens are
 		// still there, so "not logged in" would be wrong.
-		if _, err := s.session.Refresh(ctx); err != nil {
+		if applied, err := s.session.Refresh(ctx); err != nil {
 			return "", err
+		} else if !applied {
+			if model.Str(s.settings().AuthAccessToken) == "" {
+				return "", ErrNotLoggedIn
+			}
+			return "", ErrSessionChanged
 		}
 	}
 	cur = s.settings()
