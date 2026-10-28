@@ -90,3 +90,42 @@ func findConnectedIdentity(candidates []model.Item, target model.Item, sides ...
 	}
 	return model.Item{}, false
 }
+
+func identityComponents(sides ...[]model.Item) map[string]int {
+	all := []model.Item{}
+	for _, items := range sides {
+		all = append(all, items...)
+	}
+	parent := make([]int, len(all))
+	for i := range parent {
+		parent[i] = i
+	}
+	var find func(int) int
+	find = func(i int) int {
+		if parent[i] != i {
+			parent[i] = find(parent[i])
+		}
+		return parent[i]
+	}
+	ids, keys := map[string]int{}, map[string]int{}
+	for i, it := range all {
+		for _, entry := range []struct {
+			k string
+			m map[string]int
+		}{{strings.ToLower(it.ID), ids}, {strings.ToLower(mergeKey(it)), keys}} {
+			if entry.k == "" {
+				continue
+			}
+			if j, ok := entry.m[entry.k]; ok {
+				parent[find(i)] = find(j)
+			} else {
+				entry.m[entry.k] = i
+			}
+		}
+	}
+	result := map[string]int{}
+	for id, i := range ids {
+		result[id] = find(i)
+	}
+	return result
+}
