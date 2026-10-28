@@ -2575,6 +2575,9 @@ func (s *Syncer) bindAccount(account string) error {
 // history is about to be used, so from now on it belongs to this account even
 // if the operation does not finish.
 func (s *Syncer) bindFor(account string) error {
+	if _, err := os.ReadFile(s.accountFile()); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if strings.TrimSpace(account) == "" || s.boundAccount() != "" {
 		return nil
 	}
@@ -2586,6 +2589,9 @@ func (s *Syncer) bindFor(account string) error {
 // file) before the new account syncs; until then nothing is uploaded with the
 // new account's credentials.
 func (s *Syncer) checkBound(account string) error {
+	if _, err := os.ReadFile(s.accountFile()); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if strings.TrimSpace(account) == "" {
 		return nil
 	}
