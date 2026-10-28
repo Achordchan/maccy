@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"klip/internal/model"
 	"os"
 	"path/filepath"
@@ -37,7 +36,7 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 		return false
 	}
 	for i, source := range next.FilePaths {
-		cached := filepath.Join(from, fmt.Sprintf("%04d_%s", i, filepath.Base(source)))
+		cached := filepath.Join(from, CaptureCacheName(i, filepath.Base(source)))
 		if !isFile(cached) {
 			return false
 		}
