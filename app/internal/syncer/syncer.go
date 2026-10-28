@@ -914,6 +914,9 @@ type DownloadResult struct {
 func (s *Syncer) DownloadAndApply(ctx context.Context, progress func(Progress), reason, expectFingerprint string, baseline []model.Item) (DownloadResult, error) {
 	s.beginWorkflow()
 	defer s.workflow.Unlock()
+	if err := s.recoverPendingMerge(ctx, s.currentAccount()); err != nil {
+		return DownloadResult{}, err
+	}
 	return s.downloadAndApplyWorkflow(ctx, progress, reason, expectFingerprint, baseline)
 }
 
@@ -1567,6 +1570,12 @@ func (s *Syncer) ensureLocalBackupBlobs(ctx context.Context, exp snapshot.Export
 			// A blob that is there but does not hash to its name is not a
 			// backup: repair it from the source, which Export hashed.
 			if sum, err := snapshot.FileSHA256(target); err == nil && strings.EqualFold(sum, b.SHA256) {
+				if err := durable.SyncTree(target); err != nil {
+					return err
+				}
+				if err := durable.SyncParent(target); err != nil {
+					return err
+				}
 				continue
 			}
 		}
