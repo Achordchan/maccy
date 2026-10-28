@@ -200,7 +200,7 @@ func TestFailureIsShownAndCanBeRetried(t *testing.T) {
 	r.click("立即更新")
 	r.wait()
 	if r.shut != 0 || r.m.Kind() != Message || r.m.Title(Message) != "下载失败" || !r.tt.HasText("下载失败") ||
-		!strings.Contains(strings.Join(r.tt.Texts(), "|"), "file size mismatch") || !r.tt.HasText("重试") {
+		!strings.Contains(strings.Join(r.tt.Texts(), "|"), "download exceeds expected size") || !r.tt.HasText("重试") {
 		t.Fatalf("shut %d %v: %q", r.shut, r.m.Kind(), r.tt.Texts())
 	}
 	st.Info.InstallerSize = 24
