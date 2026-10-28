@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -89,6 +90,11 @@ func ContentFingerprint() string {
 	files, err := c.ReadFiles()
 	if err == nil {
 		h.Write([]byte(strings.Join(files, "\x00")))
+		for _, p := range files {
+			if st, err := os.Stat(p); err == nil {
+				fmt.Fprintf(h, "\x00%d:%d", st.Size(), st.ModTime().UnixNano())
+			}
+		}
 	}
 	h.Write([]byte{1})
 	// The picture always counts: which kinds are captured is a setting that
