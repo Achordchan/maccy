@@ -46,3 +46,16 @@ func TestCountsUseCaseInsensitiveHashes(t *testing.T) {
 		t.Fatalf("mixed case lost counts: %+v", got)
 	}
 }
+
+func TestRollbackRetainsOnlyConcurrentCountDelta(t *testing.T) {
+	before := textItemAt("a", "same")
+	before.CopyCount = 2
+	applied := before
+	applied.CopyCount = 7
+	current := applied
+	current.CopyCount = 8
+	got := rollbackItems([]model.Item{before}, []model.Item{applied}, []model.Item{current}, nil)
+	if len(got) != 1 || got[0].CopyCount != 3 {
+		t.Fatalf("merge contribution survived rollback: %+v", got)
+	}
+}

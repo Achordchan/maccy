@@ -54,3 +54,39 @@ func recountMergedSides(merged, remote, local []model.Item) {
 		}
 	}
 }
+
+func findConnectedIdentity(candidates []model.Item, target model.Item, sides ...[]model.Item) (model.Item, bool) {
+	if it, ok := findIdentity(candidates, target); ok {
+		return it, true
+	}
+	group := []model.Item{target}
+	all := []model.Item{}
+	for _, side := range sides {
+		all = append(all, side...)
+	}
+	seen := make([]bool, len(all))
+	for changed := true; changed; {
+		changed = false
+		for i, it := range all {
+			if seen[i] {
+				continue
+			}
+			for _, member := range group {
+				if sameMergeIdentity(member, it) {
+					seen[i] = true
+					group = append(group, it)
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	for _, it := range candidates {
+		for _, member := range group {
+			if sameMergeIdentity(member, it) {
+				return it, true
+			}
+		}
+	}
+	return model.Item{}, false
+}

@@ -596,7 +596,10 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error 
 		// Only the marker written after a successful Flush, the exact
 		// merged history, or the mark of the merge in the history proves the
 		// merge reached the disk. A different fingerprint alone can be an
-		// unflushed capture.
+		// unflushed capture. Persist the current rollback before discarding evidence.
+		if err := s.flush(ctx); err != nil {
+			return err
+		}
 		s.clearPendingMerge()
 		return nil
 	}
@@ -1935,9 +1938,9 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 	// A field the user changed during the download keeps the local value; an
 	// unchanged field takes the downloaded value (which may be a remote edit).
 	for i := range merged {
-		l, lok := findIdentity(filteredLocal, merged[i])
-		b, bok := findIdentity(baseline, merged[i])
-		r, rok := findIdentity(filteredRemote, merged[i])
+		l, lok := findConnectedIdentity(filteredLocal, merged[i], filteredRemote, filteredLocal)
+		b, bok := findConnectedIdentity(baseline, merged[i], filteredRemote, filteredLocal)
+		r, rok := findConnectedIdentity(filteredRemote, merged[i], filteredRemote, filteredLocal)
 		if !lok || !bok {
 			continue
 		}
@@ -2008,7 +2011,7 @@ func rollbackItems(before, applied, current []model.Item, limitPruned map[string
 					it.Pinned = cur.Pinned
 				}
 				if cur.CopyCount != ap.CopyCount {
-					it.CopyCount = cur.CopyCount
+					it.CopyCount = int32(max(int64(1), min(int64(2147483647), int64(it.CopyCount)+int64(cur.CopyCount)-int64(ap.CopyCount))))
 				}
 				if cur.CapturedAt.After(ap.CapturedAt.Time) {
 					it.CapturedAt = cur.CapturedAt
