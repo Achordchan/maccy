@@ -1,6 +1,7 @@
 package history
 
 import (
+	"encoding/json"
 	"fmt"
 	"klip/internal/model"
 	"os"
@@ -45,6 +46,12 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 	} else if !os.IsNotExist(err) {
 		return false
 	}
+	if s.deferCleanup {
+		b, _ := json.Marshal(next.CapturedAt)
+		if err := os.WriteFile(backup+".capture-time", b, 0600); err != nil {
+			return false
+		}
+	}
 	var err error
 	hadOld := false
 	if err = os.Rename(to, backup); err == nil {
@@ -58,7 +65,7 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 		}
 		return false
 	}
-	if hadOld {
+	if hadOld && !s.deferCleanup {
 		_ = os.RemoveAll(backup)
 	}
 	return true
@@ -66,7 +73,7 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 
 // recoverCapturedFiles restores the retained ID before history normalization.
 // Backup names encode only an existing directory component, never a path.
-func recoverCapturedFiles(root string) {
+func recoverCapturedFiles(root string, histories ...[]model.Item) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return
@@ -81,6 +88,27 @@ func recoverCapturedFiles(root string) {
 			continue
 		}
 		backup, to := filepath.Join(root, name), filepath.Join(root, original)
+		if data, err := os.ReadFile(backup + ".capture-time"); err == nil {
+			var at model.Time
+			if json.Unmarshal(data, &at) == nil {
+				committed := false
+				for _, items := range histories {
+					for _, it := range items {
+						if it.IDN() == original && !it.CapturedAt.Before(at.Time) {
+							committed = true
+						}
+					}
+				}
+				if committed {
+					_ = os.RemoveAll(backup)
+				} else {
+					_ = os.RemoveAll(to)
+					_ = os.Rename(backup, to)
+				}
+				_ = os.Remove(backup + ".capture-time")
+				continue
+			}
+		}
 		if _, err := os.Lstat(to); os.IsNotExist(err) {
 			_ = os.Rename(backup, to)
 		} else if err == nil {
