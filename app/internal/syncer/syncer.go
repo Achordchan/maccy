@@ -1944,20 +1944,7 @@ func MergeForDownload(remote, local, baseline []model.Item) []model.Item {
 	for _, it := range filteredRemote {
 		remoteByID[strings.ToLower(it.ID)] = it
 	}
-	for i := range merged {
-		totals := [2]int64{}
-		for side, items := range [][]model.Item{filteredRemote, filteredLocal} {
-			for _, it := range items {
-				if sameMergeIdentity(merged[i], it) {
-					totals[side] += int64(max(1, it.CopyCount))
-					if totals[side] > 2147483647 {
-						totals[side] = 2147483647
-					}
-				}
-			}
-		}
-		merged[i].CopyCount = int32(max(totals[0], totals[1]))
-	}
+	recountMergedSides(merged, filteredRemote, filteredLocal)
 
 	// A field the user changed during the download keeps the local value; an
 	// unchanged field takes the downloaded value (which may be a remote edit).

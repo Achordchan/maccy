@@ -129,7 +129,7 @@ func (s *Service) empty(ctx context.Context, t trash) {
 		if ctx.Err() != nil {
 			return
 		}
-		if keepImg[strings.ToLower(p)] {
+		if keepImg[strings.ToLower(p)] || !s.managedPath(p) {
 			continue
 		}
 		os.Remove(p)
@@ -141,7 +141,21 @@ func (s *Service) empty(ctx context.Context, t trash) {
 		if keepDir[id] {
 			continue
 		}
-		os.RemoveAll(filepath.Join(s.layout.Files(), id))
+		dir := filepath.Join(s.layout.Files(), id)
+		if !s.managedPath(dir) {
+			continue
+		}
+		referenced := false
+		for _, it := range s.items {
+			for _, p := range it.FilePaths {
+				if withinDir(dir, p) {
+					referenced = true
+				}
+			}
+		}
+		if !referenced {
+			os.RemoveAll(dir)
+		}
 	}
 }
 

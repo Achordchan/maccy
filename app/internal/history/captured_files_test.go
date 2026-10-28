@@ -89,3 +89,16 @@ func TestInterruptedCaptureReplacementRestoresRetainedID(t *testing.T) {
 		t.Fatal("interrupted replacement not recovered")
 	}
 }
+
+func TestHistoryCleanupNeverDeletesExternalImage(t *testing.T) {
+	s := NewService(paths.Layout{Root: t.TempDir()})
+	external := filepath.Join(t.TempDir(), "original.png")
+	if err := os.WriteFile(external, []byte("private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s.Add(model.Item{ID: "x", Kind: model.KindImage, ImageFilePath: &external})
+	s.ClearAll()
+	if _, err := os.Stat(external); err != nil {
+		t.Fatal("external image deleted")
+	}
+}

@@ -23,6 +23,7 @@ import (
 
 	"github.com/egoist/mygo/plugins/sqlite"
 
+	"klip/internal/durable"
 	"klip/internal/model"
 	"klip/internal/paths"
 )
@@ -1034,7 +1035,11 @@ func ApplyPayloads(l paths.Layout, root string, items, previous []model.Item) ([
 			return nil, nil, err
 		}
 		dest := filepath.Join(l.Images(), filepath.Base(p))
-		if err := os.Rename(p, dest); err != nil {
+		if err := durable.SyncTree(p); err != nil {
+			rollback()
+			return nil, nil, err
+		}
+		if err := durable.Rename(p, dest); err != nil {
 			rollback()
 			return nil, nil, err
 		}
@@ -1080,7 +1085,11 @@ func ApplyPayloads(l paths.Layout, root string, items, previous []model.Item) ([
 
 	_ = applied
 	for _, m := range moves {
-		if err := os.Rename(m.staged, m.dest); err != nil {
+		if err := durable.SyncTree(m.staged); err != nil {
+			rollback()
+			return nil, nil, err
+		}
+		if err := durable.Rename(m.staged, m.dest); err != nil {
 			rollback()
 			return nil, nil, err
 		}

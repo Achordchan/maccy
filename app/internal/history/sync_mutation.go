@@ -91,27 +91,7 @@ func (s *Service) RemoveFiles(files []string) error {
 		if keep[strings.ToLower(p)] {
 			continue
 		}
-		safe := false
-		for _, root := range []string{s.layout.Images(), s.layout.Files()} {
-			rel, err := filepath.Rel(root, p)
-			if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				continue
-			}
-			path := root
-			safe = true
-			for _, part := range append([]string{""}, strings.Split(rel, string(filepath.Separator))...) {
-				path = filepath.Join(path, part)
-				st, err := os.Lstat(path)
-				if err != nil || st.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-					safe = false
-					break
-				}
-			}
-			if safe {
-				break
-			}
-		}
-		if !safe {
+		if !s.managedPath(p) {
 			continue
 		}
 		st, err := os.Lstat(p)
@@ -122,4 +102,28 @@ func (s *Service) RemoveFiles(files []string) error {
 		}
 	}
 	return first
+}
+
+// managedPath rejects cache roots themselves and every linked path component.
+func (s *Service) managedPath(p string) bool {
+	for _, root := range []string{s.layout.Images(), s.layout.Files()} {
+		rel, err := filepath.Rel(root, p)
+		if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		path := root
+		safe := true
+		for _, part := range append([]string{""}, strings.Split(rel, string(filepath.Separator))...) {
+			path = filepath.Join(path, part)
+			st, err := os.Lstat(path)
+			if err != nil || st.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+				safe = false
+				break
+			}
+		}
+		if safe {
+			return true
+		}
+	}
+	return false
 }
