@@ -329,7 +329,12 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 		return err
 	}
 	for _, e := range entries {
+		ancestors := []string{}
 		for candidate := e.dest; candidate != p.InstallDir; candidate = filepath.Dir(candidate) {
+			ancestors = append(ancestors, candidate)
+		}
+		for i := len(ancestors) - 1; i >= 0; i-- {
+			candidate := ancestors[i]
 			st, err := os.Stat(candidate)
 			if os.IsNotExist(err) {
 				continue

@@ -142,9 +142,14 @@ func shellIcon(path string) image.Image {
 	if st, err := os.Stat(path); err == nil && st.IsDir() {
 		attrs = fileAttributeDirectory
 	}
+	flags := uintptr(shgfiIcon | shgfiLargeIcon | shgfiUseFileAttributes)
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".exe", ".lnk", ".ico", ".url", ".scr", ".cur", ".ani":
+		flags &^= shgfiUseFileAttributes
+	}
 	var info shFileInfo
 	r, _, _ := procSHGetFileInfoW.Call(uintptr(unsafe.Pointer(p)), attrs, uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info),
-		shgfiIcon|shgfiLargeIcon|shgfiUseFileAttributes)
+		flags)
 	if r == 0 || info.HIcon == 0 {
 		return nil
 	}

@@ -219,6 +219,13 @@ func TestApplyRollsBackAfterAFailureHalfWay(t *testing.T) {
 	// comes after maccy.exe and the dll were already replaced.
 	write(t, filepath.Join(r.install, "res"), "I AM A FILE")
 	h := r.hooks()
+	copyHook := h.fill().Copy
+	h.Copy = func(src, dst string) error {
+		if strings.HasSuffix(dst, filepath.Join("res", "x.txt")) {
+			return errors.New("simulated copy failure")
+		}
+		return copyHook(src, dst)
+	}
 	h.Sleep = func(time.Duration) {} // the copy is tried five times
 	err := RunPlan(r.plan, h)
 	if err == nil {
