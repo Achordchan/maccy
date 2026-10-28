@@ -123,6 +123,7 @@ func (l logger) say(msg string) {
 type rollbackItem struct {
 	path, backup string
 	existed      bool
+	moved        bool
 }
 
 // RunPlan is the helper: it waits for the program to exit and then, as the
@@ -203,7 +204,12 @@ func RunPlan(p Plan, h Hooks) error {
 					h.Sleep(300 * time.Millisecond)
 				}
 				rerr = nil
-				if it.existed {
+				if it.moved {
+					rerr = os.RemoveAll(it.path)
+					if rerr == nil {
+						rerr = os.Rename(it.backup, it.path)
+					}
+				} else if it.existed {
 					if rerr = os.MkdirAll(filepath.Dir(it.path), 0o755); rerr == nil {
 						rerr = copyFile(it.backup, it.path)
 					}
@@ -323,6 +329,39 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 		return err
 	}
 	for _, e := range entries {
+		for candidate := e.dest; candidate != p.InstallDir; candidate = filepath.Dir(candidate) {
+			st, err := os.Stat(candidate)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			conflict := (candidate == e.dest && st.IsDir()) || (candidate != e.dest && !st.IsDir())
+			if !conflict {
+				continue
+			}
+			rel, err := filepath.Rel(p.InstallDir, candidate)
+			if err != nil {
+				return err
+			}
+			if IsProtected(rel) {
+				return errors.New("protected transition")
+			}
+			backup, err := os.MkdirTemp(p.BackupDir, "transition-")
+			if err != nil {
+				return err
+			}
+			if err = os.Remove(backup); err != nil {
+				return err
+			}
+			if err = os.Rename(candidate, backup); err != nil {
+				return err
+			}
+			*rollback = append(*rollback, rollbackItem{path: candidate, backup: backup, existed: true, moved: true})
+		}
+	}
+	for _, e := range entries {
 		// replaced and deleted files go to separate folders: a package may replace
 		// "_deleted/x" and delete "x", and neither backup may take the other's place
 		backup, err := insideRoot(p.BackupDir, filepath.Join("replaced", e.rel))
@@ -338,7 +377,7 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 				return err
 			}
 		}
-		*rollback = append(*rollback, rollbackItem{e.dest, backup, existed})
+		*rollback = append(*rollback, rollbackItem{path: e.dest, backup: backup, existed: existed})
 		if err := os.MkdirAll(filepath.Dir(e.dest), 0o755); err != nil {
 			return err
 		}
@@ -387,7 +426,7 @@ func applyFiles(p Plan, h Hooks, lg logger, rollback *[]rollbackItem) error {
 		if err := copyFile(dest, backup); err != nil {
 			return err
 		}
-		*rollback = append(*rollback, rollbackItem{dest, backup, true})
+		*rollback = append(*rollback, rollbackItem{path: dest, backup: backup, existed: true})
 		if err := os.Remove(dest); err != nil {
 			return err
 		}
