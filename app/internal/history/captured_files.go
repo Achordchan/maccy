@@ -5,6 +5,7 @@ import (
 	"klip/internal/model"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // replaceCapturedFiles preserves the retained item ID while replacing its
@@ -25,13 +26,13 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 			return false
 		}
 	}
-	backup, err := os.MkdirTemp(s.layout.Files(), ".capture-backup-")
-	if err != nil {
+	backup := to + ".capture-backup"
+	if _, err := os.Lstat(backup); err == nil {
+		return false
+	} else if !os.IsNotExist(err) {
 		return false
 	}
-	if err = os.Remove(backup); err != nil {
-		return false
-	}
+	var err error
 	hadOld := false
 	if err = os.Rename(to, backup); err == nil {
 		hadOld = true
@@ -48,4 +49,29 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 		_ = os.RemoveAll(backup)
 	}
 	return true
+}
+
+// recoverCapturedFiles restores the retained ID before history normalization.
+// Backup names encode only an existing directory component, never a path.
+func recoverCapturedFiles(root string) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() || !strings.HasSuffix(name, ".capture-backup") {
+			continue
+		}
+		original := strings.TrimSuffix(name, ".capture-backup")
+		if original == "" || original == "." || original == ".." {
+			continue
+		}
+		backup, to := filepath.Join(root, name), filepath.Join(root, original)
+		if _, err := os.Lstat(to); os.IsNotExist(err) {
+			_ = os.Rename(backup, to)
+		} else if err == nil {
+			_ = os.RemoveAll(backup)
+		}
+	}
 }

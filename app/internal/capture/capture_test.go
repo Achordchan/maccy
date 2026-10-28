@@ -371,7 +371,9 @@ func TestFileCapture(t *testing.T) {
 	// Missing files must not publish an unusable capture.
 	r5 := newRig(t)
 	r5.clip.formats, r5.clip.files = []string{"text/uri-list"}, []string{filepath.Join(dir, "ghost.txt")}
-	r5.capture()
+	if err := r5.s.Capture(context.Background()); err == nil {
+		t.Fatal("missing source must report storage failure")
+	}
 	if got := r5.h.Items(); len(got) != 0 {
 		t.Errorf("ghost: %+v", got)
 	}

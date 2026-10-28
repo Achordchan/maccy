@@ -417,7 +417,7 @@ func (s *Service) Capture(ctx context.Context) error {
 			id := s.NewID()
 			if err := s.cacheCopies(id, files); err != nil {
 				storeErr, wantRetry = fmt.Errorf("%w: %v", errStorage, err), true
-				return nil
+				return storeErr
 			}
 			add(model.Item{
 				ID: id, Kind: model.KindFileList, ApproxBytes: s.fileListBytes(id, files), FilePaths: files, CopyCount: 1,

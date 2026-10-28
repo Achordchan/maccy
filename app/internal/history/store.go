@@ -38,6 +38,7 @@ func Load(l paths.Layout) ([]model.Item, error) {
 	if err := json.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &items); err != nil {
 		return nil, err
 	}
+	recoverCapturedFiles(l.Files())
 	// An interrupted cache replacement is undone before Normalize decides
 	// that an item has no content.
 	snapshot.RecoverPayloads(l, items)
