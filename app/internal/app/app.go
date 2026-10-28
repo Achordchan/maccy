@@ -337,8 +337,8 @@ func (a *App) Start() {
 			a.cfg.Logf("capture: %v", err)
 		}
 	}
-	a.Capture.RetryGeneration = func(gen uint64) {
-		if err := a.Capture.CaptureRetry(ctx, gen); err != nil {
+	a.Capture.RetryGeneration = func(gen uint64, key string) {
+		if err := a.Capture.CaptureRetry(ctx, gen, key); err != nil {
 			a.cfg.Logf("capture retry: %v", err)
 		}
 	}
