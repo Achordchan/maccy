@@ -1080,6 +1080,23 @@ func ApplyPayloads(l paths.Layout, root string, items, previous []model.Item) ([
 			}
 		}
 		out[i].FilePaths = paths
+		canonical := filepath.Join(l.Files(), idn)
+		referenced := false
+		for j, other := range out {
+			if j == i {
+				continue
+			}
+			for _, p := range other.FilePaths {
+				if within(canonical, p) {
+					referenced = true
+				}
+			}
+		}
+		if !referenced {
+			if st, err := os.Lstat(canonical); err == nil && st.IsDir() && st.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
+				applied.stale = append(applied.stale, canonical)
+			}
+		}
 		moves = append(moves, dirMove{staged: staged, dest: dest})
 	}
 
