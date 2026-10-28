@@ -782,6 +782,12 @@ func (s *Service) verifier(it model.Item, w written) func() bool {
 		want := model.Str(it.Text)
 		return func() bool { return s.Clipboard.ReadText() == want }
 	case model.KindFileList:
+		initial := make([]string, len(files))
+		for i, p := range files {
+			if st, err := os.Stat(p); err == nil {
+				initial[i] = fmt.Sprintf("%d:%d", st.Size(), st.ModTime().UnixNano())
+			}
+		}
 		return func() bool {
 			got, _ := s.Clipboard.ReadFiles()
 			got = nonBlank(got)
@@ -789,6 +795,9 @@ func (s *Service) verifier(it model.Item, w written) func() bool {
 				return false
 			}
 			for i, g := range got {
+				if st, err := os.Stat(g); err != nil || fmt.Sprintf("%d:%d", st.Size(), st.ModTime().UnixNano()) != initial[i] {
+					return false
+				}
 				if !samePath(g, files[i]) {
 					return false
 				}

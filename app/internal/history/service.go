@@ -121,6 +121,9 @@ func (s *Service) empty(ctx context.Context, t trash) {
 		if p := model.Str(it.ImageFilePath); strings.TrimSpace(p) != "" {
 			keepImg[strings.ToLower(p)] = true
 		}
+		for _, p := range it.FilePaths {
+			keepImg[strings.ToLower(p)] = true
+		}
 		if it.Kind == model.KindFileList {
 			keepDir[it.IDN()] = true
 		}
