@@ -439,9 +439,13 @@ func (a *App) settleDeletions(ctx context.Context, owner string) error {
 }
 
 func (a *App) mutateQuietly(mutate func()) {
+	before := a.Syncer.Fingerprint()
 	a.Auto.Suppress(true)
 	mutate()
 	a.Auto.Suppress(false)
+	if a.Syncer.Fingerprint() != before {
+		a.Auto.OnHistoryChanged(a.acct())
+	}
 }
 
 // Delete removes an item; with an account the cloud copy follows.

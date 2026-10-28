@@ -165,7 +165,7 @@ def package_file_list(publish_dir: Path, exclude: Path | None = None) -> list[di
         rel = path.relative_to(publish_dir).as_posix()
         if rel == "maccy-package.json" or (exclude is not None and path.resolve() == exclude.resolve()):
             continue
-        if GENERATED_PACKAGE.fullmatch(rel):
+        if GENERATED_PACKAGE.fullmatch(path.name):
             continue  # a package of an earlier version, left in the folder it was made from
         if is_protected(rel):
             raise RuntimeError("publish folder holds user data, not for a package: " + rel)
