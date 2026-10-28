@@ -433,7 +433,7 @@ func (s *Service) Capture(ctx context.Context) error {
 				return nil
 			}
 			id := s.NewID()
-			if err := s.cacheCopies(id, files); err != nil {
+			if err := s.cacheCopies(id, files, opt.maxBytes); err != nil {
 				storeErr, wantRetry = fmt.Errorf("%w: %v", errStorage, err), true
 				return storeErr
 			}
@@ -516,7 +516,11 @@ func (s *Service) filterFiles(in []string, opt options) []string {
 
 // cacheCopies copies the files into files/<id>/NNNN_name, so that the item
 // still has them when the originals move or go.
-func (s *Service) cacheCopies(id string, files []string) (err error) {
+func (s *Service) cacheCopies(id string, files []string, limits ...int64) (err error) {
+	var limit int64
+	if len(limits) > 0 {
+		limit = limits[0]
+	}
 	dir := filepath.Join(s.Layout.Files(), strings.ReplaceAll(strings.ToLower(id), "-", ""))
 	if err = os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -531,7 +535,7 @@ func (s *Service) cacheCopies(id string, files []string) (err error) {
 		if strings.TrimSpace(src) == "" || !isFile(src) || strings.TrimSpace(name) == "" {
 			return fmt.Errorf("source file unavailable: %s", src)
 		}
-		if err = copyFile(src, filepath.Join(dir, fmt.Sprintf("%04d_%s", i, name))); err != nil {
+		if err = copyFileBounded(src, filepath.Join(dir, fmt.Sprintf("%04d_%s", i, name)), limit); err != nil {
 			return err
 		}
 	}
@@ -673,7 +677,8 @@ func isFile(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
-func copyFile(src, dst string) (err error) {
+func copyFile(src, dst string) error { return copyFileBounded(src, dst, 0) }
+func copyFileBounded(src, dst string, limit int64) (err error) {
 	if !isFile(src) {
 		return errors.New("capture: not a regular file: " + src)
 	}
@@ -694,7 +699,16 @@ func copyFile(src, dst string) (err error) {
 			os.Remove(tmp)
 		}
 	}()
-	if _, err = io.Copy(out, in); err != nil {
+	var reader io.Reader = in
+	if limit > 0 {
+		reader = io.LimitReader(in, limit+1)
+	}
+	var written int64
+	written, err = io.Copy(out, reader)
+	if err == nil && limit > 0 && written > limit {
+		err = errors.New("capture file exceeds size limit")
+	}
+	if err != nil {
 		out.Close()
 		return err
 	}
