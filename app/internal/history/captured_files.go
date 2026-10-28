@@ -21,6 +21,9 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 		if it.ID == old.ID {
 			continue
 		}
+		if it.ImageFilePath != nil && withinDir(to, *it.ImageFilePath) {
+			return false
+		}
 		for _, p := range it.FilePaths {
 			if withinDir(to, p) {
 				return false
