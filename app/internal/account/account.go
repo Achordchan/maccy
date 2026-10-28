@@ -396,6 +396,7 @@ func validEmail(e string) bool { return strings.TrimSpace(e) != "" && strings.Co
 // one; for Reset it is what the user typed. Cooldown is the seconds before
 // another code may be asked for.
 func (s *Service) SendCode(ctx context.Context, p Purpose, typedEmail string) (cooldown int, r Result) {
+	startEpoch := s.epoch.Load()
 	var email, token string
 	if p == Change {
 		email = strings.TrimSpace(model.Str(s.Store.Get().AuthUserEmail))
@@ -413,6 +414,9 @@ func (s *Service) SendCode(ctx context.Context, p Purpose, typedEmail string) (c
 	if p == Change {
 		var err error
 		token, err = s.EnsureAccessToken(ctx)
+		if s.epoch.Load() != startEpoch {
+			return 0, fail("登录已变更，请重试")
+		}
 		if err == nil && token == "" {
 			return 0, fail("登录已失效，请重新登录")
 		}
@@ -479,6 +483,9 @@ func (s *Service) ChangePassword(ctx context.Context, typedEmail, code, pw, conf
 	ctx, cancel := context.WithTimeout(ctx, passwordTimeout)
 	defer cancel()
 	token, err := s.EnsureAccessToken(ctx)
+	if s.epoch.Load() != startEpoch {
+		return fail("登录已变更，请重试")
+	}
 	if err == nil && token == "" {
 		return fail("登录已失效，请重新登录")
 	}

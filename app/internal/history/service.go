@@ -330,13 +330,22 @@ func (s *Service) RemoveSelected(pick func(items []model.Item) []model.Item) []m
 	var t trash
 	s.mu.Lock()
 	chosen := pick(append([]model.Item(nil), s.items...))
-	var removed []model.Item
+	selected := make(map[string]bool, len(chosen))
 	for _, it := range chosen {
-		if idx := indexOf(s.items, it.ID); idx >= 0 {
-			removed = append(removed, s.items[idx])
-			s.removeLocked(it.ID, &t)
+		selected[strings.ToLower(it.ID)] = true
+	}
+	var removed []model.Item
+	kept := make([]model.Item, 0, len(s.items))
+	for _, it := range s.items {
+		if selected[strings.ToLower(it.ID)] {
+			removed = append(removed, it)
+			t.add(it)
+		} else {
+			kept = append(kept, it)
 		}
 	}
+	s.items = kept
+
 	if len(removed) == 0 {
 		s.mu.Unlock()
 		return nil
