@@ -943,7 +943,8 @@ func (s *Service) write(it model.Item) (bool, written, error) {
 			}
 			compact++
 		}
-		legacyComplete := legacyScore >= rawScore
+		legacyComplete := legacyScore > rawScore
+		ambiguous := legacyScore == rawScore && len(nonBlank(it.FilePaths)) != len(it.FilePaths)
 
 		compact = 0
 		for i, p := range it.FilePaths {
@@ -959,6 +960,9 @@ func (s *Service) write(it model.Item) (bool, written, error) {
 			compact++
 			if legacyComplete {
 				cached = legacy
+			}
+			if ambiguous && cached != legacy {
+				cached = ""
 			}
 			switch {
 			case isFile(cached):
