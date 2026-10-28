@@ -88,6 +88,13 @@ func ContentFingerprint() string {
 	h.Write([]byte(strings.Join(formats, "\x00")))
 	h.Write([]byte{1})
 	text := c.ReadText()
+	if text == "" {
+		for _, f := range formats {
+			if strings.Contains(strings.ToLower(f), "text") {
+				return ""
+			}
+		}
+	}
 	h.Write([]byte(text))
 	h.Write([]byte{1})
 	files, err := c.ReadFiles()
