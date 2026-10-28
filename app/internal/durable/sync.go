@@ -38,3 +38,6 @@ func SyncTree(path string) error {
 	}
 	return nil
 }
+
+// SyncParent persists the directory entry of a newly written file.
+func SyncParent(path string) error { return syncDirectory(filepath.Dir(path)) }
