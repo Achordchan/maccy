@@ -35,11 +35,13 @@ func DefaultLimits() Limits {
 type Service struct {
 	layout paths.Layout
 
-	mu       sync.Mutex
-	items    []model.Item
-	mutation string
-	limits   Limits
-	handlers []func()
+	mu           sync.Mutex
+	items        []model.Item
+	mutation     string
+	deferCleanup bool
+	pendingTrash trash
+	limits       Limits
+	handlers     []func()
 
 	// Now is time.Now unless a test sets it.
 	Now func() time.Time
@@ -113,6 +115,14 @@ func (t *trash) add(it model.Item) {
 // whose files are being deleted.
 // A file that cannot be deleted stays; nothing here is worth failing for.
 func (s *Service) empty(ctx context.Context, t trash) {
+	if s.deferCleanup {
+		s.pendingTrash.images = append(s.pendingTrash.images, t.images...)
+		s.pendingTrash.fileDirs = append(s.pendingTrash.fileDirs, t.fileDirs...)
+		return
+	}
+	s.emptyNow(ctx, t)
+}
+func (s *Service) emptyNow(ctx context.Context, t trash) {
 	// What an item that stays still refers to is not trash, whatever was
 	// removed beside it (two items may share a picture after a sync).
 	keepImg := map[string]bool{}
@@ -478,32 +488,37 @@ func (s *Service) MoveBefore(movedID string, beforeID *string) {
 // pinned items do not count; without it they count but are still never
 // removed, so the list can stay over a limit.
 func (s *Service) enforceLimits(t *trash) {
-	for len(s.items) > 0 {
-		var count int
-		var bytes int64
-		for _, it := range s.items {
-			if s.limits.ExcludePinnedFromLimits && it.Pinned {
-				continue
-			}
-			count++
-			bytes += it.ApproxBytes
+	count := 0
+	var size int64
+	for _, it := range s.items {
+		if s.limits.ExcludePinnedFromLimits && it.Pinned {
+			continue
 		}
-		tooMany := s.limits.MaxItems != nil && count > *s.limits.MaxItems
-		tooBig := s.limits.MaxBytes != nil && bytes > *s.limits.MaxBytes
-		if !tooMany && !tooBig {
-			return
-		}
-		last := -1
-		for i := len(s.items) - 1; i >= 0; i-- {
-			if !s.items[i].Pinned {
-				last = i
-				break
-			}
-		}
-		if last < 0 {
-			return
-		}
-		t.add(s.items[last])
-		s.items = append(s.items[:last], s.items[last+1:]...)
+		count++
+		size += it.ApproxBytes
 	}
+	remove := make(map[int]bool)
+	for i := len(s.items) - 1; i >= 0; i-- {
+		over := (s.limits.MaxItems != nil && count > *s.limits.MaxItems) || (s.limits.MaxBytes != nil && size > *s.limits.MaxBytes)
+		if !over {
+			break
+		}
+		if s.items[i].Pinned {
+			continue
+		}
+		remove[i] = true
+		count--
+		size -= s.items[i].ApproxBytes
+		t.add(s.items[i])
+	}
+	if len(remove) == 0 {
+		return
+	}
+	kept := s.items[:0]
+	for i, it := range s.items {
+		if !remove[i] {
+			kept = append(kept, it)
+		}
+	}
+	s.items = kept
 }

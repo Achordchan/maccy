@@ -29,6 +29,9 @@ type Persister struct {
 // NewPersister saves svc's list under layout whenever it changes.
 func NewPersister(svc *Service, layout paths.Layout) *Persister {
 	p := &Persister{svc: svc, layout: layout, Delay: 350 * time.Millisecond}
+	svc.mu.Lock()
+	svc.deferCleanup = true
+	svc.mu.Unlock()
 	svc.OnChanged(p.onChanged)
 	return p
 }
@@ -66,8 +69,20 @@ func (p *Persister) save() error {
 	p.svc.mu.Lock()
 	items := append([]model.Item(nil), p.svc.items...)
 	marker := p.svc.mutation
+	trash := p.svc.pendingTrash
+	p.svc.pendingTrash = historyTrashEmpty()
 	p.svc.mu.Unlock()
-	return SaveWithMutation(p.layout, items, marker)
+	if err := SaveWithMutation(p.layout, items, marker); err != nil {
+		p.svc.mu.Lock()
+		p.svc.pendingTrash.images = append(p.svc.pendingTrash.images, trash.images...)
+		p.svc.pendingTrash.fileDirs = append(p.svc.pendingTrash.fileDirs, trash.fileDirs...)
+		p.svc.mu.Unlock()
+		return err
+	}
+	p.svc.mu.Lock()
+	p.svc.emptyNow(context.Background(), trash)
+	p.svc.mu.Unlock()
+	return nil
 }
 
 // onChanged schedules one save: changes during the wait are in that save,
@@ -122,3 +137,5 @@ func (p *Persister) retry() {
 	p.fails = min(p.fails+1, 5)
 	p.arm(min(time.Second<<(p.fails-1), 30*time.Second))
 }
+
+func historyTrashEmpty() trash { return trash{} }
