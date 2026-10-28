@@ -16,3 +16,6 @@ func Rename(from, to string) error {
 	}
 	return windows.MoveFileEx(f, t, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 }
+
+// Windows publishes the directory tree through the write-through move.
+func syncDirectory(string) error { return nil }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"klip/internal/durable"
 	"klip/internal/model"
 )
 
@@ -97,12 +98,17 @@ func writeAtomic(path string, data []byte, seq uint64, state *saveState) error {
 		os.Remove(tmp)
 		return err
 	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err
 	}
 	_ = os.Chmod(tmp, 0o600)
-	if err := os.Rename(tmp, path); err != nil {
+	if err := durable.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return err
 	}
