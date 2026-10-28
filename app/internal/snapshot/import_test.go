@@ -167,8 +167,8 @@ func TestReadInstallsAUniqueCacheAndKeepsTheOldOne(t *testing.T) {
 		t.Errorf("imported file %q %v", b, err)
 	}
 	for _, name := range []string{"0000_old.txt", "0001_gone.txt"} {
-		if b, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(b) != "old" {
-			t.Errorf("the old cache file %s was touched: %q %v", name, b, err)
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("stale canonical cache retained after commit: %s", name)
 		}
 	}
 }
@@ -234,8 +234,8 @@ func TestDetachedReadKeepsTheLocalPayloadsUntilTheMergeDecides(t *testing.T) {
 	if b, _ := os.ReadFile(got[0]); string(b) != "remote" {
 		t.Errorf("imported file %q", b)
 	}
-	if b, err := os.ReadFile(localPath); err != nil || string(b) != "local" {
-		t.Errorf("the old cache was touched: %q %v", b, err)
+	if _, err := os.Stat(localPath); !os.IsNotExist(err) {
+		t.Error("stale canonical cache retained after commit")
 	}
 }
 

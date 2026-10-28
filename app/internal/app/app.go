@@ -333,6 +333,7 @@ func (a *App) Start() {
 			a.cfg.Logf("capture: %v", err)
 		}
 	}, Retry: a.Capture.FoundNothing}
+	a.Capture.CapturedToken = w.Acknowledge
 	a.done.Add(1)
 	go func() { defer a.done.Done(); w.Run(ctx) }()
 	a.watchRemote(ctx)

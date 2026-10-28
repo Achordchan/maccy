@@ -147,3 +147,6 @@ func (w *Watcher) contentMoved(fp string) bool {
 
 // retryDelays are the pauses of the repeated looks: about a second in all.
 var retryDelays = []time.Duration{30 * time.Millisecond, 60 * time.Millisecond, 120 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond}
+
+// Acknowledge records the exact content captured, not a later clipboard read.
+func (w *Watcher) Acknowledge(fp string) { w.mu.Lock(); w.lastFP = fp; w.seen = true; w.mu.Unlock() }
