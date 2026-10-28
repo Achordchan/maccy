@@ -1778,3 +1778,15 @@ func TestDeletionCoversTheVersionItRemoves(t *testing.T) {
 		t.Fatal("the version removed is not covered: a merge would bring it back")
 	}
 }
+
+func TestQueuedSyncUsesAccountCancellation(t *testing.T) {
+	a := newApp(t, t.TempDir(), &fakeClip{}, "http://127.0.0.1:1")
+	ctx, cancel := context.WithCancel(context.Background())
+	a.mu.Lock()
+	a.acctCtx = ctx
+	a.mu.Unlock()
+	cancel()
+	if err := a.Auto.Run(context.Background(), "auto", false); err == nil {
+		t.Fatal("cancelled account run succeeded")
+	}
+}

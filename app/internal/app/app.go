@@ -226,7 +226,14 @@ func New(cfg Config) (*App, error) {
 		a.syncMu.Unlock()
 		a.runActive.Store(true)
 		a.runEntered.Store(true)
-		_, gen, owner := a.acctWork()
+		accountCtx, gen, owner := a.acctWork()
+		ctx, cancel := context.WithCancel(ctx)
+		stopCancel := context.AfterFunc(accountCtx, cancel)
+		defer stopCancel()
+		defer cancel()
+		if accountCtx.Err() != nil {
+			cancel()
+		}
 		a.runGen.Store(gen) // which account this sync is for
 		a.runOwner.Store(&owner)
 		a.replayOwnerMoves()
