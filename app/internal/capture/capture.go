@@ -211,7 +211,7 @@ func (s *Service) markWritten(apply int64, verify func() bool) {
 // checkOwn asks the verifier. Once it says the clipboard holds something
 // else, the ownership is over: a later copy of the same text is a new copy.
 func (s *Service) checkOwn(check *func() bool) bool {
-	if (*check)() {
+	if verifyWithRetry(*check) {
 		return true
 	}
 	// Only the ownership this very verifier belongs to may be ended: an Apply
