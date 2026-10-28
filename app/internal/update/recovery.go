@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 type recoveryEntry struct {
@@ -57,8 +58,26 @@ func RecoverInterruptedUpdate(root string) error {
 	if err = json.Unmarshal(b, &entries); err != nil {
 		return err
 	}
+	restored := map[string]bool{}
+	for _, e := range entries {
+		if e.Moved {
+			if _, err := os.Stat(e.Backup); os.IsNotExist(err) {
+				restored[e.Path] = true
+			}
+		}
+	}
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
+		skip := false
+		for path := range restored {
+			rel, err := filepath.Rel(path, e.Path)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				skip = true
+			}
+		}
+		if skip {
+			continue
+		}
 		rel, err := filepath.Rel(root, e.Path)
 		if err != nil {
 			return err

@@ -259,6 +259,9 @@ func RunPlan(p Plan, h Hooks) error {
 			// it): that is a failed update, and the old files come back.
 			lg.say("failed to start the new program: " + lerr.Error())
 			err = lerr
+			if jerr := saveRecovery(p.InstallDir, rollback); jerr != nil {
+				return jerr
+			}
 			if uerr := undo(); uerr != nil {
 				h.Alert("Klip 更新失败", "新版本无法启动："+lerr.Error()+"\n\n旧版本没能完全恢复（"+uerr.Error()+"），Klip 可能无法使用，请重新下载安装包安装。日志："+p.LogPath)
 				return err
@@ -594,11 +597,17 @@ func CleanLegacy(installDir, installedManifest string) ([]string, error) {
 // caller must exit with the code.
 func HelperMain(args []string, h Hooks) (handled bool, code int) {
 	if len(args) >= 4 && args[1] == "--recover-update" {
+		release, err := holdUpdateExclusion()
+		if err != nil {
+			return true, 1
+		}
+		defer release()
 		pid, _ := strconv.Atoi(args[3])
 		waitExit(pid)
 		if err := RecoverInterruptedUpdate(args[2]); err != nil {
 			return true, 1
 		}
+		release()
 		if err := launch(filepath.Join(args[2], ExeName)); err != nil {
 			return true, 1
 		}
