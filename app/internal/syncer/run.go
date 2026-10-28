@@ -216,6 +216,9 @@ func (s *Syncer) UploadAfterLocalMutation(ctx context.Context) (*syncclient.Uplo
 // (pending-merge.json) is out of date: the server has this history now, and
 // recovering that record would put its older state back. It goes.
 func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadResult, fallback *ManifestInfo, fp, account string) error {
+	if err := s.flush(ctx); err != nil {
+		return err
+	}
 	if s.accountChanged(account) {
 		// The upload went to the old account; the new session must not record
 		// it as its own state.
@@ -234,7 +237,11 @@ func (s *Syncer) persistAfterUpload(ctx context.Context, up *syncclient.UploadRe
 	switch {
 	case up != nil:
 		// No server timestamp: the client's clock would look like a rollback.
-		m = ManifestInfo{Version: up.Version, SnapshotSHA256: up.SHA256, SnapshotSize: up.Size}
+		version := up.Version
+		if strings.TrimSpace(version) == "" {
+			version = up.SHA256
+		}
+		m = ManifestInfo{Version: version, SnapshotSHA256: up.SHA256, SnapshotSize: up.Size}
 	case fallback != nil:
 		m = *fallback
 	}
