@@ -77,11 +77,6 @@ func (s *Session) Refresh(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	defer unlock()
-	refresh := strings.TrimSpace(model.Str(before.AuthRefreshToken))
-	if refresh == "" {
-		return false, nil
-	}
-
 	refreshMu.Lock()
 	defer refreshMu.Unlock()
 
@@ -92,7 +87,7 @@ func (s *Session) Refresh(ctx context.Context) (bool, error) {
 		cur.AuthExpiresAtUnixMs > s.now().UnixMilli()+30_000 {
 		return true, nil
 	}
-	refresh = strings.TrimSpace(model.Str(cur.AuthRefreshToken))
+	refresh := strings.TrimSpace(model.Str(cur.AuthRefreshToken))
 	if refresh == "" {
 		return false, nil
 	}
