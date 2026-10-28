@@ -330,6 +330,11 @@ func (a *App) remove(pick func(items []model.Item) []model.Item) {
 			if len(items) == 0 {
 				return // already gone; what is owed goes with the next sync
 			}
+			if err := a.pending.Ready(); err != nil {
+				a.cfg.Logf("pending deletions: %v", err)
+				a.retryLater()
+				return
+			}
 			// The upload, once through, tells the deletions it took (Uploaded).
 			if _, err := a.Syncer.UploadAfterLocalMutation(ctx); err != nil && ctx.Err() == nil {
 				a.cfg.Logf("upload after change: %v", err)

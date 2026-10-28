@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"klip/internal/durable"
 	"klip/internal/model"
 	"klip/internal/syncer"
 )
@@ -234,7 +235,11 @@ func (p *pendingDeletes) write() error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, p.path); err != nil {
+	if err := durable.SyncTree(tmp); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := durable.Rename(tmp, p.path); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
