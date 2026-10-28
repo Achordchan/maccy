@@ -2060,6 +2060,12 @@ func rollbackItems(before, applied, current []model.Item, limitPruned map[string
 	current = cloneItems(current)
 	for _, old := range before {
 		if ap, ok := findIdentity(applied, old); ok && !strings.EqualFold(ap.ID, old.ID) {
+			if limitPruned[strings.ToLower(ap.ID)] {
+				if limitPruned == nil {
+					limitPruned = map[string]bool{}
+				}
+				limitPruned[strings.ToLower(old.ID)] = true
+			}
 			for i := range applied {
 				if applied[i].ID == ap.ID {
 					applied[i].ID = old.ID
