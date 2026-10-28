@@ -413,6 +413,7 @@ const pendingUploadFingerprint = "pending-upload"
 // can come before it: a crash can resume the upload instead of merging the
 // same items again.
 type pendingMergeState struct {
+	Mutation    string        `json:"mutation,omitempty"`
 	Baseline    *syncBaseline `json:"baseline,omitempty"`
 	Fingerprint string        `json:"fingerprint"`
 	Version     string        `json:"version,omitempty"`
@@ -456,6 +457,14 @@ func markOf(before, applied []model.Item) []string {
 
 // markSeen says that items hold an item p brought.
 func (p pendingMergeState) markSeen(items []model.Item) bool {
+	if p.Mutation != "" {
+		for _, it := range items {
+			if it.LocalSyncMutation == p.Mutation {
+				return true
+			}
+		}
+		return false
+	}
 	if len(p.Added) == 0 {
 		return false
 	}
@@ -928,6 +937,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	var moves *snapshot.AppliedPayloads
 	merged := false
 	preMerge, appliedFP := "", ""
+	mutation := guidN()
 	var added []string
 	err = s.mutateHistory(ctx, func(current []model.Item) ([]model.Item, error) {
 		if s.accountChanged(account) {
@@ -956,6 +966,9 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 		// The fingerprint of what this mutation applied, taken while the
 		// history is locked: a later deletion is a local change, not part of
 		// the downloaded baseline.
+		for i := range out {
+			out[i].LocalSyncMutation = mutation
+		}
 		appliedFP = Fingerprint(out)
 		added = markOf(before, out)
 		fingerprint := appliedFP
@@ -963,6 +976,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 			fingerprint = pendingUploadFingerprint
 		}
 		if err := s.writePendingMerge(pendingMergeState{
+			Mutation:    mutation,
 			Fingerprint: fingerprint,
 			Version:     sum,
 			SHA256:      sum,
@@ -1027,6 +1041,7 @@ func (s *Syncer) downloadAndApply(ctx context.Context, progress func(Progress), 
 	werr := serr
 	if werr == nil {
 		werr = s.writePendingMerge(pendingMergeState{
+			Mutation:    mutation,
 			Fingerprint: fingerprint,
 			Version:     sum,
 			SHA256:      sum,
@@ -1273,6 +1288,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	}
 	var before, merged []model.Item
 	var moves *snapshot.AppliedPayloads
+	mutation := guidN()
 	var added []string
 	// The merge runs on the history as it is now, and the payloads it keeps
 	// are moved into place under the same lock: a capture made while the
@@ -1295,9 +1311,13 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 			ap.Rollback()
 			return nil, ErrSessionChanged
 		}
+		for i := range applied {
+			applied[i].LocalSyncMutation = mutation
+		}
 		fp := Fingerprint(applied)
 		added = markOf(before, applied)
 		if err := s.writePendingMerge(pendingMergeState{
+			Mutation:    mutation,
 			Fingerprint: pendingUploadFingerprint,
 			Version:     basis.Version,
 			UpdatedAt:   basisUpdatedAt(basis),
@@ -1350,6 +1370,7 @@ func (s *Syncer) mergeAndApply(ctx context.Context, basis ManifestInfo, preMerge
 	werr := serr
 	if werr == nil {
 		werr = s.writePendingMerge(pendingMergeState{
+			Mutation:    mutation,
 			Fingerprint: pendingUploadFingerprint,
 			Version:     basis.Version,
 			UpdatedAt:   updatedAt,
