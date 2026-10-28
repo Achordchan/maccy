@@ -331,6 +331,11 @@ func (a *App) Start() {
 			a.cfg.Logf("capture: %v", err)
 		}
 	}
+	a.Capture.RetryGeneration = func(gen uint64) {
+		if err := a.Capture.CaptureRetry(ctx, gen); err != nil {
+			a.cfg.Logf("capture retry: %v", err)
+		}
+	}
 	w := &platform.Watcher{Interval: a.cfg.Interval, Seq: a.Capture.Seq, OnChange: func() {
 		if err := a.Capture.Capture(ctx); err != nil {
 			a.cfg.Logf("capture: %v", err)
