@@ -315,7 +315,7 @@ func (s *Service) Capture(ctx context.Context) error {
 	generation := s.retryGeneration.Load()
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
-	if generation != s.retryGeneration.Load() {
+	if generation != s.retryGeneration.Load() && s.lastDone.Load() == any(s.changeKey()) {
 		return nil
 	}
 	gen := s.writeGen.Load()
@@ -377,7 +377,7 @@ func (s *Service) Capture(ctx context.Context) error {
 			s.discard(it)
 			return
 		}
-		if strings.HasPrefix(key, "seq:") {
+		if key != "" {
 			// The counter gives every change its own number, so a second look
 			// at the same number is a repeat. A content token is not that: the
 			// same picture copied again has the same token.

@@ -82,7 +82,7 @@ func ContentFingerprint() string {
 	c := Clipboard{}
 	formats := c.Formats()
 	if len(formats) == 0 {
-		return "empty-clipboard"
+		return ""
 	}
 	h := sha256.New()
 	h.Write([]byte(strings.Join(formats, "\x00")))
