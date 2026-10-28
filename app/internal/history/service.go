@@ -37,6 +37,7 @@ type Service struct {
 
 	mu       sync.Mutex
 	items    []model.Item
+	mutation string
 	limits   Limits
 	handlers []func()
 
@@ -186,7 +187,7 @@ func (s *Service) Add(item model.Item) {
 		if idx >= 0 {
 			existing := s.items[idx]
 			if existing.Kind == model.KindImage && !blank(item.ImageFilePath) && !blank(existing.ImageFilePath) &&
-				!strings.EqualFold(model.Str(item.ImageFilePath), model.Str(existing.ImageFilePath)) {
+				!strings.EqualFold(model.Str(item.ImageFilePath), model.Str(existing.ImageFilePath)) && isFile(model.Str(existing.ImageFilePath)) {
 				t.images = append(t.images, model.Str(item.ImageFilePath))
 			}
 			if existing.Kind == model.KindFileList {
@@ -203,7 +204,7 @@ func (s *Service) Add(item model.Item) {
 			if item.Text != nil {
 				updated.Text = item.Text
 			}
-			if existing.ImageFilePath == nil {
+			if existing.ImageFilePath == nil || !isFile(model.Str(existing.ImageFilePath)) {
 				updated.ImageFilePath = item.ImageFilePath
 			}
 			if item.FilePaths != nil {

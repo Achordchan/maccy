@@ -1,6 +1,7 @@
 package history
 
 import (
+	"fmt"
 	"klip/internal/model"
 	"os"
 	"path/filepath"
@@ -17,6 +18,12 @@ func (s *Service) replaceCapturedFiles(old, next model.Item) bool {
 	to := filepath.Join(s.layout.Files(), old.IDN())
 	if _, err := os.Stat(from); err != nil {
 		return false
+	}
+	for i, source := range next.FilePaths {
+		cached := filepath.Join(from, fmt.Sprintf("%04d_%s", i, filepath.Base(source)))
+		if !isFile(cached) {
+			return false
+		}
 	}
 	backup, err := os.MkdirTemp(s.layout.Files(), ".capture-backup-")
 	if err != nil {
