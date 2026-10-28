@@ -580,6 +580,9 @@ func (s *Syncer) readPendingMerge() (pendingMergeState, bool) {
 // merge the same items again.
 func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error {
 	if s.rollbackPending {
+		if err := s.cfg.Settings.Update(func(*model.Settings) {}); err != nil {
+			return err
+		}
 		if err := s.flush(ctx); err != nil {
 			return err
 		}
@@ -652,6 +655,9 @@ func (s *Syncer) recoverPendingMerge(ctx context.Context, account string) error 
 		if at, err := model.ParseTime(p.UpdatedAt); err == nil {
 			m.UpdatedAt = &at
 		}
+	}
+	if err := s.flush(ctx); err != nil {
+		return err
 	}
 	if err := s.PersistSyncState(p.Fingerprint, m, p.Account); err != nil {
 		return fmt.Errorf("recover the pending merge: %w", err)
