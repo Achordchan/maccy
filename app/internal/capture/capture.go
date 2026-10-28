@@ -181,7 +181,7 @@ func (s *Service) markWritten(apply int64, verify func() bool) {
 	if s.Seq != nil {
 		before = s.Seq()
 	}
-	if verify != nil && !verify() {
+	if verify != nil && !verifyWithRetry(verify) {
 		notOurs()
 		return
 	}
@@ -360,7 +360,7 @@ func (s *Service) Capture(ctx context.Context) error {
 			s.discard(it)
 			return
 		}
-		if key != "" && s.changeKey() != key {
+		if current := s.changeKey(); key != "" && current != "" && current != key {
 			// The clipboard changed while we read it: what was read may be the
 			// newer content, which the watcher takes at its next look. Taking
 			// it here too would capture it twice.
@@ -787,6 +787,19 @@ func (s *Service) verifier(it model.Item, w written) func() bool {
 	return nil
 }
 
+// Retry immediate readback briefly: native clipboard locks are transient.
+func verifyWithRetry(verify func() bool) bool {
+	for i := 0; i < 3; i++ {
+		if verify() {
+			return true
+		}
+		if i < 2 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	return false
+}
+
 // samePath says whether two paths are the same file: by the file system when
 // both exist, else by their text (Windows ignores case).
 func samePath(a, b string) bool {
@@ -869,7 +882,7 @@ func (s *Service) retryLater(key string) {
 	time.AfterFunc(300*time.Millisecond, func() {
 		// A newer change is the watcher's to take; looking at it here too
 		// would capture it twice.
-		if key != "" && s.changeKey() != key {
+		if current := s.changeKey(); key != "" && current != "" && current != key {
 			return
 		}
 		s.Retry()
@@ -885,7 +898,11 @@ func (s *Service) changeKey() string {
 		}
 	}
 	if s.Token != nil {
-		return "tok:" + s.Token()
+		token := s.Token()
+		if token == "" {
+			return ""
+		}
+		return "tok:" + token
 	}
 	return ""
 }
