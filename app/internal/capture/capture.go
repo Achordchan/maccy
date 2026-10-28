@@ -33,6 +33,7 @@ import (
 	"klip/internal/history"
 	"klip/internal/model"
 	"klip/internal/paths"
+	"klip/internal/snapshot"
 )
 
 // Clipboard is the system clipboard, as much of it as capture needs.
@@ -1093,6 +1094,10 @@ func resolveCachePath(root, id string, index int, name string) string {
 	legacy := filepath.Join(root, id, fmt.Sprintf("%04d_%s", index, name))
 	if isFile(legacy) {
 		return legacy
+	}
+	imported := filepath.Join(root, id, snapshot.ImportedFileName(index, name))
+	if isFile(imported) {
+		return imported
 	}
 	return filepath.Join(root, id, captureCacheName(index, name))
 }
