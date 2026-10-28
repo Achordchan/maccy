@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	_ "image/gif"
 	_ "image/jpeg"
@@ -547,7 +548,7 @@ func (s *Service) cacheCopies(id string, files []string, limits ...int64) (err e
 		if strings.TrimSpace(src) == "" || !isFile(src) || strings.TrimSpace(name) == "" {
 			return fmt.Errorf("source file unavailable: %s", src)
 		}
-		if err = copyFileBounded(src, filepath.Join(dir, fmt.Sprintf("%04d_%s", i, name)), limit); err != nil {
+		if err = copyFileBounded(src, filepath.Join(dir, captureCacheName(i, name)), limit); err != nil {
 			return err
 		}
 	}
@@ -701,7 +702,12 @@ func copyFileBounded(src, dst string, limit int64) (err error) {
 	defer in.Close()
 	// Copy to a side file and rename it when whole, so that a copy that
 	// fails half way never stands in for the original.
-	tmp := dst + ".part"
+	temp, err := os.CreateTemp(filepath.Dir(dst), "capture-part-*")
+	if err != nil {
+		return err
+	}
+	tmp := temp.Name()
+	temp.Close()
 	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // private: the copy may hold what the original kept to itself
 	if err != nil {
 		return err
@@ -987,10 +993,10 @@ func (s *Service) write(it model.Item) (bool, written, error) {
 				continue
 			}
 			name := baseName(p)
-			if isFile(filepath.Join(s.Layout.Files(), it.IDN(), fmt.Sprintf("%04d_%s", compact, name))) {
+			if isFile(filepath.Join(s.Layout.Files(), it.IDN(), captureCacheName(compact, name))) {
 				legacyScore++
 			}
-			if isFile(filepath.Join(s.Layout.Files(), it.IDN(), fmt.Sprintf("%04d_%s", i, name))) {
+			if isFile(filepath.Join(s.Layout.Files(), it.IDN(), captureCacheName(i, name))) {
 				rawScore++
 			}
 			compact++
@@ -1007,8 +1013,8 @@ func (s *Service) write(it model.Item) (bool, written, error) {
 			if strings.TrimSpace(name) == "" {
 				continue
 			}
-			cached := filepath.Join(s.Layout.Files(), it.IDN(), fmt.Sprintf("%04d_%s", i, name))
-			legacy := filepath.Join(s.Layout.Files(), it.IDN(), fmt.Sprintf("%04d_%s", compact, name))
+			cached := filepath.Join(s.Layout.Files(), it.IDN(), captureCacheName(i, name))
+			legacy := filepath.Join(s.Layout.Files(), it.IDN(), captureCacheName(compact, name))
 			compact++
 			if legacyComplete {
 				cached = legacy
@@ -1075,4 +1081,22 @@ func readBoundedImage(path string, limit int64) ([]byte, error) {
 		return nil, errors.New("encoded image exceeds capture limit")
 	}
 	return data, err
+}
+
+func captureCacheName(index int, name string) string {
+	prefix := fmt.Sprintf("%04d_", index)
+	limit := 255 - len(prefix)
+	if len(name) > limit {
+		ext := filepath.Ext(name)
+		if len(ext) > 32 {
+			ext = ""
+		}
+		stem := strings.TrimSuffix(name, ext)
+		n := limit - len(ext)
+		for n > 0 && !utf8.RuneStart(stem[n]) {
+			n--
+		}
+		name = stem[:n] + ext
+	}
+	return prefix + name
 }
