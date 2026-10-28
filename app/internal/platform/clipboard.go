@@ -105,7 +105,7 @@ func ContentFingerprint() string {
 	picture := c.ReadImage()
 	for _, format := range formats {
 		f := strings.ToLower(format)
-		if (strings.Contains(f, "image") || strings.Contains(f, "bitmap") || strings.Contains(f, "dib")) && len(picture) == 0 {
+		if (strings.Contains(f, "image") || strings.Contains(f, "bitmap") || strings.Contains(f, "dib")) && len(picture) == 0 && strings.TrimSpace(text) == "" && len(files) == 0 {
 			return ""
 		}
 		if (strings.Contains(f, "uri-list") || strings.Contains(f, "file")) && err != nil {
