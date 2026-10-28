@@ -80,6 +80,7 @@ func (p *Persister) save() error {
 		return err
 	}
 	p.svc.mu.Lock()
+	recoverCapturedFiles(p.layout.Files(), items)
 	live := p.svc.items
 	p.svc.items = append(append([]model.Item(nil), live...), items...)
 	p.svc.emptyNow(context.Background(), trash)
