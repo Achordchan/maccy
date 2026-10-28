@@ -56,6 +56,8 @@ type Clipboard interface {
 type AppIdentity struct{ Name, Path string }
 
 // Service captures the clipboard into the history.
+type retryKey struct{}
+
 type Service struct {
 	Layout    paths.Layout
 	History   *history.Service
@@ -85,7 +87,7 @@ type Service struct {
 	// Retry is called when a change was not looked at because an Apply was
 	// running; it should capture again (may be nil).
 	Retry           func()
-	RetryGeneration func(uint64)
+	RetryGeneration func(uint64, string)
 	// OwnWindow is how long after Apply a change is taken for our own when
 	// there is no counter: the poll interval plus the C# 250 ms. Zero is 250 ms.
 	OwnWindow time.Duration
@@ -310,8 +312,8 @@ func has(set map[string]bool, names []string) bool {
 // Text comes first, then files, then images; the first that yields something
 // is the item.
 func (s *Service) Capture(ctx context.Context) error { return s.capture(ctx, nil) }
-func (s *Service) CaptureRetry(ctx context.Context, generation uint64) error {
-	return s.capture(ctx, &generation)
+func (s *Service) CaptureRetry(ctx context.Context, generation uint64, key string) error {
+	return s.capture(context.WithValue(ctx, retryKey{}, key), &generation)
 }
 func (s *Service) capture(ctx context.Context, expected *uint64) error {
 	if err := ctx.Err(); err != nil {
@@ -342,6 +344,9 @@ func (s *Service) capture(ctx context.Context, expected *uint64) error {
 	// already moved on, so look again a little later: up to five times in a
 	// row, the count starting over with the next clipboard that reads well.
 	key := s.changeKey() // taken before any read: it is the change being looked at
+	if original, ok := ctx.Value(retryKey{}).(string); ok && original != "" && key != "" && original != key {
+		return nil
+	}
 	if strings.HasPrefix(key, "seq:") && s.lastDone.Load() == any(key) {
 		s.took.Store(true)
 		return nil // this change was taken already (the watcher saw it late)
@@ -927,7 +932,7 @@ func (s *Service) retryLater(key string) {
 			return
 		}
 		if s.RetryGeneration != nil {
-			s.RetryGeneration(generation)
+			s.RetryGeneration(generation, key)
 		} else {
 			s.Retry()
 		}

@@ -145,7 +145,16 @@ func (s *Service) emptyNow(ctx context.Context, t trash) {
 		if keepImg[strings.ToLower(p)] || !s.managedPath(p) {
 			continue
 		}
-		os.Remove(p)
+		implicit := false
+		for id := range keepDir {
+			if withinDir(filepath.Join(s.layout.Files(), id), p) {
+				implicit = true
+				break
+			}
+		}
+		if !implicit {
+			os.Remove(p)
+		}
 	}
 	for _, id := range t.fileDirs {
 		if ctx.Err() != nil {
