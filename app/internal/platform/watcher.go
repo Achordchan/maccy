@@ -107,3 +107,6 @@ func (w *Watcher) contentMoved(fp string) bool {
 	w.lastFP = fp
 	return true
 }
+
+// Acknowledge records the exact content captured, not a later clipboard read.
+func (w *Watcher) Acknowledge(fp string) { w.mu.Lock(); w.lastFP = fp; w.seen = true; w.mu.Unlock() }

@@ -80,6 +80,8 @@ type Service struct {
 	// changes with the clipboard content (platform.ContentFingerprint); may be
 	// nil.
 	Token func() string
+	// CapturedToken acknowledges the successfully captured fallback fingerprint.
+	CapturedToken func(string)
 	// Retry is called when a change was not looked at because an Apply was
 	// running; it should capture again (may be nil).
 	Retry func()
@@ -371,6 +373,9 @@ func (s *Service) Capture(ctx context.Context) error {
 			it.SourceAppName, it.SourceAppPath = &app.Name, &app.Path
 		}
 		s.History.Add(it)
+		if strings.HasPrefix(key, "tok:") && s.CapturedToken != nil {
+			s.CapturedToken(strings.TrimPrefix(key, "tok:"))
+		}
 	}
 
 	if opt.text && has(set, textFormats) {
