@@ -724,6 +724,12 @@ func (s *Syncer) upload(ctx context.Context, progress func(Progress), reason, ac
 		}
 	}
 
+	if err := s.flush(ctx); err != nil {
+		return nil, fp, err
+	}
+	if err := s.writeUploadIntent(uploadIntent{Account: account, Fingerprint: fp, SHA: exp.SHA256}); err != nil {
+		return nil, fp, err
+	}
 	report(progress, "upload_snapshot", "上传快照", 84)
 	call := func(t string) error {
 		var e error
@@ -1975,6 +1981,23 @@ func removedSet(ids []string) map[string]bool {
 // with the note, pin and copy count edits made meanwhile, plus the captures
 // that were added. Items that only the failed mutation added are dropped.
 func rollbackItems(before, applied, current []model.Item, limitPruned map[string]bool) []model.Item {
+	// Resolve retained remote IDs back to their original local identity.
+	applied = cloneItems(applied)
+	current = cloneItems(current)
+	for _, old := range before {
+		if ap, ok := findIdentity(applied, old); ok && !strings.EqualFold(ap.ID, old.ID) {
+			for i := range applied {
+				if applied[i].ID == ap.ID {
+					applied[i].ID = old.ID
+				}
+			}
+			for i := range current {
+				if current[i].ID == ap.ID {
+					current[i].ID = old.ID
+				}
+			}
+		}
+	}
 	currentByID := make(map[string]model.Item, len(current))
 	for _, it := range current {
 		currentByID[strings.ToLower(it.ID)] = it

@@ -68,6 +68,9 @@ func (s *Syncer) run(ctx context.Context, progress func(Progress), reason string
 	if err := s.recoverPendingMerge(ctx, account); err != nil {
 		return RunResult{}, err
 	}
+	if err := s.recoverUploadIntent(manifest, account); err != nil {
+		return RunResult{}, err
+	}
 	localItems := s.cfg.History.Items()
 	d := s.DecideItems(manifest, localItems)
 	res := RunResult{Decision: d}

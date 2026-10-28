@@ -139,6 +139,9 @@ func Decide(manifest ManifestInfo, localFingerprint string, localCount int, loca
 	remoteSha := strings.TrimSpace(manifest.SnapshotSHA256)
 	remoteMatched := sameRemoteSnapshot(lastVersion, remoteVersion, lastSha, remoteSha)
 
+	if lastFp == pendingUploadFingerprint && !remoteMatched {
+		return Decision{Merge, localFingerprint, manifest, "pending_upload_remote_changed"}
+	}
 	if lastFp != "" && lastVersion != "" {
 		switch {
 		case isRemoteRollback(model.Str(s.SyncLastRemoteUpdatedAt), manifest.UpdatedAt):
