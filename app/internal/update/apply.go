@@ -285,14 +285,8 @@ func RunPlan(p Plan, h Hooks) error {
 			h.Alert("Klip 更新失败", "新版本无法启动："+lerr.Error()+"\n\n已恢复旧版本。日志："+p.LogPath)
 			return err
 		}
-		for _, it := range rollback {
-			if it.moved {
-				// Keep directory transition backups: they may include user-added files.
-				if st, err := os.Stat(it.backup); err == nil && !st.IsDir() {
-					_ = os.Remove(it.backup)
-				}
-			}
-		}
+		// Transition backups are retained: ownership of pre-existing paths is unknown.
+
 		return nil
 	}
 	lg.say("failed: " + err.Error())
