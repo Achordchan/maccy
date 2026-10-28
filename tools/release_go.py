@@ -334,14 +334,21 @@ def cmd_release(a: argparse.Namespace) -> int:
                           package_sha256=psha, package_size=psize, package_runtime=a.runtime, package_url=package_url)
     if a.publish_gitee:
         base._git(REPO, ["add", str(manifest)])
-        try:
-            base._git(REPO, ["commit", "-m", "update manifest for v" + version])
-        except SystemExit:
-            pass
+        commit_manifest(REPO, version)
         base._push_current_to_upstream(REPO)
     print(json.dumps({"installer": str(installer), "sha256": sha, "size": size,
                       "package": str(package), "package_sha256": psha, "package_size": psize}, indent=2))
     return 0
+
+
+def commit_manifest(repo: Path, version: str) -> None:
+    """Skip an empty index, but never suppress a rejected commit."""
+    result = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo)
+    if result.returncode == 0:
+        return
+    if result.returncode != 1:
+        raise SystemExit(result.returncode)
+    base._git(repo, ["commit", "-m", "update manifest for v" + version])
 
 
 def main(argv: list[str] | None = None) -> int:
