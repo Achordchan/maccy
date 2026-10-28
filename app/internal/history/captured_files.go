@@ -100,21 +100,31 @@ func recoverCaptureTransactions(root string, retireOnly bool, histories ...[]mod
 			var marker string
 			if json.Unmarshal(data, &marker) == nil {
 				committed := false
+				unknown := false
 				for _, items := range histories {
 					for _, it := range items {
+						if it.IDN() == original && it.LocalCaptureMutation == "" {
+							unknown = true
+						}
 						if it.IDN() == original && it.LocalCaptureMutation == marker && marker != "" {
 							committed = true
 						}
 					}
 				}
-				if !committed && retireOnly {
+				if !committed && (retireOnly || unknown) {
 					continue
 				}
 				if committed {
-					_ = os.RemoveAll(backup)
+					if err := os.RemoveAll(backup); err != nil {
+						continue
+					}
 				} else {
-					_ = os.RemoveAll(to)
-					_ = os.Rename(backup, to)
+					if err := os.RemoveAll(to); err != nil {
+						continue
+					}
+					if err := os.Rename(backup, to); err != nil {
+						continue
+					}
 				}
 				_ = os.Remove(backup + ".capture-time")
 				continue
